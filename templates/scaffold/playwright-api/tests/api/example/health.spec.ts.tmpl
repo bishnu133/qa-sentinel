@@ -1,0 +1,12 @@
+import { z } from "zod";
+import { test, expect } from "../../../src/fixtures";
+import { expectSchema } from "../../../src/schemas";
+
+// Example spec. Agents copy this structure; replace /health with a real endpoint of your service.
+test.describe("GET /health", () => {
+  test("returns 200 and a status @service:example @endpoint:GET_/health", async ({ api }) => {
+    const res = await api.get("/health");
+    expect(res.status()).toBe(200);
+    expectSchema(await res.json(), z.object({ status: z.string() }));
+  });
+});

@@ -1,0 +1,36 @@
+import type { APIRequestContext, APIResponse } from "@playwright/test";
+
+type Body = Record<string, unknown> | unknown[];
+interface RequestOptions {
+  headers?: Record<string, string>;
+  params?: Record<string, string | number | boolean>;
+}
+
+/** Thin typed wrapper over Playwright's request context. All API tests go through this. */
+export class ApiClient {
+  constructor(private readonly request: APIRequestContext, private token?: string) {}
+
+  withToken(token: string): ApiClient {
+    return new ApiClient(this.request, token);
+  }
+
+  private headers(extra?: Record<string, string>) {
+    return { ...(this.token ? { Authorization: `Bearer ${this.token}` } : {}), ...extra };
+  }
+
+  get(path: string, o: RequestOptions = {}): Promise<APIResponse> {
+    return this.request.get(path, { headers: this.headers(o.headers), params: o.params });
+  }
+  post(path: string, data?: Body, o: RequestOptions = {}): Promise<APIResponse> {
+    return this.request.post(path, { data, headers: this.headers(o.headers), params: o.params });
+  }
+  put(path: string, data?: Body, o: RequestOptions = {}): Promise<APIResponse> {
+    return this.request.put(path, { data, headers: this.headers(o.headers), params: o.params });
+  }
+  patch(path: string, data?: Body, o: RequestOptions = {}): Promise<APIResponse> {
+    return this.request.patch(path, { data, headers: this.headers(o.headers), params: o.params });
+  }
+  delete(path: string, o: RequestOptions = {}): Promise<APIResponse> {
+    return this.request.delete(path, { headers: this.headers(o.headers), params: o.params });
+  }
+}

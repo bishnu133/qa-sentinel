@@ -1,0 +1,55 @@
+{
+  "name": "qa-sentinel",
+  "version": "0.1.0",
+  "description": "Plug-in AI QA agents for any project: gap reports on every merge request and auto-generated API tests, powered by Claude Code and run in GitLab CI or Jenkins.",
+  "type": "module",
+  "bin": {
+    "qa-sentinel": "dist/cli.js"
+  },
+  "main": "dist/index.js",
+  "files": [
+    "dist",
+    "templates",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=18.18"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "dev": "tsx src/cli.ts",
+    "test": "vitest run",
+    "lint": "tsc -p tsconfig.json --noEmit",
+    "prepublishOnly": "npm run build && npm test"
+  },
+  "keywords": [
+    "qa",
+    "test-automation",
+    "ai-agents",
+    "claude-code",
+    "api-testing",
+    "playwright",
+    "gitlab",
+    "jenkins",
+    "test-generation"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/bishnu133/qa-sentinel.git"
+  },
+  "dependencies": {
+    "@inquirer/prompts": "^7.2.0",
+    "commander": "^12.1.0",
+    "picocolors": "^1.1.1",
+    "yaml": "^2.6.1",
+    "zod": "^3.24.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.8"
+  }
+}

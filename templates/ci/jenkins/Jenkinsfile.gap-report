@@ -1,0 +1,50 @@
+// qa-sentinel – Phase 1 gap report for a SERVICE repo, triggered by GitLab merge request events
+// (GitLab plugin "Build when a merge request is opened/updated").
+// Credentials: anthropic-api-key (secret text), qa-sentinel-gitlab-token (secret text), gitlab-checkout (user/pass)
+pipeline {
+  agent { docker { image 'node:22' } }
+  options { timeout(time: 20, unit: 'MINUTES'); disableConcurrentBuilds(abortPrevious: true) }
+  parameters {
+    string(name: 'QA_TESTS_REPO', defaultValue: 'https://gitlab.com/my-group/qa-tests.git', description: 'Test repo URL')
+    string(name: 'QA_SERVICE_NAME', defaultValue: '', description: 'Service name in qa-sentinel.config.yaml (default: job name)')
+  }
+  environment {
+    ANTHROPIC_API_KEY = credentials('anthropic-api-key')
+    QA_SENTINEL_GITLAB_TOKEN = credentials('qa-sentinel-gitlab-token')
+    CI_PROJECT_ID = "${env.gitlabMergeRequestTargetProjectId}"
+    CI_MERGE_REQUEST_IID = "${env.gitlabMergeRequestIid}"
+    HOME = "${env.WORKSPACE}"
+  }
+  stages {
+    stage('Checkout') {
+      steps {
+        dir('service') {
+          checkout scm
+          sh 'git fetch origin "${gitlabTargetBranch}"'
+        }
+        dir('qa-tests') {
+          git url: params.QA_TESTS_REPO, branch: '{{targetBranch}}', credentialsId: 'gitlab-checkout'
+          sh 'npm ci --ignore-scripts'
+        }
+      }
+    }
+    stage('Gap report') {
+      steps {
+        sh 'npm i -g --prefix "$WORKSPACE/.npm-global" @anthropic-ai/claude-code qa-sentinel@0.1'
+        sh '''
+          export PATH="$WORKSPACE/.npm-global/bin:$PATH"
+          SERVICE="${QA_SERVICE_NAME:-$JOB_BASE_NAME}"
+          qa-sentinel -C qa-tests gap-report \
+            --service "$SERVICE" --service-path "$WORKSPACE/service" \
+            --base "origin/${gitlabTargetBranch}" --head HEAD \
+            --out "$WORKSPACE/qa-gap-report.md" --post
+        '''
+      }
+    }
+  }
+  post {
+    always { archiveArtifacts artifacts: 'qa-gap-report.md', allowEmptyArchive: true }
+    // The gap report is advisory: never fail the dev's build because of it.
+    failure { script { currentBuild.result = 'UNSTABLE' } }
+  }
+}

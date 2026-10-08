@@ -1,0 +1,18 @@
+/**
+ * Unique, per-test data. Add builders here (or one file per resource) and keep them UI-independent:
+ * Web and Mobile tests reuse them for setup.
+ */
+export class DataFactory {
+  private seq = 0;
+  constructor(private readonly runId: string) {}
+
+  /** Unique id with an optional prefix, e.g. data.unique("order") -> "order-0-1712-1". */
+  unique(prefix = "qa"): string {
+    this.seq += 1;
+    return `${prefix}-${this.runId}-${this.seq}`;
+  }
+
+  email(): string {
+    return `${this.unique("user")}@example.test`;
+  }
+}

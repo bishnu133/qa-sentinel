@@ -1,0 +1,9 @@
+import { expect } from "@playwright/test";
+import type { ZodTypeAny, infer as Infer } from "zod";
+
+/** Assert a response body matches a zod schema and return it typed. */
+export function expectSchema<S extends ZodTypeAny>(body: unknown, schema: S): Infer<S> {
+  const result = schema.safeParse(body);
+  expect(result.success, result.success ? "" : JSON.stringify(result.error.issues, null, 2)).toBe(true);
+  return (result as { data: Infer<S> }).data;
+}

@@ -1,0 +1,17 @@
+import { defineConfig } from "@playwright/test";
+import "dotenv/config";
+
+export default defineConfig({
+  timeout: 30_000,
+  fullyParallel: true,
+  retries: process.env.CI ? 1 : 0,
+  reporter: [["list"], ["html", { open: "never" }], ["junit", { outputFile: "test-results/junit.xml" }]],
+  use: {
+    baseURL: process.env.{{baseUrlEnv}},
+    extraHTTPHeaders: { Accept: "application/json" },
+  },
+  projects: [
+    { name: "api", testDir: "./{{apiDir}}" },
+    // Web and Mobile projects are added by later qa-sentinel adapters.
+  ],
+});

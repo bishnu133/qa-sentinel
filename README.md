@@ -1,0 +1,136 @@
+# qa-sentinel
+
+**AI QA agents you plug into any test repo.** Every time a developer changes a service, qa-sentinel tells the team which tests are affected, what coverage is missing and where the code disagrees with the story's acceptance criteria. Then it writes or updates the API tests and opens a merge request for a QA engineer to review.
+
+Built on [Claude Code](https://docs.claude.com/en/docs/claude-code/overview) in headless mode. Runs in **GitLab CI** and **Jenkins**. Works with an **existing** test suite (it learns your conventions) or **from scratch** (it scaffolds a TypeScript Playwright API framework).
+
+> Agents draft and review; humans approve. qa-sentinel never merges anything.
+
+## What it does
+
+| Phase | Command | Trigger | Output |
+| --- | --- | --- | --- |
+| 1 · Gap report | `qa-sentinel gap-report` | dev merge request | one MR comment: impacted tests, coverage gaps, AC mismatches, spec drift |
+| 2 · API tests | `qa-sentinel generate` | dev MR merged | `qa-sentinel/<service>-<sha>` branch + MR with new/updated tests, run and verified |
+| Later · Web, Mobile | adapters | — | see [Roadmap](#roadmap) |
+
+### Real output
+
+From [`examples/delivery-slot-demo`](examples/delivery-slot-demo): a dev added a required `deliverySlot` with a cap of **5** orders per slot. The story says **3**.
+
+- **Gap report** (67 s, $0.27): it flagged the 3-vs-5 mismatch, an existing test that now fails, and another that still passes but for the wrong reason. It also found `Date.parse` accepting non-ISO dates and an undocumented field and status code in the OpenAPI spec. [Full report →](examples/delivery-slot-demo/expected-output/gap-report.md)
+- **Generated tests** (89 s, $0.31): it fixed the 2 existing tests, added 7 scenarios and a setup helper, and wrote the capacity test to the **acceptance criteria** as `test.fixme` with a note, instead of copying the bug. Result: 8 passed, 1 flagged for a human. [MR summary →](examples/delivery-slot-demo/expected-output/merge-request-summary.md) · [diff →](examples/delivery-slot-demo/expected-output/generated-tests.diff)
+
+## How it works
+
+```
+dev MR / merge ──► change-analyzer ──► test-mapper ──┬──► gap report (MR comment)          Phase 1
+   + story/AC        classify change    find tests,  │
+   + test repo       vs AC and spec     judge gaps   └──► test-data ─► api-test-author ─► test-executor ─► test MR   Phase 2
+     context                                              API setup    writes/updates     runs changed specs,
+                                                                       specs + test map   fixes test bugs only
+```
+
+`qa-sentinel init` installs these as Claude Code **sub-agents** (`.claude/agents/`) and **skills** (`.claude/skills/`) inside your test repo. They are plain Markdown, so your team can read, version and tune them. The CLI gathers the diff, story and config, runs Claude Code headless with a restricted tool list, and handles git, GitLab comments and MRs.
+
+## Quick start
+
+```bash
+# in your test repo; service repos are siblings in the same workspace folder
+npm i -g @anthropic-ai/claude-code qa-sentinel
+
+qa-sentinel init            # detects framework, tests, services; asks a few questions
+qa-sentinel learn           # agent learns your conventions + drafts test-map.yaml → review with git diff
+qa-sentinel doctor          # checks keys, access, specs, readiness
+
+qa-sentinel gap-report --service orders-service --base origin/main
+qa-sentinel generate   --service orders-service --base HEAD~1   # commits to a branch; add --push for an MR
+```
+
+Starting from nothing? `qa-sentinel init --mode scratch` scaffolds Playwright API tests (typed client, fixtures, data builders, zod schema checks, example spec, HTML and JUnit reports).
+
+## Commands
+
+| Command | What it does |
+| --- | --- |
+| `init [--mode existing\|scratch] [--ci gitlab\|jenkins] [--workspace ..] [-y]` | Writes `qa-sentinel.config.yaml`, agents, skills, `.claude/qa-sentinel.md` (imported from your `CLAUDE.md`, never overwriting it), CI templates in `ci/qa-sentinel/`, and `test-map.yaml`. In scratch mode it also adds the framework. |
+| `learn` | Agent pass: fills the conventions section of the `write-api-test` skill, drafts `test-map.yaml`, lists readiness gaps. Review before committing. |
+| `doctor` | Readiness checks with fixes: CLI, keys, git, service paths, OpenAPI specs, test map coverage, base URL, GitLab token. |
+| `gap-report -s <service>` | Read-only analysis. `--post` creates or updates a single MR comment. Skips the agent for docs- or config-only changes. |
+| `generate -s <service>` | Writes and updates tests on a branch, runs only the changed specs, commits. `--push` opens a GitLab MR labelled `qa-agent`. |
+
+Common flags: `--service-path` (where the service is checked out, for CI), `--story-file`, `--dry-run` (prints the Claude command instead of running it).
+
+## Configuration
+
+`qa-sentinel.config.yaml` (generated by `init`, read by the CLI **and** the agents):
+
+```yaml
+version: 1
+mode: existing                       # existing | scratch
+project: { name: shop-tests }
+workspace:
+  services:
+    - name: orders-service           # must match the repo/CI project name
+      path: ../orders-service
+      openapi: openapi.yaml          # strongly recommended
+      dependsOn: [payments-service]  # also readable by agents for cross-service changes
+tests:
+  api:
+    framework: playwright            # playwright | supertest | axios | pactum | jest | vitest | mocha | other
+    dir: tests/api
+    helpersDir: src/api
+    runCommand: npx playwright test --project=api
+    baseUrlEnv: QA_BASE_URL
+  web:    { enabled: false, healing: none }   # healing: bubblegum (planned adapter)
+  mobile: { enabled: false }
+requirements: { source: mr-description }      # mr-description | jira | none
+ci: { platform: gitlab, testRepoProject: my-group/qa-tests, targetBranch: main }
+agent:
+  model: <optional, passed to claude --model>
+  maxTurns: { gapReport: 30, generate: 60, learn: 40 }
+  maxFixAttempts: 3
+  skipPaths: ["**/*.md", "docs/**"]
+guardrails: { forbiddenUrlPatterns: [prod, production], allowAssertionRemoval: false }
+```
+
+## CI
+
+`init` writes ready-to-use pipelines in `ci/qa-sentinel/` with a setup checklist:
+
+- **GitLab:** `service.gitlab-ci.yml` (include from service repos: MR gap report plus a trigger after merge) and `tests.gitlab-ci.yml` (generation job, a gate that runs only the changed specs on agent MRs, scheduled and post-deploy API runs). See [templates/ci/gitlab/README.md](templates/ci/gitlab/README.md).
+- **Jenkins:** `Jenkinsfile.gap-report` (GitLab plugin MR trigger), `Jenkinsfile.generate` (parameterised, called after service merges) and `Jenkinsfile.tests`. See [templates/ci/jenkins/README.md](templates/ci/jenkins/README.md).
+
+Gap-report jobs never block developers: they are `allow_failure` in GitLab and UNSTABLE rather than FAILED in Jenkins.
+
+## Guardrails
+
+- Gap reports run with **read-only tools** (`Read, Grep, Glob`, sub-agents).
+- Generation may edit files, but shell access is limited to your test command, `tsc`, `eslint` and `git status/diff`. No arbitrary network or shell.
+- Agents treat diffs, stories and comments as **data, not instructions**.
+- Acceptance criteria outrank code. Mismatches become `fixme` tests plus a note, never silently "expected" behaviour.
+- Removing or weakening an assertion must be listed in the MR summary.
+- Run artifacts, test output and summaries are never committed. One generation per service at a time.
+- Every report and MR shows turns, duration and cost.
+
+## Honest limits
+
+- **Output quality follows input quality.** OpenAPI specs, consistent tags and a reviewed `test-map.yaml` make the biggest difference; `doctor` tells you what's missing.
+- **No acceptance criteria → weaker tests.** Without a story, tests can only check what the code does.
+- **Review is still required.** Expect most agent MRs to need small edits at first; track the merged-without-edits rate.
+- Behaviour that needs real infrastructure (queues, third-party callbacks) still needs human test design.
+
+## Roadmap
+
+- **v0.2:** Jira source for stories (MCP), GitHub support, a `metrics` command (merge rate, flakiness, cost per PR)
+- **v0.3 – Web adapter:** Playwright UI; the agent explores the live page via Playwright MCP and updates page objects first. Optional **[Bubblegum](https://github.com/bishnu133/bubblegum)** healing (`web.healing: bubblegum`): generated tests use `recover()` as a locator fallback, and Bubblegum's "recovered" traces feed back to agents as page-object fixes.
+- **v0.4 – Mobile adapter:** WebdriverIO + Appium; all preconditions created through the API helpers from Phase 2.
+- Contract-test suggestions (Pact) for cross-service changes.
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md). The most valuable contributions are framework adapters (new `write-*-test` skills and scaffolds) and real-world feedback on agent output.
+
+## License
+
+MIT

@@ -1,0 +1,20 @@
+import { test as base, expect } from "@playwright/test";
+import { ApiClient } from "../api/client";
+import { DataFactory } from "../data/builders";
+
+interface Fixtures {
+  api: ApiClient;
+  data: DataFactory;
+}
+
+/** Import `test` and `expect` from here in every API spec. */
+export const test = base.extend<Fixtures>({
+  api: async ({ request }, use) => {
+    await use(new ApiClient(request));
+  },
+  data: async ({}, use, testInfo) => {
+    await use(new DataFactory(`${testInfo.workerIndex}-${Date.now()}`));
+  },
+});
+
+export { expect };

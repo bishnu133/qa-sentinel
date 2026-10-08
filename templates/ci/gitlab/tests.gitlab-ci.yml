@@ -1,0 +1,72 @@
+# qa-sentinel – TEST repo pipeline
+#
+# Include from the test repo's .gitlab-ci.yml:
+#   include:
+#     - local: "ci/qa-sentinel/tests.gitlab-ci.yml"
+#
+# CI/CD variables: ANTHROPIC_API_KEY, QA_SENTINEL_GITLAB_TOKEN (api + write_repository), {{baseUrlEnv}}
+# Allow this project's CI_JOB_TOKEN to read the service repos (Settings › CI/CD › Job token permissions).
+
+variables:
+  QA_SENTINEL_VERSION: "0.1"
+
+.qa-node:
+  image: mcr.microsoft.com/playwright:v1.49.0-noble
+  before_script:
+    - npm ci
+
+# Phase 2: triggered by a service repo after merge. Opens an MR with new/updated API tests.
+qa-generate:
+  extends: .qa-node
+  stage: test
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "pipeline" && $QA_SERVICE_NAME
+  resource_group: "qa-generate-$QA_SERVICE_NAME"   # one run per service at a time
+  timeout: 45m
+  script:
+    - npm i -g @anthropic-ai/claude-code "qa-sentinel@${QA_SENTINEL_VERSION}"
+    - git clone "https://gitlab-ci-token:${CI_JOB_TOKEN}@${CI_SERVER_HOST}/${QA_SERVICE_PROJECT}.git" "/tmp/services/$QA_SERVICE_NAME"
+    - git config user.name "qa-sentinel" && git config user.email "qa-sentinel@noreply.local"
+    - git remote set-url origin "https://oauth2:${QA_SENTINEL_GITLAB_TOKEN}@${CI_SERVER_HOST}/${CI_PROJECT_PATH}.git"
+    - >
+      qa-sentinel generate
+      --service "$QA_SERVICE_NAME" --service-path "/tmp/services/$QA_SERVICE_NAME"
+      --base "$QA_SERVICE_BEFORE_SHA" --head "$QA_SERVICE_SHA" --push
+  artifacts:
+    when: always
+    paths: [qa-sentinel-summary.md, .qa-sentinel/runs/]
+    expire_in: 2 weeks
+
+# Gate for agent MRs: type-check and run only the specs the agent touched.
+qa-agent-mr-checks:
+  extends: .qa-node
+  stage: test
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event" && $CI_MERGE_REQUEST_SOURCE_BRANCH_NAME =~ /^qa-sentinel\//
+  script:
+    - npx tsc --noEmit || echo "type-check failed (see log)"
+    - CHANGED=$(git diff --name-only --diff-filter=AM "$CI_MERGE_REQUEST_DIFF_BASE_SHA"...HEAD -- "{{apiDir}}" | grep -E '\.(spec|test)\.[cm]?[jt]s$' || true)
+    - if [ -n "$CHANGED" ]; then {{runCommand}} $CHANGED; else echo "no spec changes"; fi
+  artifacts:
+    when: always
+    reports:
+      junit: test-results/junit.xml
+    paths: [playwright-report/, test-results/]
+    expire_in: 2 weeks
+
+# Regular API runs: on schedule, or after a deployment (pass QA_TEST_ARGS, e.g. --grep @service:orders).
+api-tests:
+  extends: .qa-node
+  stage: test
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "schedule"
+    - if: $CI_PIPELINE_SOURCE == "trigger" || $CI_PIPELINE_SOURCE == "api"
+    - if: $CI_COMMIT_BRANCH == "{{targetBranch}}"
+  script:
+    - {{runCommand}} ${QA_TEST_ARGS}
+  artifacts:
+    when: always
+    reports:
+      junit: test-results/junit.xml
+    paths: [playwright-report/, test-results/]
+    expire_in: 2 weeks

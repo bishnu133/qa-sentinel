@@ -1,0 +1,17 @@
+openapi: 3.0.3
+info: { title: Orders, version: 1.0.0 }
+paths:
+  /health:
+    get: { responses: { "200": { description: ok } } }
+  /orders:
+    post:
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [item, qty]
+              properties: { item: { type: string }, qty: { type: integer, minimum: 1 } }
+      responses:
+        "201": { description: created }
+        "400": { description: invalid }

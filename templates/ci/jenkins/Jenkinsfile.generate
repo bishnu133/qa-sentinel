@@ -1,0 +1,50 @@
+// qa-sentinel – Phase 2 test generation. Runs in the TEST repo job, triggered after a service merge:
+//   build job: 'qa-sentinel-generate', wait: false, parameters: [
+//     string(name: 'QA_SERVICE_NAME', value: 'orders-service'),
+//     string(name: 'QA_SERVICE_REPO', value: env.GIT_URL),
+//     string(name: 'QA_SERVICE_SHA', value: env.GIT_COMMIT),
+//     string(name: 'QA_SERVICE_BEFORE_SHA', value: env.GIT_PREVIOUS_SUCCESSFUL_COMMIT ?: '')]
+pipeline {
+  agent { docker { image 'mcr.microsoft.com/playwright:v1.49.0-noble' } }
+  options { timeout(time: 45, unit: 'MINUTES'); disableConcurrentBuilds() }
+  parameters {
+    string(name: 'QA_SERVICE_NAME', description: 'Service name in qa-sentinel.config.yaml')
+    string(name: 'QA_SERVICE_REPO', description: 'Service repo URL')
+    string(name: 'QA_SERVICE_SHA', description: 'Merged commit')
+    string(name: 'QA_SERVICE_BEFORE_SHA', defaultValue: '', description: 'Previous commit (default: SHA~1)')
+  }
+  environment {
+    ANTHROPIC_API_KEY = credentials('anthropic-api-key')
+    QA_SENTINEL_GITLAB_TOKEN = credentials('qa-sentinel-gitlab-token')
+    {{baseUrlEnv}} = credentials('qa-base-url')
+    HOME = "${env.WORKSPACE}"
+  }
+  stages {
+    stage('Prepare') {
+      steps {
+        sh 'npm ci'
+        sh 'npm i -g --prefix "$WORKSPACE/.npm-global" @anthropic-ai/claude-code qa-sentinel@0.1'
+        dir("/tmp/services/${params.QA_SERVICE_NAME}") {
+          git url: params.QA_SERVICE_REPO, branch: 'main', credentialsId: 'gitlab-checkout'
+        }
+        sh 'git config user.name qa-sentinel && git config user.email qa-sentinel@noreply.local'
+      }
+    }
+    stage('Generate') {
+      steps {
+        withCredentials([usernamePassword(credentialsId: 'gitlab-checkout', usernameVariable: 'GIT_USER', passwordVariable: 'GIT_PASS')]) {
+          sh '''
+            export PATH="$WORKSPACE/.npm-global/bin:$PATH"
+            git remote set-url origin "$(git remote get-url origin | sed "s#https://#https://${GIT_USER}:${GIT_PASS}@#")"
+            BASE="${QA_SERVICE_BEFORE_SHA:-${QA_SERVICE_SHA}~1}"
+            qa-sentinel generate --service "$QA_SERVICE_NAME" --service-path "/tmp/services/$QA_SERVICE_NAME" \
+              --base "$BASE" --head "$QA_SERVICE_SHA" --push
+          '''
+        }
+      }
+    }
+  }
+  post {
+    always { archiveArtifacts artifacts: 'qa-sentinel-summary.md, .qa-sentinel/runs/**', allowEmptyArchive: true }
+  }
+}

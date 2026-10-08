@@ -1,0 +1,35 @@
+// qa-sentinel – run API tests (agent MRs, schedules, post-deploy). Set QA_TEST_ARGS to filter, e.g. --grep @service:orders
+pipeline {
+  agent { docker { image 'mcr.microsoft.com/playwright:v1.49.0-noble' } }
+  options { timeout(time: 30, unit: 'MINUTES') }
+  parameters {
+    string(name: 'QA_TEST_ARGS', defaultValue: '', description: 'Extra arguments for the test command')
+    booleanParam(name: 'CHANGED_ONLY', defaultValue: false, description: 'Run only specs changed vs {{targetBranch}} (agent MRs)')
+  }
+  environment {
+    {{baseUrlEnv}} = credentials('qa-base-url')
+    HOME = "${env.WORKSPACE}"
+  }
+  stages {
+    stage('Install') { steps { sh 'npm ci' } }
+    stage('Type-check') { steps { sh 'npx tsc --noEmit || true' } }
+    stage('API tests') {
+      steps {
+        sh '''
+          if [ "$CHANGED_ONLY" = "true" ]; then
+            git fetch origin {{targetBranch}}
+            SPECS=$(git diff --name-only --diff-filter=AM origin/{{targetBranch}}...HEAD -- "{{apiDir}}" | grep -E '\\.(spec|test)\\.[cm]?[jt]s$' || true)
+            [ -z "$SPECS" ] && echo "no spec changes" && exit 0
+          fi
+          {{runCommand}} $SPECS $QA_TEST_ARGS
+        '''
+      }
+    }
+  }
+  post {
+    always {
+      junit testResults: 'test-results/junit.xml', allowEmptyResults: true
+      archiveArtifacts artifacts: 'playwright-report/**, test-results/**', allowEmptyArchive: true
+    }
+  }
+}
