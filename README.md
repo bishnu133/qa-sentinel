@@ -127,6 +127,10 @@ Gap-report jobs never block developers: they are `allow_failure` in GitLab and U
 - **v0.4 – Mobile adapter:** WebdriverIO + Appium; all preconditions created through the API helpers from Phase 2.
 - Contract-test suggestions (Pact) for cross-service changes.
 
+## Design and review
+
+[docs/PROJECT_REVIEW.md](docs/PROJECT_REVIEW.md) covers the problem, design decisions, architecture, what is verified, known gaps and open questions.
+
 ## Contributing
 
 See [CONTRIBUTING.md](CONTRIBUTING.md). The most valuable contributions are framework adapters (new `write-*-test` skills and scaffolds) and real-world feedback on agent output.
