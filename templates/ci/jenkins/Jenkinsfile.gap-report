@@ -30,7 +30,7 @@ pipeline {
     }
     stage('Gap report') {
       steps {
-        sh 'npm i -g --prefix "$WORKSPACE/.npm-global" @anthropic-ai/claude-code qa-sentinel@0.1.1'
+        sh 'npm i -g --prefix "$WORKSPACE/.npm-global" @anthropic-ai/claude-code "${QA_SENTINEL_PACKAGE:-qa-sentinel@0.2.0}"'
         sh '''
           export PATH="$WORKSPACE/.npm-global/bin:$PATH"
           SERVICE="${QA_SERVICE_NAME:-$JOB_BASE_NAME}"

@@ -25,7 +25,7 @@ pipeline {
     stage('Prepare') {
       steps {
         sh 'npm ci'
-        sh 'npm i -g --prefix "$WORKSPACE/.npm-global" @anthropic-ai/claude-code qa-sentinel@0.1.1'
+        sh 'npm i -g --prefix "$WORKSPACE/.npm-global" @anthropic-ai/claude-code "${QA_SENTINEL_PACKAGE:-qa-sentinel@0.2.0}"'
         dir("/tmp/services/${params.QA_SERVICE_NAME}") {
           git url: params.QA_SERVICE_REPO, branch: 'main', credentialsId: 'gitlab-checkout'
           // Pin to the merged commit and drop the remote before any agent runs.

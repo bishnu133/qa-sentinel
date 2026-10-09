@@ -1,3 +1,4 @@
+import fs from "node:fs";
 import path from "node:path";
 import { loadConfig } from "../config.js";
 import { formatUsage, runClaude } from "../claude.js";
@@ -23,7 +24,7 @@ export async function learnCommand(o: LearnOptions): Promise<number> {
 
   const before = snapshotTree(cwd);
   const policy = learnPolicy();
-  const serviceDirs = c.workspace.services.map((s) => path.resolve(cwd, s.path));
+  const serviceDirs = c.workspace.services.map((s) => path.resolve(cwd, s.path)).filter((d) => fs.existsSync(d));
   const perms = claudePermissions({ write: policy, bash: [], readOnlyDirs: serviceDirs });
   const res = await runClaude({
     cwd,

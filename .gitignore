@@ -3,3 +3,4 @@ dist/
 *.tgz
 .qa-sentinel/
 bench/results/runs/
+bench/replay-results/runs/

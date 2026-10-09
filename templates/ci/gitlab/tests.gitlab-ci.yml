@@ -14,7 +14,9 @@
 #   the QA environment. Generated tests are code; isolate where they run.
 
 variables:
-  QA_SENTINEL_VERSION: "0.1.1"
+  QA_SENTINEL_VERSION: "0.2.0"
+  # Where to install qa-sentinel from. Until it is on npm, use the GitHub repo, e.g. "github:bishnu133/qa-sentinel#main".
+  QA_SENTINEL_PACKAGE: "qa-sentinel@${QA_SENTINEL_VERSION}"
 
 .qa-node:
   image: mcr.microsoft.com/playwright:v1.49.0-noble
@@ -32,12 +34,15 @@ qa-generate:
   resource_group: qa-sentinel-generate
   timeout: 45m
   script:
-    - npm i -g @anthropic-ai/claude-code "qa-sentinel@${QA_SENTINEL_VERSION}"
+    - npm i -g @anthropic-ai/claude-code "${QA_SENTINEL_PACKAGE}"
     - git clone "https://gitlab-ci-token:${CI_JOB_TOKEN}@${CI_SERVER_HOST}/${QA_SERVICE_PROJECT}.git" "/tmp/services/$QA_SERVICE_NAME"
     # Pin the service to the merged commit and drop the token-bearing remote before any agent runs.
     - git -C "/tmp/services/$QA_SERVICE_NAME" checkout --quiet --detach "$QA_SERVICE_SHA"
     - git -C "/tmp/services/$QA_SERVICE_NAME" remote remove origin
     - git config user.name "qa-sentinel" && git config user.email "qa-sentinel@noreply.local"
+    # Optional ephemeral QA environment (e.g. start the services under test). Set QA_ENV_START in your
+    # .gitlab-ci.yml variables, e.g. "source qa-env/start.sh"; it may export {{baseUrlEnv}}.
+    - if [ -n "$QA_ENV_START" ]; then eval "$QA_ENV_START"; fi
     - git remote set-url origin "${CI_SERVER_URL}/${CI_PROJECT_PATH}.git"   # strip the job token GitLab put in .git/config
     - >
       qa-sentinel generate
@@ -62,7 +67,10 @@ qa-agent-mr-checks:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
       changes: ["{{apiDir}}/**/*"]
   script:
-    - npm i -g "qa-sentinel@${QA_SENTINEL_VERSION}"
+    - npm i -g "${QA_SENTINEL_PACKAGE}"
+    # Optional ephemeral QA environment (e.g. start the services under test). Set QA_ENV_START in your
+    # .gitlab-ci.yml variables, e.g. "source qa-env/start.sh"; it may export {{baseUrlEnv}}.
+    - if [ -n "$QA_ENV_START" ]; then eval "$QA_ENV_START"; fi
     - qa-sentinel verify $QA_VERIFY_POLICY --base "$CI_MERGE_REQUEST_DIFF_BASE_SHA" --out qa-verify.md
   artifacts:
     when: always
@@ -80,6 +88,9 @@ api-tests:
     - if: $CI_PIPELINE_SOURCE == "trigger" || $CI_PIPELINE_SOURCE == "api"
     - if: $CI_COMMIT_BRANCH == "{{targetBranch}}"
   script:
+    # Optional ephemeral QA environment (e.g. start the services under test). Set QA_ENV_START in your
+    # .gitlab-ci.yml variables, e.g. "source qa-env/start.sh"; it may export {{baseUrlEnv}}.
+    - if [ -n "$QA_ENV_START" ]; then eval "$QA_ENV_START"; fi
     - {{runCommand}} ${QA_TEST_ARGS}
   artifacts:
     when: always

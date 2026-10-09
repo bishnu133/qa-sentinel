@@ -12,7 +12,9 @@
 # The service's name in qa-sentinel.config.yaml must equal $CI_PROJECT_NAME (or set QA_SERVICE_NAME).
 
 variables:
-  QA_SENTINEL_VERSION: "0.1.1"
+  QA_SENTINEL_VERSION: "0.2.0"
+  # Where to install qa-sentinel from. Until it is on npm, use the GitHub repo, e.g. "github:bishnu133/qa-sentinel#main".
+  QA_SENTINEL_PACKAGE: "qa-sentinel@${QA_SENTINEL_VERSION}"
   QA_SERVICE_NAME: "$CI_PROJECT_NAME"
 
 .qa-sentinel:
@@ -20,7 +22,7 @@ variables:
   variables:
     GIT_DEPTH: 0
   before_script:
-    - npm i -g @anthropic-ai/claude-code "qa-sentinel@${QA_SENTINEL_VERSION}"
+    - npm i -g @anthropic-ai/claude-code "${QA_SENTINEL_PACKAGE}"
     - git clone --depth 1 --branch {{targetBranch}} "https://gitlab-ci-token:${CI_JOB_TOKEN}@${CI_SERVER_HOST}/${QA_TESTS_PROJECT}.git" /tmp/qa-tests
     - git -C /tmp/qa-tests remote remove origin   # no token in .git/config for the agent to read
     - (cd /tmp/qa-tests && npm ci --ignore-scripts)

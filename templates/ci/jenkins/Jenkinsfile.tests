@@ -17,7 +17,7 @@ pipeline {
       when { expression { params.CHANGED_ONLY } }
       steps {
         sh '''
-          npm i -g --prefix "$WORKSPACE/.npm-global" qa-sentinel@0.1.1
+          npm i -g --prefix "$WORKSPACE/.npm-global" "${QA_SENTINEL_PACKAGE:-qa-sentinel@0.2.0}"
           export PATH="$WORKSPACE/.npm-global/bin:$PATH"
           git fetch origin {{targetBranch}}
           qa-sentinel verify --policy --base origin/{{targetBranch}} --out qa-verify.md
