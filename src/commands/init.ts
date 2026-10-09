@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import YAML from "yaml";
 import { confirm, input, select } from "@inquirer/prompts";
-import { CONFIG_FILE, type Config, configPath, writeConfig } from "../config.js";
+import { CONFIG_FILE, type Config, ConfigSchema, configPath, writeConfig } from "../config.js";
 import { defaultRunCommand, detectProject, discoverServices, type Detection } from "../detect.js";
 import { ensureDir, readJson, writeFileSafe } from "../fsutil.js";
 import { listTemplateDir, readTemplate, render, type TemplateVars } from "../templates.js";
@@ -95,7 +95,8 @@ export async function initCommand(opts: InitOptions): Promise<Config> {
       : readJson<any>(path.join(cwd, "package.json"))?.name ?? path.basename(cwd));
 
   const apiDir = mode === "existing" ? det.apiDir ?? "tests/api" : "tests/api";
-  const config: Config = {
+  // Parse through the schema so every default (guardrails, limits, verification) is written out explicitly.
+  const config: Config = ConfigSchema.parse({
     version: 1,
     mode,
     project: { name: projectName },
@@ -110,24 +111,11 @@ export async function initCommand(opts: InitOptions): Promise<Config> {
         helpersDir: mode === "scratch" ? "src/api" : guessHelpersDir(cwd),
         runCommand: defaultRunCommand(apiFramework),
         baseUrlEnv: "QA_BASE_URL",
+        extraWritePaths: mode === "scratch" ? ["src/fixtures/**", "src/data/**", "src/schemas/**"] : guessExtraWritePaths(cwd),
       },
-      web: { enabled: false, framework: "playwright", healing: "none" },
-      mobile: { enabled: false, framework: "webdriverio-appium" },
     },
-    requirements: { source: "mr-description", jira: { projectKeys: [] } },
-    ci: {
-      platform: ci,
-      scm: "gitlab",
-      gitlabUrl: "https://gitlab.com",
-      targetBranch: "main",
-    },
-    agent: {
-      maxTurns: { gapReport: 30, generate: 60, learn: 40 },
-      maxFixAttempts: 3,
-      skipPaths: ["**/*.md", "docs/**", "**/*.lock", "**/package-lock.json", ".gitlab-ci.yml", "Jenkinsfile"],
-    },
-    guardrails: { forbiddenUrlPatterns: ["prod", "production"], allowAssertionRemoval: false },
-  };
+    ci: { platform: ci },
+  });
 
   writeConfig(cwd, config);
   log.ok(`wrote ${CONFIG_FILE}`);
@@ -154,6 +142,12 @@ function reportDetection(det: Detection) {
   log.step(`frameworks: ${fw.length ? fw.join(", ") : "none detected"}`);
   log.step(`test files: ${det.testFiles.length} (API: ${det.apiTestFiles.length}${det.apiDir ? ` in ${det.apiDir}` : ""})`);
   if (det.ci.gitlab || det.ci.jenkins) log.step(`CI: ${[det.ci.gitlab && "GitLab", det.ci.jenkins && "Jenkins"].filter(Boolean).join(", ")}`);
+}
+
+/** Fixture / data / schema folders that exist in an existing project; the agent may write there too. */
+function guessExtraWritePaths(cwd: string): string[] {
+  const candidates = ["fixtures", "src/fixtures", "test/fixtures", "tests/fixtures", "data", "src/data", "test-data", "factories", "src/factories", "schemas", "src/schemas"];
+  return candidates.filter((d) => fs.existsSync(path.join(cwd, d))).map((d) => `${d}/**`);
 }
 
 function guessHelpersDir(cwd: string): string {

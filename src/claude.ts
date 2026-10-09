@@ -1,22 +1,36 @@
-import { spawn, spawnSync } from "node:child_process";
+import { spawnSync } from "node:child_process";
 import { log } from "./log.js";
+import { runProcess } from "./proc.js";
 
 export interface ClaudeRunOptions {
   cwd: string;
   prompt: string;
   maxTurns: number;
-  allowedTools: string[];
+  /** Tools that exist in the session at all (`--tools`). */
+  tools: string[];
+  /** Pre-approved rules (`--allowedTools`); everything else is denied because the mode is dontAsk. */
+  allow: string[];
+  /** Deny rules, passed through `--settings`. */
+  deny: string[];
   addDirs?: string[];
   model?: string;
+  maxBudgetUsd?: number;
+  timeoutMs: number;
+  env: NodeJS.ProcessEnv;
   dryRun?: boolean;
 }
 
+export type ClaudeStatus = "ok" | "error" | "timeout" | "max-turns" | "max-budget";
+
 export interface ClaudeRunResult {
   ok: boolean;
+  status: ClaudeStatus;
   result: string;
   costUsd?: number;
   turns?: number;
   durationMs?: number;
+  /** Tool calls Claude Code refused (from the result JSON), for diagnosing over-tight permissions. */
+  denials?: unknown[];
   raw?: unknown;
 }
 
@@ -27,49 +41,65 @@ export function claudeAvailable(): { ok: boolean; version?: string } {
 }
 
 export function buildClaudeArgs(o: ClaudeRunOptions): string[] {
-  const args = ["-p", o.prompt, "--output-format", "json", "--max-turns", String(o.maxTurns)];
-  if (o.allowedTools.length) args.push("--allowedTools", o.allowedTools.join(","));
+  const args = [
+    "-p",
+    o.prompt,
+    "--output-format",
+    "json",
+    "--max-turns",
+    String(o.maxTurns),
+    "--permission-mode",
+    "dontAsk",
+    "--tools",
+    o.tools.join(","),
+  ];
+  if (o.allow.length) args.push("--allowedTools", o.allow.join(","));
+  if (o.deny.length) args.push("--settings", JSON.stringify({ permissions: { deny: o.deny } }));
   for (const d of o.addDirs ?? []) args.push("--add-dir", d);
   if (o.model) args.push("--model", o.model);
+  if (o.maxBudgetUsd !== undefined) args.push("--max-budget-usd", String(o.maxBudgetUsd));
   return args;
 }
 
-/** Run Claude Code headless and parse its JSON result. */
+export function statusFromJson(json: any, code: number | null): ClaudeStatus {
+  const sub = String(json?.subtype ?? "");
+  if (sub.includes("max_turns")) return "max-turns";
+  if (sub.includes("budget")) return "max-budget";
+  if (code === 0 && !json?.is_error && (sub === "" || sub === "success")) return "ok";
+  return "error";
+}
+
+/** Run Claude Code headless with a hard timeout, a budget cap and a scrubbed environment. */
 export async function runClaude(o: ClaudeRunOptions): Promise<ClaudeRunResult> {
   const args = buildClaudeArgs(o);
   if (o.dryRun) {
-    log.dim("[dry-run] claude " + args.map((a) => (/\s/.test(a) ? JSON.stringify(a) : a)).join(" "));
-    return { ok: true, result: "(dry run: Claude was not invoked)" };
+    log.dim("[dry-run] claude " + args.map((a) => (/[\s"{]/.test(a) ? JSON.stringify(a) : a)).join(" "));
+    return { ok: true, status: "ok", result: "(dry run: Claude was not invoked)" };
   }
-  return new Promise((resolve) => {
-    const child = spawn("claude", args, { cwd: o.cwd, env: process.env, stdio: ["ignore", "pipe", "pipe"] });
-    let stdout = "";
-    let stderr = "";
-    child.stdout.on("data", (d) => (stdout += d));
-    child.stderr.on("data", (d) => {
-      stderr += d;
-      process.stderr.write(d);
-    });
-    child.on("error", (err) => resolve({ ok: false, result: `Could not start claude: ${err.message}` }));
-    child.on("close", (code) => {
-      try {
-        const json = JSON.parse(stdout.trim().split("\n").pop() ?? "{}");
-        resolve({
-          ok: code === 0 && !json.is_error,
-          result: String(json.result ?? ""),
-          costUsd: json.total_cost_usd ?? json.cost_usd,
-          turns: json.num_turns,
-          durationMs: json.duration_ms,
-          raw: json,
-        });
-      } catch {
-        resolve({ ok: false, result: stdout || stderr || `claude exited with code ${code}` });
-      }
-    });
-  });
+  const r = await runProcess("claude", args, { cwd: o.cwd, env: o.env, timeoutMs: o.timeoutMs, echoStderr: true });
+  if (r.error) return { ok: false, status: "error", result: `Could not start claude: ${r.error}` };
+  if (r.timedOut) {
+    return { ok: false, status: "timeout", result: `Agent run exceeded ${Math.round(o.timeoutMs / 60000)} min and was stopped.`, durationMs: r.durationMs };
+  }
+  try {
+    const json = JSON.parse(r.stdout.trim().split("\n").pop() ?? "{}");
+    const status = statusFromJson(json, r.code);
+    return {
+      ok: status === "ok",
+      status,
+      result: String(json.result ?? json.subtype ?? ""),
+      costUsd: json.total_cost_usd ?? json.cost_usd,
+      turns: json.num_turns,
+      durationMs: json.duration_ms ?? r.durationMs,
+      denials: Array.isArray(json.permission_denials) ? json.permission_denials : [],
+      raw: json,
+    };
+  } catch {
+    return { ok: false, status: "error", result: r.stdout || r.stderr || `claude exited with code ${r.code}` };
+  }
 }
 
-export function formatUsage(r: ClaudeRunResult): string {
+export function formatUsage(r: Pick<ClaudeRunResult, "turns" | "durationMs" | "costUsd">): string {
   const parts: string[] = [];
   if (r.turns !== undefined) parts.push(`${r.turns} turns`);
   if (r.durationMs !== undefined) parts.push(`${Math.round(r.durationMs / 1000)}s`);

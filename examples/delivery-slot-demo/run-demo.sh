@@ -10,7 +10,7 @@ echo "workspace: $W"
 
 # 1. Service repo: original code, then the dev's change
 mkdir -p "$W/orders-service/src" && cd "$W/orders-service"
-cp "$HERE/orders-service/package.json" "$HERE/orders-service/openapi.yaml" .
+cp "$HERE/orders-service/package.json" "$HERE/orders-service/openapi.yaml" "$HERE/orders-service/.gitignore" .
 cp "$HERE/orders-service/src/server.before.js" src/server.js
 git init -q -b main && git add -A && git -c user.email=dev@x -c user.name=dev commit -qm "orders api"
 cp "$HERE/orders-service/src/server.after.js" src/server.js

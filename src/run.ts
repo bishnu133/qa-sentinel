@@ -1,24 +1,13 @@
+import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
-import type { Config, ServiceConfig } from "./config.js";
+import { CONFIG_FILE, type Config, type ServiceConfig } from "./config.js";
 import { ensureDir } from "./fsutil.js";
+import { resolveSha } from "./git.js";
+import { scrubbedEnv } from "./env.js";
+import type { RequirementSnapshot } from "./requirements.js";
 
-/** Tools every agent run may use to read the workspace and delegate to sub-agents. */
-export const READ_TOOLS = ["Read", "Grep", "Glob", "Task", "Agent"];
-
-export function writeTools(c: Config): string[] {
-  const run = c.tests.api.runCommand.trim();
-  return [
-    ...READ_TOOLS,
-    "Edit",
-    "Write",
-    `Bash(${run}:*)`,
-    "Bash(npx tsc --noEmit:*)",
-    "Bash(npx eslint:*)",
-    "Bash(git status:*)",
-    "Bash(git diff:*)",
-  ];
-}
+export const VERSION = "0.1.1";
 
 export interface RunDir {
   id: string;
@@ -45,10 +34,17 @@ export function findService(c: Config, nameOrPath: string, cwd: string, override
   throw new Error(`Unknown service "${nameOrPath}". Add it to workspace.services or pass a valid path.`);
 }
 
-export function readStory(opts: { storyFile?: string; title?: string; description?: string }): string {
-  if (opts.storyFile && fs.existsSync(opts.storyFile)) return fs.readFileSync(opts.storyFile, "utf8");
-  const parts = [opts.title && `# ${opts.title}`, opts.description].filter(Boolean);
-  return parts.length ? parts.join("\n\n") : "(no story or acceptance criteria provided)";
+/** Environment for the agent process and for test runs: allowlisted, never carrying publisher credentials. */
+export function agentEnv(c: Config, env: NodeJS.ProcessEnv = process.env) {
+  return scrubbedEnv({ baseUrlEnv: c.tests.api.baseUrlEnv, passEnv: c.guardrails.passEnv, forAgent: true }, env);
+}
+export function testEnv(c: Config, env: NodeJS.ProcessEnv = process.env) {
+  return scrubbedEnv({ baseUrlEnv: c.tests.api.baseUrlEnv, passEnv: c.guardrails.passEnv, forAgent: false }, env);
+}
+
+/** The test command as a Bash permission rule, e.g. `npx playwright test --project=api *`. */
+export function bashRuleForTests(c: Config): string {
+  return `${c.tests.api.runCommand.trim()} *`;
 }
 
 /** Files the generate command must never commit. */
@@ -69,4 +65,68 @@ export function cleanAgentAnswer(text: string): string {
   const t = text.trim();
   const i = t.search(/^#{1,3} /m);
   return (i > 0 ? t.slice(i) : t).trim();
+}
+
+export interface Manifest {
+  qaSentinelVersion: string;
+  kind: string;
+  runId: string;
+  startedAt: string;
+  finishedAt?: string;
+  configSha256: string;
+  model?: string;
+  testRepo: { sha: string };
+  service: { name: string; path: string; base: string; head: string; changedFiles: string[] };
+  dependencies: { name: string; sha?: string }[];
+  requirements: Pick<RequirementSnapshot, "source" | "sourceUrl" | "revision" | "storyKey" | "approvalStatus"> & { acCount: number };
+  agent?: { status: string; turns?: number; durationMs?: number; costUsd?: number; deniedToolCalls?: number };
+  guardrails?: { violations: number; warnings: number };
+  verification?: { status: string };
+  outcome?: string;
+}
+
+export function startManifest(
+  cwd: string,
+  c: Config,
+  run: RunDir,
+  kind: string,
+  svc: { service: ServiceConfig; base: string; head: string; changedFiles: string[] },
+  req: RequirementSnapshot,
+): Manifest {
+  const cfg = fs.readFileSync(path.join(cwd, CONFIG_FILE));
+  const m: Manifest = {
+    qaSentinelVersion: VERSION,
+    kind,
+    runId: run.id,
+    startedAt: new Date().toISOString(),
+    configSha256: crypto.createHash("sha256").update(cfg).digest("hex"),
+    model: c.agent.model,
+    testRepo: { sha: safeSha(cwd) },
+    service: { name: svc.service.name, path: svc.service.path, base: svc.base, head: svc.head, changedFiles: svc.changedFiles },
+    dependencies: c.workspace.services
+      .filter((s) => svc.service.dependsOn.includes(s.name))
+      .map((s) => ({ name: s.name, sha: safeSha(path.resolve(cwd, s.path)) })),
+    requirements: {
+      source: req.source,
+      sourceUrl: req.sourceUrl,
+      revision: req.revision,
+      storyKey: req.storyKey,
+      approvalStatus: req.approvalStatus,
+      acCount: req.acceptanceCriteria.length,
+    },
+  };
+  writeManifest(run, m);
+  return m;
+}
+
+export function writeManifest(run: RunDir, m: Manifest): void {
+  fs.writeFileSync(path.join(run.dir, "manifest.json"), JSON.stringify(m, null, 2));
+}
+
+function safeSha(repo: string): string {
+  try {
+    return resolveSha(repo, "HEAD");
+  } catch {
+    return "unknown";
+  }
 }

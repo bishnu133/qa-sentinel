@@ -1,0 +1,69 @@
+{
+  "status": "VERIFIED",
+  "checks": [
+    {
+      "name": "preflight",
+      "status": "passed",
+      "detail": "localhost:3123 answered 404",
+      "durationMs": 67
+    },
+    {
+      "name": "typecheck",
+      "status": "passed",
+      "detail": "tsc --noEmit clean",
+      "durationMs": 2328
+    },
+    {
+      "name": "tests",
+      "status": "passed",
+      "detail": "6 passed, 1 skipped",
+      "durationMs": 2010
+    }
+  ],
+  "specs": [
+    "tests/api/orders/create-order.spec.ts"
+  ],
+  "cases": [
+    {
+      "name": "POST /orders › creates an order @service:orders-service @endpoint:POST_/orders @story:SHOP-42",
+      "file": "tests/api/orders/create-order.spec.ts",
+      "status": "passed"
+    },
+    {
+      "name": "POST /orders › returns 400 when qty is 0 @service:orders-service @endpoint:POST_/orders",
+      "file": "tests/api/orders/create-order.spec.ts",
+      "status": "passed"
+    },
+    {
+      "name": "POST /orders › returns 400 when deliverySlot is missing @service:orders-service @endpoint:POST_/orders @story:SHOP-42",
+      "file": "tests/api/orders/create-order.spec.ts",
+      "status": "passed"
+    },
+    {
+      "name": "POST /orders › returns 400 when deliverySlot is not an ISO date-time @service:orders-service @endpoint:POST_/orders @story:SHOP-42",
+      "file": "tests/api/orders/create-order.spec.ts",
+      "status": "passed"
+    },
+    {
+      "name": "POST /orders › returns 400 when deliverySlot is in the past @service:orders-service @endpoint:POST_/orders @story:SHOP-42",
+      "file": "tests/api/orders/create-order.spec.ts",
+      "status": "passed"
+    },
+    {
+      "name": "POST /orders › accepts 3 orders for the same slot @service:orders-service @endpoint:POST_/orders @story:SHOP-42",
+      "file": "tests/api/orders/create-order.spec.ts",
+      "status": "passed"
+    },
+    {
+      "name": "POST /orders › returns 409 for the 4th order in the same slot @service:orders-service @endpoint:POST_/orders @story:SHOP-42",
+      "file": "tests/api/orders/create-order.spec.ts",
+      "status": "skipped"
+    }
+  ],
+  "counts": {
+    "total": 7,
+    "passed": 6,
+    "failed": 0,
+    "skipped": 1
+  }
+}

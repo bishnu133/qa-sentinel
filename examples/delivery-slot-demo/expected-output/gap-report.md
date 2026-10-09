@@ -1,41 +1,46 @@
-### QA impact – orders-service
+### QA impact – orders-service · 🟠 High risk
 
-**Verdict:** 5 changes, 0 covered, 1 AC mismatch (high), 1 existing test broken. Fix the code or confirm the AC, then add tests before release.
+**Verdict:** 1 requirement conflict (AC-3), 1 existing test broken, 4 coverage gaps. Resolve AC-3 before release.
 
-**Run these tests**
-- `tests/api/orders/create-order.spec.ts`
-  - `creates an order` sends no `deliverySlot`, so it now gets 400 instead of 201 and fails.
-  - `returns 400 when qty is 0` still passes, but only because the slot is missing. It no longer tests the qty rule.
-  - The local `Order` zod schema strips unknown keys, so it can't catch a missing or wrong `deliverySlot` in the 201 response.
+The story approval is unverified, so the ACs are treated as provisional.
 
-**Coverage gaps**
-| Change | Status | Missing scenarios |
-| --- | --- | --- |
-| POST /orders – `deliverySlot` required (c1) | missing | no 400 for missing, unparseable, null or empty slot |
-| POST /orders – past slot rejected (c2) | missing | no 400 for a past slot or a slot equal to now; no 201 for a slot just in the future |
-| POST /orders – slot cap → 409 (c3, c4) | missing | no 409 test with body `delivery slot is full`; no 201 for the order just under the cap; no check that another slot still accepts orders |
-| POST /orders – 201 echoes `deliverySlot` (c5) | missing | no echo assertion; `Order` zod schema lacks `deliverySlot` |
+**Recommended QA action:** Run `create-order.spec.ts` now. Its happy-path test will fail because it sends no `deliverySlot`. Update that test, then add the missing scenarios. Ask the story owner whether the slot limit is 3 or 5 before writing the capacity test.
 
-Test data: `src/data/builders.ts` has no order or slot builder. Capacity tests need a unique future slot per test.
+| Change | Risk | Oracle | Coverage | Decision |
+| --- | --- | --- | --- | --- |
+| POST /orders – `deliverySlot` required, missing or invalid gives 400 | 🟠 high | AC-1 (unverified approval) | missing | update |
+| POST /orders – past `deliverySlot` gives 400 | 🟡 medium | AC-2 | missing | create |
+| POST /orders – slot capacity 5 (AC-3 says 3), 409 when full | 🟠 high | conflicting | missing | review |
+| POST /orders – response echoes `deliverySlot` | 🟡 medium | AC-4 | missing | update |
 
-**Acceptance criteria check**
-- ⚠️ **High.** AC3 says a slot accepts at most 3 orders and the 4th gets 409. The code sets `MAX_ORDERS_PER_SLOT = 5` (`src/server.js`), so orders 4 and 5 return 201 and the 409 starts at order 6. Please confirm which is right. The tests should follow the AC.
-- ⚠️ **Medium.** AC1 says the slot must be ISO 8601. The code uses `Date.parse`, which also accepts non-ISO strings such as `March 7, 2030 10:00`, so these return 201 instead of 400.
-- ℹ️ The cap compares `deliverySlot` strings exactly. `...Z` and `...+00:00` for the same instant count as different slots. The AC doesn't say either way.
+**Run these existing tests**
+- `tests/api/orders/create-order.spec.ts` – "creates an order" (line 8) posts without `deliverySlot` and expects 201. It now gets 400, so it fails and must be updated.
+- `tests/api/orders/create-order.spec.ts` – "returns 400 when qty is 0" (line 15) also omits `deliverySlot`. It still returns 400, but only because `qty` is validated first. After the update it should send a valid slot, so it keeps testing `qty`.
 
-**Spec drift** (`openapi.yaml`)
-- `deliverySlot` is missing from the POST /orders request schema and from `required`.
-- The 409 response is not documented.
-- The 201 response has no schema, so the echoed `deliverySlot` is undocumented.
-- The 400 response doesn't describe the new slot cases.
+**Missing scenarios**
+- 400 when `deliverySlot` is missing (AC-1)
+- 400 when `deliverySlot` is not an ISO date-time (AC-1)
+- 400 when `deliverySlot` is in the past (AC-2)
+- 201 with `deliverySlot` echoed in the body. Extend the `Order` schema at `create-order.spec.ts:5` (AC-4)
+- 409 "delivery slot is full" on the 4th order for the same slot (AC-3), written to the AC and marked fixme
+- Orders in a different slot are not blocked by a full slot (AC-3)
 
-<details><summary>Changes analysed (5)</summary>
+**Requirement conflicts – need a human decision**
+- ⚠️ AC-3 says "at most 3 orders; the 4th → 409". The code sets `MAX_ORDERS_PER_SLOT = 5` (`src/server.js:5`), so the 4th and 5th orders return 201. The capacity test will be written to the AC and marked fixme until resolved.
 
-- c1 validation-change POST /orders – `deliverySlot` required; missing, empty or unparseable gives 400 (`src/server.js`, `Date.parse` check)
-- c2 validation-change POST /orders – slot at or before now gives 400 "must be in the future"
-- c3 business-rule POST /orders – cap of 5 orders per slot (AC says 3); in-memory, exact string match
-- c4 error-handling POST /orders – new 409 `{error: "delivery slot is full"}`
-- c5 contract-change POST /orders – request accepts `deliverySlot`; 201 echoes it unchanged
+**Spec drift**
+- `openapi.yaml` does not list `deliverySlot` in the request schema or its `required` fields.
+- `openapi.yaml` has no 409 response for POST /orders.
+
+<details><summary>Evidence (4 changes)</summary>
+
+- c1 validation-change POST /orders – `deliverySlot` is now required and must parse as a date – `src/server.js:13-14`. This breaks every existing client that omits it. `test-map.yaml` maps this endpoint to `create-order.spec.ts`, but no assertion covers the field. Risk: breaking contract change.
+- c2 validation-change POST /orders – the slot must be after `Date.now()` – `src/server.js:15`. Risk: time-dependent, so tests need a relative future date.
+- c3 behaviour-change POST /orders – 409 when a slot already holds `MAX_ORDERS_PER_SLOT` (5) orders – `src/server.js:5,16-18`. This conflicts with AC-3 (3). Capacity is compared by exact string match on `deliverySlot`, so equivalent timestamps in different formats (`Z` vs `+00:00`) count as different slots. The story does not say whether that is intended. Risk: conflicting oracle, and the counter is in-memory state shared across tests.
+- c4 response-change POST /orders – the 201 body now includes `deliverySlot` – `src/server.js:19`. The existing `Order` zod schema does not check it.
+- Coverage proof: `create-order.spec.ts` contains only two tests. Neither references `deliverySlot` or 409.
 </details>
 
-<sub>qa-sentinel gap report · 11 turns · 67s · $0.27</sub>
+**Requirements:** SHOP-42 from [story-file](story-SHOP-42.md) @ sha256:591fcc21c1487cb6 · 4 AC parsed · approval unverified
+
+<sub>qa-sentinel 0.1.1 gap report · orders-service@d8492a67 · 9 turns · 20s · $0.08</sub>
