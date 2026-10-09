@@ -2,6 +2,7 @@ import fs from "node:fs";
 import { z } from "zod";
 import type { Config } from "./config.js";
 import { type GitLabContext, mergeRequestsForCommit } from "./scm/gitlab.js";
+import { fetchIssue, jiraContext } from "./scm/jira.js";
 
 /**
  * A frozen copy of the requirements a run used, with where they came from.
@@ -10,7 +11,7 @@ import { type GitLabContext, mergeRequestsForCommit } from "./scm/gitlab.js";
 export const RequirementSnapshotSchema = z.object({
   schemaVersion: z.literal(1),
   /** Where the text came from. `none` means no requirements were found. */
-  source: z.enum(["story-file", "gitlab-mr", "none"]),
+  source: z.enum(["story-file", "jira", "gitlab-mr", "none"]),
   sourceUrl: z.string().optional(),
   /** Revision of the source: MR updated_at, or a file content hash. */
   revision: z.string().optional(),
@@ -18,11 +19,13 @@ export const RequirementSnapshotSchema = z.object({
   title: z.string().optional(),
   acceptanceCriteria: z.array(z.object({ id: z.string(), text: z.string() })),
   /**
-   * qa-sentinel cannot tell whether a description was approved; only a tracker (e.g. Jira status) can.
-   * `unverified` = text found but approval unknown; `missing` = nothing usable found.
+   * Only a tracker can say a story is approved: Jira stories in requirements.jira.approvedStatuses are `approved`.
+   * `unverified` = text found but approval unknown (MR text, story files, other Jira statuses); `missing` = nothing found.
    */
   approvalStatus: z.enum(["approved", "unverified", "missing"]),
   rawText: z.string(),
+  /** Tracker status at capture time (Jira). */
+  trackerStatus: z.string().optional(),
   capturedAt: z.string(),
 });
 export type RequirementSnapshot = z.infer<typeof RequirementSnapshotSchema>;
@@ -93,14 +96,19 @@ export interface ResolveOptions {
   mr?: { title?: string; description?: string; url?: string; updatedAt?: string; sourceBranch?: string };
   /** For post-merge generation: look up the MR that introduced this commit. */
   lookup?: { ctx: GitLabContext; project: string; sha: string };
+  /** Extra places a story key may appear: branch names, commit messages. */
+  keyHints?: (string | undefined)[];
+  env?: NodeJS.ProcessEnv;
 }
 
 /**
- * Resolve requirements in priority order: explicit story file → MR context → MR found from the merged commit.
- * Never throws for missing requirements; the caller decides (see `requirements.required`).
+ * Resolve requirements in priority order: explicit story file → Jira story (when source is jira) →
+ * MR context → MR found from the merged commit. Never throws for missing requirements; the caller decides
+ * (see `requirements.required`).
  */
 export async function resolveRequirements(c: Config, o: ResolveOptions): Promise<RequirementSnapshot> {
   if (c.requirements.source === "none") return emptySnapshot(c);
+  const env = o.env ?? process.env;
 
   if (o.storyFile) {
     if (!fs.existsSync(o.storyFile)) throw new Error(`--story-file not found: ${o.storyFile}`);
@@ -113,28 +121,50 @@ export async function resolveRequirements(c: Config, o: ResolveOptions): Promise
     });
   }
 
+  // The MR behind a merged commit is needed both as a fallback and as a source of the story key.
+  let looked: any;
+  if (o.lookup && !(o.mr && (o.mr.title || o.mr.description))) {
+    const mrs = await mergeRequestsForCommit(o.lookup.ctx, o.lookup.project, o.lookup.sha);
+    looked = mrs.find((m) => m.state === "merged") ?? mrs[0];
+  }
+
+  if (c.requirements.source === "jira") {
+    const keys = [o.mr?.title, o.mr?.sourceBranch, looked?.title, looked?.source_branch, ...(o.keyHints ?? []), o.mr?.description, looked?.description];
+    const key = extractStoryKey(jiraKeyPattern(c), ...keys);
+    const jctx = jiraContext(c.requirements.jira.baseUrl, env);
+    if (key && jctx) {
+      const issue = await fetchIssue(jctx, key, c.requirements.jira.acceptanceCriteriaField);
+      const text = [`# ${issue.key} ${issue.summary}`, issue.description, issue.acceptanceCriteria ? `## Acceptance criteria\n${issue.acceptanceCriteria}` : ""].filter(Boolean).join("\n\n");
+      const snap = snapshot("jira", text, c, { sourceUrl: issue.url, revision: issue.updated, title: issue.summary, trackerStatus: issue.status, storyKey: issue.key });
+      const approved = c.requirements.jira.approvedStatuses.some((s) => s.toLowerCase() === issue.status.toLowerCase());
+      return { ...snap, approvalStatus: snap.rawText.trim() ? (approved ? "approved" : "unverified") : "missing" };
+    }
+  }
+
   if (o.mr && (o.mr.title || o.mr.description)) {
     return snapshot("gitlab-mr", [o.mr.title && `# ${o.mr.title}`, o.mr.description].filter(Boolean).join("\n\n"), c, {
       sourceUrl: o.mr.url,
       revision: o.mr.updatedAt,
       title: o.mr.title,
-      keyHints: [o.mr.sourceBranch],
+      keyHints: [o.mr.sourceBranch, ...(o.keyHints ?? [])],
     });
   }
 
-  if (o.lookup) {
-    const mrs = await mergeRequestsForCommit(o.lookup.ctx, o.lookup.project, o.lookup.sha);
-    const merged = mrs.find((m) => m.state === "merged") ?? mrs[0];
-    if (merged) {
-      return snapshot("gitlab-mr", [`# ${merged.title}`, merged.description ?? ""].join("\n\n"), c, {
-        sourceUrl: merged.web_url,
-        revision: merged.updated_at,
-        title: merged.title,
-        keyHints: [merged.source_branch],
-      });
-    }
+  if (looked) {
+    return snapshot("gitlab-mr", [`# ${looked.title}`, looked.description ?? ""].join("\n\n"), c, {
+      sourceUrl: looked.web_url,
+      revision: looked.updated_at,
+      title: looked.title,
+      keyHints: [looked.source_branch, ...(o.keyHints ?? [])],
+    });
   }
   return emptySnapshot(c);
+}
+
+/** Restrict story keys to the configured Jira projects when given (avoids matching e.g. UTF-8). */
+function jiraKeyPattern(c: Config): string {
+  const keys = c.requirements.jira.projectKeys;
+  return keys.length ? `(?:${keys.map((k) => k.replace(/[^A-Z0-9]/gi, "")).join("|")})-\\d+` : c.requirements.storyKeyPattern;
 }
 
 /** Markdown fed to the agents as story.md. States plainly when requirements are missing. */
@@ -161,5 +191,6 @@ export function storyMarkdown(s: RequirementSnapshot): string {
 export function requirementsLine(s: RequirementSnapshot): string {
   if (s.source === "none") return "**Requirements:** none found. Tests can only be checked against the API contract and code.";
   const where = s.sourceUrl ? `[${s.source}](${s.sourceUrl})` : s.source;
-  return `**Requirements:** ${s.storyKey ?? s.title ?? "story"} from ${where}${s.revision ? ` @ ${s.revision}` : ""} · ${s.acceptanceCriteria.length} AC parsed · approval ${s.approvalStatus}`;
+  const status = s.trackerStatus ? ` (status "${s.trackerStatus}")` : "";
+  return `**Requirements:** ${s.storyKey ?? s.title ?? "story"} from ${where}${s.revision ? ` @ ${s.revision}` : ""} · ${s.acceptanceCriteria.length} AC parsed · approval ${s.approvalStatus}${status}`;
 }

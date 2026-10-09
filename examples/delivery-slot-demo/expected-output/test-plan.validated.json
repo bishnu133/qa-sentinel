@@ -1,0 +1,320 @@
+{
+  "schemaVersion": 1,
+  "verdict": "1 requirement conflict (AC-3: cap is 5 in code, 3 in story), 1 broken happy-path test, 3 gaps – resolve AC-3 before release",
+  "recommendedAction": "Update create-order.spec.ts so the happy path sends a future deliverySlot and echoes it, add missing/invalid/past slot scenarios, and ask the PO whether the per-slot cap is 3 or 5 before writing the slot-full test.",
+  "changes": [
+    {
+      "id": "c1",
+      "type": "validation-change",
+      "endpoint": "POST /orders",
+      "summary": "deliverySlot is now required and must be a valid ISO date-time; missing or invalid returns 400",
+      "observable": true,
+      "requirementIds": [
+        "AC-1"
+      ],
+      "oracleStatus": "approved",
+      "riskFactors": [
+        "validation",
+        "breaking-contract"
+      ],
+      "evidence": [
+        {
+          "source": "source-code",
+          "file": "src/server.js",
+          "line": 14,
+          "reference": "if (!deliverySlot || Number.isNaN(slot)) return res.status(400)"
+        },
+        {
+          "source": "requirement",
+          "reference": "AC-1: deliverySlot is required on POST /orders (ISO 8601); missing or invalid -> 400"
+        }
+      ]
+    },
+    {
+      "id": "c2",
+      "type": "validation-change",
+      "endpoint": "POST /orders",
+      "summary": "deliverySlot in the past is rejected with 400",
+      "observable": true,
+      "requirementIds": [
+        "AC-2"
+      ],
+      "oracleStatus": "approved",
+      "riskFactors": [
+        "validation"
+      ],
+      "evidence": [
+        {
+          "source": "source-code",
+          "file": "src/server.js",
+          "line": 15,
+          "reference": "if (slot <= Date.now()) return res.status(400)"
+        },
+        {
+          "source": "requirement",
+          "reference": "AC-2: deliverySlot in the past -> 400"
+        }
+      ]
+    },
+    {
+      "id": "c3",
+      "type": "business-rule",
+      "endpoint": "POST /orders",
+      "summary": "A delivery slot is capped per slot and returns 409 when full; code allows 5 orders, story says 3",
+      "observable": true,
+      "requirementIds": [
+        "AC-3"
+      ],
+      "oracleStatus": "conflicting",
+      "riskFactors": [
+        "business-rule",
+        "conflicting-oracle",
+        "write-path-error-handling"
+      ],
+      "evidence": [
+        {
+          "source": "source-code",
+          "file": "src/server.js",
+          "line": 5,
+          "reference": "const MAX_ORDERS_PER_SLOT = 5"
+        },
+        {
+          "source": "source-code",
+          "file": "src/server.js",
+          "line": 16,
+          "reference": "if (orders.filter(...).length >= MAX_ORDERS_PER_SLOT) return res.status(409)"
+        },
+        {
+          "source": "requirement",
+          "reference": "AC-3: a slot accepts at most 3 orders; the 4th order for the same slot -> 409 \"delivery slot is full\""
+        }
+      ]
+    },
+    {
+      "id": "c4",
+      "type": "contract-change",
+      "endpoint": "POST /orders",
+      "summary": "The created order response now includes deliverySlot",
+      "observable": true,
+      "requirementIds": [
+        "AC-4"
+      ],
+      "oracleStatus": "approved",
+      "riskFactors": [
+        "non-breaking-contract"
+      ],
+      "evidence": [
+        {
+          "source": "source-code",
+          "file": "src/server.js",
+          "line": 19,
+          "reference": "const order = { id, item, qty, deliverySlot }"
+        },
+        {
+          "source": "requirement",
+          "reference": "AC-4: the created order echoes deliverySlot"
+        }
+      ]
+    }
+  ],
+  "decisions": [
+    {
+      "changeId": "c1",
+      "coverage": "outdated",
+      "decision": "update",
+      "existingTests": [
+        "tests/api/orders/create-order.spec.ts"
+      ],
+      "proposedScenarios": [
+        {
+          "title": "returns 400 when deliverySlot is missing",
+          "requirementIds": [
+            "AC-1"
+          ],
+          "setup": [],
+          "assertions": [
+            "status 400",
+            "error mentions deliverySlot"
+          ]
+        },
+        {
+          "title": "returns 400 when deliverySlot is not an ISO date-time",
+          "requirementIds": [
+            "AC-1"
+          ],
+          "setup": [],
+          "assertions": [
+            "status 400",
+            "error mentions deliverySlot"
+          ]
+        }
+      ],
+      "evidence": [
+        {
+          "source": "existing-test",
+          "file": "tests/api/orders/create-order.spec.ts",
+          "line": 9,
+          "reference": "posts { item, qty } without deliverySlot and expects 201"
+        }
+      ],
+      "reason": "spec exists for POST /orders; its happy path sends no deliverySlot and now gets 400, and no test covers missing/invalid slots"
+    },
+    {
+      "changeId": "c2",
+      "coverage": "missing",
+      "decision": "create",
+      "existingTests": [],
+      "proposedScenarios": [
+        {
+          "title": "returns 400 when deliverySlot is in the past",
+          "requirementIds": [
+            "AC-2"
+          ],
+          "setup": [],
+          "assertions": [
+            "status 400",
+            "error says deliverySlot must be in the future"
+          ]
+        }
+      ],
+      "evidence": [
+        {
+          "source": "existing-test",
+          "file": "tests/api/orders/create-order.spec.ts",
+          "reference": "no scenario sends a deliverySlot at all"
+        }
+      ],
+      "reason": "no existing test exercises past slots"
+    },
+    {
+      "changeId": "c3",
+      "coverage": "missing",
+      "decision": "review",
+      "existingTests": [],
+      "proposedScenarios": [],
+      "evidence": [
+        {
+          "source": "requirement",
+          "reference": "AC-3: at most 3 orders per slot"
+        },
+        {
+          "source": "source-code",
+          "file": "src/server.js",
+          "line": 5,
+          "reference": "const MAX_ORDERS_PER_SLOT = 5"
+        }
+      ],
+      "reason": "story says 3, code says 5; a human must confirm the cap. Once resolved, write the slot-full 409 test to the confirmed requirement (fixme if it stays unresolved), not from the code"
+    },
+    {
+      "changeId": "c4",
+      "coverage": "outdated",
+      "decision": "update",
+      "existingTests": [
+        "tests/api/orders/create-order.spec.ts"
+      ],
+      "proposedScenarios": [
+        {
+          "title": "creates an order with a future deliverySlot and echoes it",
+          "requirementIds": [
+            "AC-1",
+            "AC-4"
+          ],
+          "setup": [
+            "compute a future ISO date-time"
+          ],
+          "assertions": [
+            "status 201",
+            "response deliverySlot equals the requested slot",
+            "response matches Order schema including deliverySlot"
+          ]
+        }
+      ],
+      "evidence": [
+        {
+          "source": "existing-test",
+          "file": "tests/api/orders/create-order.spec.ts",
+          "line": 5,
+          "reference": "Order schema has no deliverySlot and the happy path sends none"
+        }
+      ],
+      "reason": "happy path and Order schema need deliverySlot added"
+    }
+  ],
+  "impactedTests": [
+    {
+      "file": "tests/api/orders/create-order.spec.ts",
+      "reason": "happy path sends no deliverySlot and expects 201; it now receives 400",
+      "stillValid": false
+    },
+    {
+      "file": "tests/api/orders/create-order.spec.ts",
+      "reason": "qty=0 test also omits deliverySlot; it still gets 400 but only because qty is checked first, so it remains valid",
+      "stillValid": true
+    }
+  ],
+  "acMismatches": [
+    {
+      "requirementId": "AC-3",
+      "requirement": "a slot accepts at most 3 orders; the 4th order -> 409",
+      "observed": "MAX_ORDERS_PER_SLOT = 5, so the 6th order is the first rejected",
+      "evidence": [
+        {
+          "source": "source-code",
+          "file": "src/server.js",
+          "line": 5,
+          "reference": "const MAX_ORDERS_PER_SLOT = 5"
+        }
+      ]
+    }
+  ],
+  "specDrift": [
+    "deliverySlot (request and response) and the 409 response are in code but not described in openapi.yaml; the spec is unchanged in this diff"
+  ],
+  "suspicious": [],
+  "openQuestions": [
+    "Is the per-slot cap 3 (SHOP-42 AC-3) or 5 (code)?",
+    "SHOP-42 approval is unverified; confirm the acceptance criteria are final."
+  ],
+  "skipReason": null,
+  "risk": {
+    "overall": "high",
+    "changes": [
+      {
+        "id": "c1",
+        "risk": "high",
+        "factors": [
+          "validation",
+          "breaking-contract"
+        ]
+      },
+      {
+        "id": "c2",
+        "risk": "medium",
+        "factors": [
+          "validation"
+        ]
+      },
+      {
+        "id": "c3",
+        "risk": "high",
+        "factors": [
+          "business-rule",
+          "conflicting-oracle",
+          "write-path-error-handling"
+        ]
+      },
+      {
+        "id": "c4",
+        "risk": "medium",
+        "factors": [
+          "non-breaking-contract"
+        ]
+      }
+    ]
+  },
+  "corrections": [],
+  "warnings": [
+    "decision for c3: review without a proposed scenario; the requirement-side test will not be written"
+  ]
+}

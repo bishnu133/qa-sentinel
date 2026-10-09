@@ -27,6 +27,11 @@ const ServiceSchema = z.object({
 export const ConfigSchema = z.object({
   version: z.literal(1),
   mode: z.enum(["existing", "scratch"]),
+  /**
+   * Operating level. intelligence = read-only analysis on every MR (gap reports, risk, conflicts);
+   * maintenance = also generate/update tests through reviewed MRs. (orchestration – cross-platform – is planned.)
+   */
+  level: z.enum(["intelligence", "maintenance"]).default("maintenance"),
   project: z.object({
     name: z.string(),
   }),
@@ -70,6 +75,10 @@ export const ConfigSchema = z.object({
         .object({
           baseUrl: z.string().optional(),
           projectKeys: z.array(z.string()).default([]),
+          /** Custom field holding acceptance criteria, e.g. customfield_10045 (else they are read from the description). */
+          acceptanceCriteriaField: z.string().optional(),
+          /** Statuses that mean the story is agreed and testable. Anything else is "unverified". */
+          approvedStatuses: z.array(z.string()).default(["Ready for Development", "Ready for Dev", "Selected for Development", "In Progress", "In Development", "In Review", "In QA", "Ready for QA", "Done"]),
         })
         .default({}),
     })
@@ -86,6 +95,8 @@ export const ConfigSchema = z.object({
   }),
   agent: z
     .object({
+      /** Agent runtime. Only Claude Code today; the engine interface keeps others possible. */
+      engine: z.enum(["claude-code"]).default("claude-code"),
       model: z.string().optional().describe("Passed to `claude --model`; omit to use the CLI default"),
       maxTurns: z
         .object({

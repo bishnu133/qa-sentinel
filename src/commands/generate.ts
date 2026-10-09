@@ -1,36 +1,20 @@
 import fs from "node:fs";
 import path from "node:path";
 import { loadConfig } from "../config.js";
-import { changeSet, ensureAtCommit, git, hasChanges, isGitRepo, resolveSha, workingChanges } from "../git.js";
+import { changeSet, commitMessages, ensureAtCommit, git, hasChanges, isGitRepo, resolveSha, workingChanges } from "../git.js";
 import { matchesAny } from "../fsutil.js";
-import { formatUsage, runClaude } from "../claude.js";
-import {
-  ARTIFACT_GLOBS,
-  VERSION,
-  agentEnv,
-  bashRuleForTests,
-  cleanAgentAnswer,
-  createRunDir,
-  findService,
-  startManifest,
-  testEnv,
-  writeManifest,
-} from "../run.js";
-import {
-  checkContent,
-  checkPaths,
-  checkServiceUntouched,
-  claudePermissions,
-  findingsMarkdown,
-  generatePolicy,
-  snapshotTree,
-  violations,
-} from "../guardrails.js";
+import { formatUsage } from "../claude.js";
+import { ARTIFACT_GLOBS, VERSION, agentEnv, bashRuleForTests, cleanAgentAnswer, createRunDir, findService, startManifest, testEnv, writeManifest } from "../run.js";
+import { checkContent, checkPaths, checkServiceUntouched, findingsMarkdown, generatePolicy, snapshotTree, violations } from "../guardrails.js";
 import { resolveRequirements, storyMarkdown } from "../requirements.js";
 import { findDiscrepancies, verifyChanges } from "../verification.js";
 import { mrDescription } from "../reporting.js";
 import { createOrUpdateMergeRequest, gitlabContext, pushUrl } from "../scm/gitlab.js";
-import { oracleHint } from "./gapReport.js";
+import { engineFor } from "../engines/ClaudeCodeEngine.js";
+import { type AgentResult, addUsage } from "../engines/AgentEngine.js";
+import { planChange } from "../plan/planner.js";
+import { actionable } from "../plan/validate.js";
+import { decisionTable } from "../plan/render.js";
 import { log } from "../log.js";
 
 export interface GenerateOptions {
@@ -45,10 +29,17 @@ export interface GenerateOptions {
   dryRun?: boolean;
 }
 
-/** Returns the process exit code: 0 only when the change was independently VERIFIED (or there was nothing to do). */
+/**
+ * plan (agent, read-only) → validate + risk (code) → author only update/create/review decisions (agent, scoped
+ * writes) → guardrails (code) → independent verification (code) → commit/publish.
+ * Returns the exit code: 0 when VERIFIED, or when the plan needs no test changes.
+ */
 export async function generateCommand(o: GenerateOptions): Promise<number> {
   const cwd = path.resolve(o.cwd);
   const c = loadConfig(cwd);
+  if (c.level === "intelligence") {
+    throw new Error('This project runs at level "intelligence" (read-only analysis). Set level: maintenance in qa-sentinel.config.yaml to enable test generation.');
+  }
   const service = findService(c, o.service, cwd, o.servicePath);
   const repo = path.resolve(cwd, service.path);
   if (!isGitRepo(repo)) throw new Error(`${repo} is not a git repository`);
@@ -66,21 +57,22 @@ export async function generateCommand(o: GenerateOptions): Promise<number> {
     return 0;
   }
 
-  // Requirements: explicit file, else the MR that introduced this commit (post-merge pipelines have no MR context).
+  // Requirements: explicit file → Jira (key from branch/commits) → the MR that introduced this commit.
   const ctx = gitlabContext(c.ci.gitlabUrl);
   const serviceProject = service.gitlabProject ?? process.env.QA_SERVICE_PROJECT;
   const req = await resolveRequirements(c, {
     storyFile: o.storyFile,
     lookup: ctx && serviceProject ? { ctx, project: serviceProject, sha: cs.head } : undefined,
+    keyHints: commitMessages(repo, cs.base, cs.head),
   }).catch((e) => {
-    log.warn(`could not fetch requirements from GitLab: ${(e as Error).message}`);
+    log.warn(`could not fetch requirements: ${(e as Error).message}`);
     return resolveRequirements(c, {});
   });
   if (req.source === "none") {
-    if (c.requirements.required) throw new Error("No requirements found for this change and requirements.required is true. Pass --story-file or link the MR.");
+    if (c.requirements.required) throw new Error("No requirements found for this change and requirements.required is true. Pass --story-file or link the MR/story.");
     log.warn("no requirements found: tests can only be checked against the contract and code");
   } else {
-    log.step(`requirements: ${req.storyKey ?? req.title ?? req.source} (${req.acceptanceCriteria.length} AC, ${req.source})`);
+    log.step(`requirements: ${req.storyKey ?? req.title ?? req.source} (${req.acceptanceCriteria.length} AC, ${req.source}, ${req.approvalStatus})`);
   }
 
   const sha8 = cs.head.slice(0, 8);
@@ -90,77 +82,88 @@ export async function generateCommand(o: GenerateOptions): Promise<number> {
   fs.writeFileSync(path.join(run.dir, "change.diff"), cs.diff);
   fs.writeFileSync(path.join(run.dir, "story.md"), storyMarkdown(req));
   fs.writeFileSync(path.join(run.dir, "requirements.json"), JSON.stringify(req, null, 2));
-  fs.writeFileSync(
-    path.join(run.dir, "context.json"),
-    JSON.stringify(
-      {
-        kind: "generate",
-        service,
-        serviceRepo: service.path,
-        base: cs.base,
-        head: cs.head,
-        changedFiles: relevant,
-        oracle: oracleHint(req),
-        maxFixAttempts: c.agent.maxFixAttempts,
-        allowedWritePaths: policy.allowed,
-        blockedWritePaths: policy.blocked,
-      },
-      null,
-      2,
-    ),
-  );
   const manifest = startManifest(cwd, c, run, "generate", { service, base: cs.base, head: cs.head, changedFiles: relevant }, req);
   const startSha = resolveSha(cwd, "HEAD");
   const serviceBefore = snapshotTree(repo);
+  const engine = engineFor(c);
+  const runs: AgentResult[] = [];
+  const finish = (outcome: string, code: number) => {
+    const usage = addUsage(...runs);
+    const denials = runs.flatMap((r) => r.denials ?? []);
+    manifest.agent = { status: runs.at(-1)?.status ?? "not-run", ...usage, deniedToolCalls: denials.length };
+    if (denials.length) fs.writeFileSync(path.join(run.dir, "permission-denials.json"), JSON.stringify(denials, null, 2));
+    manifest.outcome = outcome;
+    manifest.finishedAt = new Date().toISOString();
+    writeManifest(run, manifest);
+    return code;
+  };
 
-  if (!o.dryRun) git(cwd, ["checkout", "-q", "-B", branch]);
-  log.step(`${service.name}@${sha8}: generating API tests on branch ${branch}`);
-
-  const perms = claudePermissions({
-    write: policy,
-    bash: [bashRuleForTests(c), "npx tsc --noEmit", "git status *", "git diff *"],
-    readOnlyDirs: [repo],
+  // Phase 1: plan (read-only) and validate in code.
+  log.step(`${service.name}@${sha8}: planning`);
+  const planned = await planChange({
+    cwd,
+    c,
+    service,
+    repo,
+    cs,
+    relevant,
+    req,
+    run,
+    engine,
+    dryRun: o.dryRun,
+    context: { kind: "generate", allowedWritePaths: policy.allowed, blockedWritePaths: policy.blocked, maxFixAttempts: c.agent.maxFixAttempts },
   });
-  const res = await runClaude({
+  runs.push(...planned.runs);
+  manifest.plan = { status: planned.status, risk: planned.risked?.overall, corrections: planned.validation?.corrections.length ?? 0 };
+  if (planned.status === "dry-run") return finish("dry-run", 0);
+  if (planned.status !== "valid" || !planned.plan || !planned.risked) {
+    log.fail(`no valid plan (${planned.status}): ${planned.message ?? ""}`);
+    return finish(`plan-${planned.status}`, 1);
+  }
+  const plan = planned.plan;
+  planned.validation?.corrections.forEach((x) => log.warn(`correction: ${x}`));
+  const todo = actionable(plan);
+  log.step(`plan: ${planned.risked.overall} risk · ${plan.decisions.map((d) => `${d.changeId}=${d.decision}`).join(", ") || "no decisions"}`);
+  if (todo.length === 0) {
+    const summary = [`## QA agent: ${service.name}@${sha8} – no test changes needed`, "", plan.verdict, "", decisionTable(plan, planned.risked.changes)].join("\n");
+    fs.writeFileSync(path.join(run.dir, "summary.md"), summary);
+    fs.writeFileSync(path.join(cwd, "qa-sentinel-summary.md"), summary);
+    log.ok("every decision is reuse or skip: existing tests are enough");
+    return finish("no-changes-needed", 0);
+  }
+
+  // Phase 2: author only what the validated plan says, with scoped writes.
+  git(cwd, ["checkout", "-q", "-B", branch]);
+  log.step(`authoring ${todo.length} decision(s) on ${branch}`);
+  const author = await engine.run({
+    kind: "author",
     cwd,
     prompt: [
       "Use the generate-api-tests skill.",
+      `The validated plan is ${run.rel}/test-plan.validated.json. Implement ONLY its decisions "update", "create" and "review"; leave "reuse" and "skip" alone.`,
       `Run context: ${run.rel}/context.json, diff: ${run.rel}/change.diff, story: ${run.rel}/story.md.`,
       `You may only change files matching: ${policy.allowed.join(", ")}. Any other change fails the whole run.`,
       `Bash is allowed for exactly: \`${c.tests.api.runCommand} <spec paths>\`, \`npx tsc --noEmit\`, \`git status\` and \`git diff\`, each as a single command (no cd, pipes, && or variables). Use Read, Grep and Glob to explore files. If a command is denied, rewrite it in that form; do not give up on running the specs.`,
       "qa-sentinel re-runs the changed specs independently afterwards.",
       "Your final answer must be the merge request notes in markdown (the format in the skill).",
     ].join("\n"),
+    readOnlyDirs: [repo],
+    write: policy,
+    bash: [bashRuleForTests(c), "npx tsc --noEmit", "git status *", "git diff *"],
     maxTurns: c.agent.maxTurns.generate,
-    tools: ["Read", "Grep", "Glob", "Agent", "Edit", "Write", "Bash"],
-    allow: perms.allow,
-    deny: perms.deny,
-    addDirs: [repo],
-    model: c.agent.model,
     maxBudgetUsd: c.agent.maxBudgetUsd.generate,
     timeoutMs: c.agent.timeoutMinutes.generate * 60_000,
     env: agentEnv(c),
-    dryRun: o.dryRun,
+    model: c.agent.model,
   });
-  manifest.agent = { status: res.status, turns: res.turns, durationMs: res.durationMs, costUsd: res.costUsd, deniedToolCalls: res.denials?.length ?? 0 };
-  if (res.denials?.length) fs.writeFileSync(path.join(run.dir, "permission-denials.json"), JSON.stringify(res.denials, null, 2));
-  const usage = formatUsage(res);
-
-  if (o.dryRun) {
-    writeManifest(run, manifest);
-    log.ok("dry run complete");
-    return 0;
-  }
-  if (!res.ok) {
-    manifest.outcome = `agent-${res.status}`;
-    manifest.finishedAt = new Date().toISOString();
-    writeManifest(run, manifest);
-    log.fail(`agent run ${res.status}: ${res.result.slice(0, 300)}`);
+  runs.push(author);
+  if (!author.ok) {
+    log.fail(`agent run ${author.status}: ${author.result.slice(0, 300)}`);
     log.info(`Partial changes left uncommitted on ${branch} for inspection.`);
-    return 1;
+    return finish(`agent-${author.status}`, 1);
   }
 
-  // 1. Guardrails, enforced on what actually changed (not on what the agent says it changed).
+  // Phase 3: guardrails, enforced on what actually changed (not on what the agent says it changed).
   const changes = workingChanges(cwd).filter((x) => !matchesAny(x.path, ARTIFACT_GLOBS));
   const findings = [
     ...checkPaths(changes, policy),
@@ -176,34 +179,25 @@ export async function generateCommand(o: GenerateOptions): Promise<number> {
   const bad = violations(findings);
   manifest.guardrails = { violations: bad.length, warnings: findings.length - bad.length };
   fs.writeFileSync(path.join(run.dir, "guardrails.json"), JSON.stringify(findings, null, 2));
-
   if (bad.length) {
-    manifest.outcome = "guardrail-violation";
-    manifest.finishedAt = new Date().toISOString();
-    writeManifest(run, manifest);
     log.fail(`run rejected: ${bad.length} guardrail violation(s). Nothing was committed.`);
     log.info(findingsMarkdown(bad));
     log.info(`The changes are left uncommitted on ${branch} for inspection.`);
-    return 1;
+    return finish("guardrail-violation", 1);
   }
   if (changes.length === 0) {
-    manifest.outcome = "no-changes";
-    manifest.finishedAt = new Date().toISOString();
-    writeManifest(run, manifest);
-    log.ok("agent made no test changes (existing coverage judged sufficient)");
-    fs.writeFileSync(path.join(cwd, "qa-sentinel-summary.md"), cleanAgentAnswer(res.result));
-    return 0;
+    log.warn("the plan asked for test changes but the agent made none");
+    return finish("no-changes-made", 1);
   }
 
-  // 2. Independent verification: qa-sentinel runs the checks itself.
+  // Phase 4: independent verification.
   log.step(`verifying ${changes.length} changed file(s) independently`);
   const verification = await verifyChanges({ cwd, c, changes, runDir: run.dir, env: testEnv(c) });
   const discrepancies = findDiscrepancies(cwd, startSha, changes);
   manifest.verification = { status: verification.status };
-  log[verification.status === "VERIFIED" ? "ok" : "warn"](
-    `verification: ${verification.status} – ${verification.checks.map((x) => `${x.name} ${x.status}`).join(", ")}`,
-  );
+  log[verification.status === "VERIFIED" ? "ok" : "warn"](`verification: ${verification.status} – ${verification.checks.map((x) => `${x.name} ${x.status}`).join(", ")}`);
 
+  const usage = formatUsage(addUsage(...runs));
   const description = mrDescription({
     service: service.name,
     sha: cs.head,
@@ -212,24 +206,24 @@ export async function generateCommand(o: GenerateOptions): Promise<number> {
     verification,
     findings,
     discrepancies,
-    agentSummary: cleanAgentAnswer(res.result),
+    agentSummary: cleanAgentAnswer(author.result),
     usage,
     runId: run.id,
+    plan: { plan, risked: planned.risked, contract: planned.contract, specPath: service.openapi, corrections: planned.validation?.corrections ?? [] },
   });
   fs.writeFileSync(path.join(run.dir, "summary.md"), description);
   fs.writeFileSync(path.join(cwd, "qa-sentinel-summary.md"), description);
 
-  // 3. Commit exactly the validated paths (deletions and renames included).
+  // Phase 5: commit exactly the validated paths (deletions and renames included), then publish.
   const paths = [...new Set(changes.flatMap((x) => (x.from && x.status === "R" ? [x.path, x.from] : [x.path])))];
   git(cwd, ["add", "-A", "--", ...paths]);
   git(cwd, [
     "commit",
     "-q",
     "-m",
-    `test(${service.name}): QA agent updates for ${sha8}\n\nGenerated by qa-sentinel ${VERSION} from ${service.name}@${cs.head}.\nVerification: ${verification.status}. Run: ${run.id}`,
+    `test(${service.name}): QA agent updates for ${sha8}\n\nGenerated by qa-sentinel ${VERSION} from ${service.name}@${cs.head}.\nRisk: ${planned.risked.overall}. Verification: ${verification.status}. Run: ${run.id}`,
   ]);
   log.ok(`committed ${paths.length} file(s) on ${branch}`);
-  manifest.outcome = `committed-${verification.status.toLowerCase()}`;
 
   if (o.push) {
     // Push with a one-off URL so the token never sits in .git/config where an agent could read it.
@@ -247,14 +241,18 @@ export async function generateCommand(o: GenerateOptions): Promise<number> {
         target: c.ci.targetBranch,
         title: `${verified ? "" : "Draft: "}QA agent: tests for ${service.name}@${sha8}${verified ? "" : ` (${verification.status})`}`,
         description,
-        labels: ["qa-agent", `service::${service.name}`, `qa-sentinel::${verification.status.toLowerCase()}`, ...(discrepancies.length ? ["qa-sentinel::discrepancy"] : [])],
+        labels: [
+          "qa-agent",
+          `service::${service.name}`,
+          `qa-sentinel::${verification.status.toLowerCase()}`,
+          `risk::${planned.risked.overall}`,
+          ...(discrepancies.length ? ["qa-sentinel::discrepancy"] : []),
+        ],
       });
       log.ok(`merge request ${mr.action}: ${mr.web_url}`);
     }
   } else {
     log.info(`Review locally, then push ${branch} and open a merge request (or rerun with --push).`);
   }
-  manifest.finishedAt = new Date().toISOString();
-  writeManifest(run, manifest);
-  return verification.status === "VERIFIED" ? 0 : 1;
+  return finish(`committed-${verification.status.toLowerCase()}`, verification.status === "VERIFIED" ? 0 : 1);
 }

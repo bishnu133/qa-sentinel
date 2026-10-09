@@ -1,4 +1,4 @@
-## QA agent: orders-service@d8492a67 · ✅ VERIFIED
+## QA agent: orders-service@e2a3d9b4 · ✅ VERIFIED · 🟠 High risk
 
 **Requirements:** SHOP-42 from [story-file](story-SHOP-42.md) @ sha256:591fcc21c1487cb6 · 4 AC parsed · approval unverified
 
@@ -8,41 +8,59 @@
 | --- | --- | --- |
 | preflight | passed | localhost:3123 answered 404 |
 | typecheck | passed | tsc --noEmit clean |
-| tests | passed | 6 passed, 1 skipped |
+| tests | passed | 5 passed, 1 skipped |
 
-Tests: 6 passed · 0 failed · 1 skipped (of 7).
+Tests: 5 passed · 0 failed · 1 skipped (of 6).
+
+### Plan (validated by qa-sentinel)
+1 requirement conflict (AC-3: cap is 5 in code, 3 in story), 1 broken happy-path test, 3 gaps – resolve AC-3 before release
+
+| Change | Risk | Oracle | Coverage | Decision |
+| --- | --- | --- | --- | --- |
+| POST /orders – deliverySlot is now required and must be a valid ISO date-time; missing or invalid returns 400 (AC-1) | 🟠 High | approved | outdated | **update** |
+| POST /orders – deliverySlot in the past is rejected with 400 (AC-2) | 🟡 Medium | approved | missing | **create** |
+| POST /orders – A delivery slot is capped per slot and returns 409 when full; code allows 5 orders, story says 3 (AC-3) | 🟠 High | conflicting | missing | **review** |
+| POST /orders – The created order response now includes deliverySlot (AC-4) | 🟡 Medium | approved | outdated | **update** |
+
+**Contract changes (computed from `openapi.yaml`, base → head):** the spec is unchanged in this diff.
 
 ### ⚠️ Unresolved product discrepancies (1, not executed as passing tests)
 These tests encode the requirement, but the product currently behaves differently. They are marked fixme/skip so they do not fail the build. **A human must decide: fix the product or change the requirement.**
 
 | Test | File | Note |
 | --- | --- | --- |
-| returns 409 for the 4th order in the same slot | `tests/api/orders/create-order.spec.ts` | AC-3 says a slot accepts at most 3 orders (4th -> 409), but orders-service |
+| returns 409 when the delivery slot is full | `tests/api/orders/create-order.spec.ts` | AC-3 says a slot accepts at most 3 orders (4th -> 409), but the service allows 5 (MAX_ORDERS_PER_SLOT in orders-service src/server.js:5). Cap unconfirmed; test follows the story. |
 
 ### Agent notes
 _Written by the agent. Claims about test results here are superseded by the verification table above._
 
-### Decisions
-| Change | Decision | Files | Why |
-| --- | --- | --- | --- |
-| `deliverySlot` required and valid (AC-1) | update | tests/api/orders/create-order.spec.ts | +2 scenarios: missing, and not an ISO date-time. Both expect 400 and an `error` body. |
-| `deliverySlot` in the past (AC-2) | update | same | +1 scenario, expects 400. |
-| Created order echoes `deliverySlot` (AC-4) | update | same | The existing "creates an order" test now sends a slot and asserts it is echoed. The `Order` schema now includes `deliverySlot`. |
-| Existing "qty is 0 → 400" test | update | same | Now sends a valid slot, so the 400 can only come from `qty`. |
-| Slot capacity: 3 orders accepted (AC-3 boundary) | create | same | Passes against both the AC (3) and the service (5). |
-| Slot capacity: 4th order → 409 (AC-3) | review | same | Written to the AC as `test.fixme`; the service allows 5 (see below). |
-| Unique slot per test | create | src/data/builders.ts | New `deliverySlot()` and `pastDeliverySlot()` helpers, so tests don't share slot capacity in the service's in-memory store. |
-| `POST /orders` traceability | update | test-map.yaml | Added the endpoint → spec mapping. |
+### What I changed
+| Decision | Files | What |
+| --- | --- | --- |
+| c1 update | tests/api/orders/create-order.spec.ts | +2 scenarios (AC-1): 400 when `deliverySlot` is missing, 400 when it isn't an ISO date-time. Both also check that the error mentions `deliverySlot`. |
+| c4 update | tests/api/orders/create-order.spec.ts | The happy path now sends a future `deliverySlot` and asserts 201 and that the response echoes it (AC-1, AC-4). The `Order` schema now includes `deliverySlot`. |
+| c2 create | tests/api/orders/create-order.spec.ts | +1 scenario (AC-2): 400 for a past `deliverySlot`. The error text must mention `deliverySlot` and "future". |
+| c3 review | tests/api/orders/create-order.spec.ts | AC-3 test written to the requirement (3 accepted, 4th gets 409 "delivery slot is full"). It is marked `test.fixme` with a `// QA-AGENT:` comment because the service allows 5. |
+| supporting | src/data/builders.ts | `futureSlot()` returns a distinct future slot per call, and `pastSlot()` returns a past one. |
+| supporting | test-map.yaml | Mapped `POST /orders` to `create-order.spec.ts`. |
 
 ### Needs human attention
-- **Requirement conflict (AC-3):** expected 409 "delivery slot is full" on the 4th order for a slot. Observed `MAX_ORDERS_PER_SLOT = 5`, so the 4th order gets 201 (`orders-service/src/server.js`, diff line 10). The test follows the AC and is marked `test.fixme` with `// QA-AGENT:`. Either the service constant or the story needs correcting; remove the fixme once that's settled.
-- **Ambiguous requirement:** the story is unverified, and "ISO 8601 date-time" is looser in the service than in the AC. The service uses `Date.parse`, so date-only or non-ISO strings may be accepted. I only tested clearly invalid input (`"not-a-date"`).
-- **Assertions changed:** none removed or loosened. The two existing tests now send `deliverySlot` (required since this change), and the success test also asserts the slot is echoed.
+- **Requirement conflict (AC-3):**
+  - Expected: a slot accepts at most 3 orders, and the 4th gets 409 (SHOP-42 AC-3).
+  - Observed: `MAX_ORDERS_PER_SLOT = 5`, so the 6th order is the first rejected (`orders-service/src/server.js:5`).
+  - Confirm the cap with the PO. The fixme test stays skipped until then. If the cap is 5, the story is wrong and the loop count and title need updating. If it is 3, the service is wrong.
+- **Plan wording:** the plan has no proposed scenario for c3 and warns that the requirement-side test won't be written. I wrote it as a fixme because the plan's reason says to write it to the requirement, as a fixme if unresolved. Drop it if you'd rather not have it.
+- **Approval:** SHOP-42 approval is unverified, so confirm the acceptance criteria are final.
+- **Spec drift:** `deliverySlot` and the 409 response are not in `openapi.yaml`. I didn't touch it because it is outside the allowed paths.
+- **Assertions changed:**
+  - The existing happy-path test is rewritten as a new scenario (it now sends a slot and checks the echo), not duplicated.
+  - The existing qty=0 test now sends a valid future `deliverySlot`, so a 400 can only come from `qty`. Its 400 assertion is unchanged.
+  - No assertions were removed or loosened.
 
 ### Reviewer checklist
 - [ ] Expected values match the acceptance criteria
 - [ ] No duplicated coverage
-- [ ] Test data is isolated and cleaned up (each test uses its own random future slot; the service has no delete endpoint, so records are not removed)
+- [ ] Test data is isolated and cleaned up (each test uses its own slot, and there is no delete endpoint to clean up with)
 
 ---
-Generated by qa-sentinel 0.1.1 (run `2026-10-09T06-30-48-094Z-gen-orders-service`, 20 turns · 42s · $0.14). A QA engineer must review before merge.
+Generated by qa-sentinel 0.2.0 (run `2026-10-09T11-50-25-873Z-gen-orders-service`, 30 turns · 73s · $0.27). A QA engineer must review before merge.

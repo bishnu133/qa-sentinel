@@ -41,7 +41,7 @@ export function runChecks(cwd: string, env: NodeJS.ProcessEnv = process.env): Ch
 
   isGitRepo(cwd) ? add("ok", "test repo is a git repository") : add("fail", "test repo is a git repository", "git init");
 
-  for (const f of [".claude/agents/change-analyzer.md", ".claude/skills/qa-gap-report/SKILL.md", ".claude/skills/write-api-test/SKILL.md"]) {
+  for (const f of [".claude/agents/change-analyzer.md", ".claude/skills/qa-plan/SKILL.md", ".claude/skills/write-api-test/SKILL.md"]) {
     fs.existsSync(path.join(cwd, f)) ? add("ok", `${f}`) : add("fail", `${f}`, "rerun `qa-sentinel init --force`");
   }
 
@@ -80,6 +80,13 @@ export function runChecks(cwd: string, env: NodeJS.ProcessEnv = process.env): Ch
   }
 
   if (c.requirements.source === "none") add("warn", "requirements source", "without stories/AC, tests only check what the code does");
+  if (c.requirements.source === "jira") {
+    if (!c.requirements.jira.baseUrl) add("fail", "requirements.jira.baseUrl set", "e.g. https://yourcompany.atlassian.net");
+    else if (!(env.JIRA_PAT || (env.JIRA_EMAIL && env.JIRA_API_TOKEN))) add("warn", "Jira credentials set", "JIRA_EMAIL + JIRA_API_TOKEN (Cloud) or JIRA_PAT (Server/DC); without them, MR text is used");
+    else add("ok", `Jira configured (${c.requirements.jira.baseUrl})`);
+    if (!c.requirements.jira.projectKeys.length) add("warn", "requirements.jira.projectKeys set", "limits story-key matching to your projects (avoids false keys like UTF-8)");
+  }
+  add("ok", `operating level: ${c.level}${c.level === "intelligence" ? " (read-only; set level: maintenance to enable generation)" : ""}`);
 
   const leaked = Object.keys(env).filter((k) => c.guardrails.passEnv.includes(k) && SECRET_NAME.test(k));
   if (leaked.length) add("warn", `passEnv forwards credential-like variables to agents: ${leaked.join(", ")}`, "only list what generated tests truly need");

@@ -7,7 +7,7 @@ import { resolveSha } from "./git.js";
 import { scrubbedEnv } from "./env.js";
 import type { RequirementSnapshot } from "./requirements.js";
 
-export const VERSION = "0.1.1";
+export const VERSION = "0.2.0";
 
 export interface RunDir {
   id: string;
@@ -82,6 +82,7 @@ export interface Manifest {
   agent?: { status: string; turns?: number; durationMs?: number; costUsd?: number; deniedToolCalls?: number };
   guardrails?: { violations: number; warnings: number };
   verification?: { status: string };
+  plan?: { status: string; risk?: string; corrections: number };
   outcome?: string;
 }
 
