@@ -1,17 +1,17 @@
 {
-  "qaSentinelVersion": "0.1.1",
+  "qaSentinelVersion": "0.2.0",
   "kind": "generate",
-  "runId": "2026-10-09T06-30-48-094Z-gen-orders-service",
-  "startedAt": "2026-10-09T06:30:48.095Z",
-  "configSha256": "d7f7ebc0bb71045f0fa36952bdf81ff230163068e107f874635bfaaa738b28de",
+  "runId": "2026-10-09T11-50-25-873Z-gen-orders-service",
+  "startedAt": "2026-10-09T11:50:25.874Z",
+  "configSha256": "b2935dc545b5e6f147dc8b9385bb984db6fe3973049aedcabe6b7663708bb1f0",
   "testRepo": {
-    "sha": "1e34567761a09e1c290a055e80f3374921652b73"
+    "sha": "e562dfa086793a7acc22e5c54a84db3a0261a514"
   },
   "service": {
     "name": "orders-service",
     "path": "../orders-service",
-    "base": "a9411dbc15b53bf3aa8a42bd7a7bf0207ed52cac",
-    "head": "d8492a67f49f8b33653f874fe0cc602c5c4d0f36",
+    "base": "38f3738e01d9e4bbad5fee8afb5c119f31bcff47",
+    "head": "e2a3d9b43d49024cde18f08c4fddbf0f5a0b4099",
     "changedFiles": [
       "src/server.js"
     ]
@@ -25,12 +25,10 @@
     "approvalStatus": "unverified",
     "acCount": 4
   },
-  "agent": {
-    "status": "ok",
-    "turns": 20,
-    "durationMs": 41857,
-    "costUsd": 0.1420802,
-    "deniedToolCalls": 1
+  "plan": {
+    "status": "valid",
+    "risk": "high",
+    "corrections": 0
   },
   "guardrails": {
     "violations": 0,
@@ -39,6 +37,13 @@
   "verification": {
     "status": "VERIFIED"
   },
+  "agent": {
+    "status": "ok",
+    "turns": 30,
+    "durationMs": 72674,
+    "costUsd": 0.27050820000000003,
+    "deniedToolCalls": 0
+  },
   "outcome": "committed-verified",
-  "finishedAt": "2026-10-09T06:31:35.864Z"
+  "finishedAt": "2026-10-09T11:51:48.559Z"
 }

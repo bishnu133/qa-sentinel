@@ -5,19 +5,19 @@
       "name": "preflight",
       "status": "passed",
       "detail": "localhost:3123 answered 404",
-      "durationMs": 67
+      "durationMs": 78
     },
     {
       "name": "typecheck",
       "status": "passed",
       "detail": "tsc --noEmit clean",
-      "durationMs": 2328
+      "durationMs": 3308
     },
     {
       "name": "tests",
       "status": "passed",
-      "detail": "6 passed, 1 skipped",
-      "durationMs": 2010
+      "detail": "5 passed, 1 skipped",
+      "durationMs": 2902
     }
   ],
   "specs": [
@@ -25,7 +25,7 @@
   ],
   "cases": [
     {
-      "name": "POST /orders › creates an order @service:orders-service @endpoint:POST_/orders @story:SHOP-42",
+      "name": "POST /orders › creates an order with a future deliverySlot and echoes it @service:orders-service @endpoint:POST_/orders @story:SHOP-42",
       "file": "tests/api/orders/create-order.spec.ts",
       "status": "passed"
     },
@@ -50,19 +50,14 @@
       "status": "passed"
     },
     {
-      "name": "POST /orders › accepts 3 orders for the same slot @service:orders-service @endpoint:POST_/orders @story:SHOP-42",
-      "file": "tests/api/orders/create-order.spec.ts",
-      "status": "passed"
-    },
-    {
-      "name": "POST /orders › returns 409 for the 4th order in the same slot @service:orders-service @endpoint:POST_/orders @story:SHOP-42",
+      "name": "POST /orders › returns 409 when the delivery slot is full @service:orders-service @endpoint:POST_/orders @story:SHOP-42",
       "file": "tests/api/orders/create-order.spec.ts",
       "status": "skipped"
     }
   ],
   "counts": {
-    "total": 7,
-    "passed": 6,
+    "total": 6,
+    "passed": 5,
     "failed": 0,
     "skipped": 1
   }

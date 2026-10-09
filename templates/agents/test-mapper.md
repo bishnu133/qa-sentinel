@@ -33,29 +33,30 @@ For each change with `observable: true`:
 | `review` | `oracleStatus` is `conflicting`, or `ambiguous` and the expected value matters. A human must decide; the author writes the test to the requirement and marks it fixme. |
 | `skip` | `internal` or not observable. You must give evidence for why no verification is needed. |
 
+qa-sentinel rejects contradictions: `reuse` without `covered`, `covered` without `reuse`, `update` without an existing spec, a decision with no scenarios where tests must be written, or test files that do not exist.
+
 5. For `update` and `create`, list concrete `proposedScenarios`: positive, each validation boundary, error responses and auth. Fewer precise scenarios beat long generic lists.
 
 ## Output
-Return only JSON:
+Return only JSON in the qa-plan schema: `decisions` (exactly one per observable change) and `impactedTests`.
 
 ```json
 {
-  "impactedTests": ["{{apiDir}}/orders/create-order.spec.ts"],
+  "impactedTests": [{ "file": "{{apiDir}}/orders/create-order.spec.ts", "reason": "happy path sends no deliverySlot", "stillValid": false }],
   "decisions": [
     {
       "changeId": "c1",
-      "coverage": "partial",
+      "coverage": "outdated",
       "decision": "update",
       "existingTests": ["{{apiDir}}/orders/create-order.spec.ts"],
-      "evidence": ["create-order.spec.ts:12 posts without deliverySlot and expects 201; now returns 400"],
       "proposedScenarios": [
-        { "title": "returns 400 when deliverySlot is missing", "requirementIds": ["AC-1"], "assertions": ["status 400", "error mentions deliverySlot"] }
+        { "title": "returns 400 when deliverySlot is missing", "requirementIds": ["AC-1"], "setup": [], "assertions": ["status 400", "error mentions deliverySlot"] }
       ],
-      "reason": "endpoint spec exists; new validation is not asserted"
+      "evidence": [{ "source": "existing-test", "file": "{{apiDir}}/orders/create-order.spec.ts", "line": 12, "reference": "posts without deliverySlot and expects 201" }],
+      "reason": "endpoint spec exists; the new validation is not asserted and the happy path is outdated"
     }
-  ],
-  "mapUpdates": { "POST /orders": ["{{apiDir}}/orders/create-order.spec.ts"] }
+  ]
 }
 ```
 
-`mapUpdates` lists entries that are missing or wrong in `test-map.yaml`.
+Also report entries missing or wrong in `test-map.yaml` in the decision `reason`; the author updates the map.

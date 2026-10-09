@@ -44,6 +44,7 @@ qa-gap-report:
     paths: [qa-gap-report.md]
     expire_in: 2 weeks
 
+{{#if isMaintenance}}
 # Phase 2: after merge to the default branch, ask the test repo to generate/update API tests.
 qa-trigger-generation:
   stage: test
@@ -57,3 +58,4 @@ qa-trigger-generation:
   trigger:
     project: "$QA_TESTS_PROJECT"
     branch: {{targetBranch}}
+{{/if}}

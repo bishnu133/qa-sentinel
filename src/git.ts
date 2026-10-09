@@ -124,3 +124,16 @@ export function showFile(repo: string, ref: string, file: string): string | unde
 export function hasChanges(repo: string): boolean {
   return git(repo, ["status", "--porcelain"]).length > 0;
 }
+
+/** Commit subjects and bodies in base..head (story keys often live here). */
+export function commitMessages(repo: string, base: string, head: string): string[] {
+  try {
+    return execFileSync("git", ["log", "--format=%B%x00", `${base}..${head}`], { cwd: repo, encoding: "utf8" })
+      .split("\0")
+      .map((s) => s.trim())
+      .filter(Boolean)
+      .slice(0, 50);
+  } catch {
+    return [];
+  }
+}

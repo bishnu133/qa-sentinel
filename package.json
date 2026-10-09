@@ -1,6 +1,6 @@
 {
   "name": "qa-sentinel",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "Plug-in AI QA agents for any project: gap reports on every merge request and auto-generated API tests, powered by Claude Code and run in GitLab CI or Jenkins.",
   "type": "module",
   "bin": {
@@ -21,7 +21,8 @@
     "dev": "tsx src/cli.ts",
     "test": "vitest run",
     "lint": "tsc -p tsconfig.json --noEmit",
-    "prepublishOnly": "npm run build && npm test"
+    "prepublishOnly": "npm run build && npm test",
+    "bench": "tsx bench/run.ts"
   },
   "keywords": [
     "qa",

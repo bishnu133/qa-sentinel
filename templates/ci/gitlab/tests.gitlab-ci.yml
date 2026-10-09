@@ -21,6 +21,7 @@ variables:
   before_script:
     - npm ci
 
+{{#if isMaintenance}}
 # Phase 2: triggered by a service repo after merge. Opens an MR with new/updated API tests.
 qa-generate:
   extends: .qa-node
@@ -47,6 +48,7 @@ qa-generate:
     paths: [qa-sentinel-summary.md, .qa-sentinel/runs/]
     expire_in: 2 weeks
 
+{{/if}}
 # Blocking gate for agent MRs (and any MR touching tests): the same independent checks qa-sentinel runs after
 # generation – write policy, type-check, changed specs with JUnit. Fails unless VERIFIED.
 qa-agent-mr-checks:
