@@ -61,6 +61,24 @@ export function buildClaudeArgs(o: ClaudeRunOptions): string[] {
   return args;
 }
 
+/** Raised when Claude can't be used at all (no key, rate limit, API down): stop, don't write a fallback report. */
+export class ClaudeAccessError extends Error {}
+
+/** Account or API problems that no retry or repair round can fix. Returns a short, actionable message. */
+export function accessProblem(json: any): string | undefined {
+  const text = String(json?.result ?? "");
+  const status = json?.api_error_status;
+  if (/not logged in|please run \/login|invalid x-api-key|authentication_error/i.test(text) || status === 401)
+    return "Claude Code has no valid credentials. Set ANTHROPIC_API_KEY (check with: echo ${#ANTHROPIC_API_KEY}) and test with: claude -p \"reply with OK\"";
+  if (status === 429 || /rate limit|\(429\)/i.test(text))
+    return `The Anthropic API refused the request (rate limit). Check the key's workspace limits and credits in the Anthropic Console.\n  ${text.slice(0, 300)}`;
+  if (status === 403 || /credit balance|billing/i.test(text))
+    return `The Anthropic account can't be used (billing or permissions).\n  ${text.slice(0, 300)}`;
+  if (json?.terminal_reason === "api_error" && (json?.num_turns ?? 0) <= 1 && !json?.total_cost_usd)
+    return `The Anthropic API could not be used: ${text.slice(0, 300)}`;
+  return undefined;
+}
+
 export function statusFromJson(json: any, code: number | null): ClaudeStatus {
   const sub = String(json?.subtype ?? "");
   if (sub.includes("max_turns")) return "max-turns";
@@ -76,13 +94,28 @@ export async function runClaude(o: ClaudeRunOptions): Promise<ClaudeRunResult> {
     log.dim("[dry-run] claude " + args.map((a) => (/[\s"{]/.test(a) ? JSON.stringify(a) : a)).join(" "));
     return { ok: true, status: "ok", result: "(dry run: Claude was not invoked)" };
   }
-  const r = await runProcess("claude", args, { cwd: o.cwd, env: o.env, timeoutMs: o.timeoutMs, echoStderr: true });
+  const started = Date.now();
+  const heartbeat = setInterval(() => {
+    const s = Math.round((Date.now() - started) / 1000);
+    log.dim(`  … agent working (${Math.floor(s / 60)}m ${String(s % 60).padStart(2, "0")}s)`);
+  }, 30_000);
+  heartbeat.unref();
+  const r = await runProcess("claude", args, { cwd: o.cwd, env: o.env, timeoutMs: o.timeoutMs, echoStderr: true }).finally(() =>
+    clearInterval(heartbeat),
+  );
   if (r.error) return { ok: false, status: "error", result: `Could not start claude: ${r.error}` };
   if (r.timedOut) {
     return { ok: false, status: "timeout", result: `Agent run exceeded ${Math.round(o.timeoutMs / 60000)} min and was stopped.`, durationMs: r.durationMs };
   }
+  let json: any;
   try {
-    const json = JSON.parse(r.stdout.trim().split("\n").pop() ?? "{}");
+    json = JSON.parse(r.stdout.trim().split("\n").pop() ?? "{}");
+  } catch {
+    return { ok: false, status: "error", result: r.stdout || r.stderr || `claude exited with code ${r.code}` };
+  }
+  const problem = accessProblem(json);
+  if (problem) throw new ClaudeAccessError(problem);
+  {
     const status = statusFromJson(json, r.code);
     return {
       ok: status === "ok",
@@ -94,8 +127,6 @@ export async function runClaude(o: ClaudeRunOptions): Promise<ClaudeRunResult> {
       denials: Array.isArray(json.permission_denials) ? json.permission_denials : [],
       raw: json,
     };
-  } catch {
-    return { ok: false, status: "error", result: r.stdout || r.stderr || `claude exited with code ${r.code}` };
   }
 }
 
