@@ -12,24 +12,31 @@ pipeline {
   }
   stages {
     stage('Install') { steps { sh 'npm ci' } }
-    stage('Type-check') { steps { sh 'npx tsc --noEmit || true' } }
-    stage('API tests') {
+    stage('Verify changed tests') {
+      // Agent MRs: the same blocking checks qa-sentinel runs after generation (policy, tsc, changed specs, JUnit).
+      when { expression { params.CHANGED_ONLY } }
       steps {
         sh '''
-          if [ "$CHANGED_ONLY" = "true" ]; then
-            git fetch origin {{targetBranch}}
-            SPECS=$(git diff --name-only --diff-filter=AM origin/{{targetBranch}}...HEAD -- "{{apiDir}}" | grep -E '\\.(spec|test)\\.[cm]?[jt]s$' || true)
-            [ -z "$SPECS" ] && echo "no spec changes" && exit 0
-          fi
-          {{runCommand}} $SPECS $QA_TEST_ARGS
+          npm i -g --prefix "$WORKSPACE/.npm-global" qa-sentinel@0.1.1
+          export PATH="$WORKSPACE/.npm-global/bin:$PATH"
+          git fetch origin {{targetBranch}}
+          qa-sentinel verify --policy --base origin/{{targetBranch}} --out qa-verify.md
         '''
       }
+    }
+    stage('Type-check') {
+      when { expression { !params.CHANGED_ONLY } }
+      steps { sh 'npx tsc --noEmit' }   // blocking: a type error fails the build
+    }
+    stage('API tests') {
+      when { expression { !params.CHANGED_ONLY } }
+      steps { sh '{{runCommand}} $QA_TEST_ARGS' }
     }
   }
   post {
     always {
-      junit testResults: 'test-results/junit.xml', allowEmptyResults: true
-      archiveArtifacts artifacts: 'playwright-report/**, test-results/**', allowEmptyArchive: true
+      junit testResults: 'test-results/junit.xml, .qa-sentinel/runs/*/junit.xml', allowEmptyResults: true
+      archiveArtifacts artifacts: 'playwright-report/**, test-results/**, qa-verify.md, .qa-sentinel/runs/**', allowEmptyArchive: true
     }
   }
 }
