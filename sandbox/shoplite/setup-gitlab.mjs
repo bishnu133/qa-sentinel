@@ -58,7 +58,7 @@ async function allow(projectId, targetId, label) {
     await api("POST", `/projects/${projectId}/job_token_scope/allowlist`, { target_project_id: targetId });
     log(`job-token access: ${label}`);
   } catch (e) {
-    if (e.status === 422 || e.status === 409) return log(`job-token access already set: ${label}`);
+    if (e.status === 422 || e.status === 409 || /already in the job token allowlist/i.test(e.message)) return log(`job-token access already set: ${label}`);
     log(`⚠ could not set job-token access (${label}): ${e.message}. Set it in the UI: Settings › CI/CD › Job token permissions.`);
   }
 }
