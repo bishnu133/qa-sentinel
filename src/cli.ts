@@ -6,6 +6,7 @@ import { doctorCommand } from "./commands/doctor.js";
 import { gapReportCommand } from "./commands/gapReport.js";
 import { generateCommand } from "./commands/generate.js";
 import { traceCommand } from "./commands/trace.js";
+import { showcaseCommand } from "./commands/showcase.js";
 import { verifyCommand } from "./commands/verify.js";
 import { VERSION } from "./run.js";
 import { log } from "./log.js";
@@ -95,6 +96,18 @@ program
   .option("--story-file <file>", "story with acceptance criteria (otherwise the ACs claimed by the tests are listed)")
   .option("--json", "print the full index as JSON")
   .action(wrap(async (o) => traceCommand({ cwd: cwd(), ...o })));
+
+program
+  .command("showcase")
+  .description("after a test run: attach evidence to each story whose acceptance criteria all passed (once per story)")
+  .option("--story <key...>", "only these stories (default: every story tagged in the tests)")
+  .option("--story-file <file>", "acceptance criteria from a file instead of Jira (one story)")
+  .option("--results <file>", "test results with attachments (default: test-results/results.json, else junit.xml)")
+  .option("--env <name>", "environment the run used, shown on the story")
+  .option("--force", "attach again even if this story was already showcased")
+  .option("--dry-run", "assess and list the files, attach nothing")
+  .option("-o, --out <file>", "summary file", "qa-showcase.md")
+  .action(wrap(async (o) => showcaseCommand({ cwd: cwd(), ...o })));
 
 program
   .command("verify")

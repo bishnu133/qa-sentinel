@@ -96,6 +96,21 @@ export const ConfigSchema = z.object({
       enabled: z.boolean().default(true),
     })
     .default({}),
+  /** Showcase stage: attach test evidence to the story once every acceptance criterion has passed. */
+  showcase: z
+    .object({
+      /** QA adds this label to a story to have the evidence attached again (it is removed afterwards). */
+      refreshLabel: z.string().default("qa-showcase-refresh"),
+      /** On refresh, delete the evidence attached last time instead of adding a second copy. */
+      replaceOnRefresh: z.boolean().default(true),
+      /** Evidence kinds to attach, in order of preference. api-log is folded into the evidence summary file. */
+      kinds: z.array(z.enum(["video", "screenshot", "trace", "api-log"])).default(["video", "screenshot", "api-log"]),
+      maxFiles: z.number().int().min(1).max(50).default(10),
+      maxFileMb: z.number().positive().max(100).default(10),
+      /** A story with a fixme/skip test (known product discrepancy) is not showcased. */
+      requireNoPending: z.boolean().default(true),
+    })
+    .default({}),
   /** Where `gap-report --post` publishes. One comment per target, updated in place on every run. */
   reporting: z
     .object({

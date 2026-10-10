@@ -124,3 +124,20 @@ api-tests:
       junit: test-results/junit.xml
     paths: [playwright-report/, test-results/]
     expire_in: 2 weeks
+
+# Showcase: after a full run of the suite, attach test evidence to every Jira story whose acceptance criteria all
+# passed, once per story (QA can ask again with the "qa-showcase-refresh" label). Turn on with QA_SHOWCASE=true
+# (needs requirements.jira in qa-sentinel.config.yaml and JIRA_EMAIL + JIRA_API_TOKEN, or JIRA_PAT).
+qa-showcase:
+  extends: .qa-node
+  stage: test
+  needs: [api-tests]
+  rules:
+    - if: $QA_SHOWCASE == "true" && ($CI_PIPELINE_SOURCE == "schedule" || $CI_PIPELINE_SOURCE == "trigger" || $CI_PIPELINE_SOURCE == "api" || $CI_COMMIT_BRANCH == "{{targetBranch}}")
+  script:
+    - !reference [.qa-sentinel-install, script]
+    - qa-sentinel showcase ${QA_ENVIRONMENT:+--env "$QA_ENVIRONMENT"}
+  artifacts:
+    when: always
+    paths: [qa-showcase.md, qa-showcase/]
+    expire_in: 2 weeks

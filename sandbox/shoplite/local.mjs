@@ -5,6 +5,7 @@
 //   node sandbox/shoplite/local.mjs list
 //   node sandbox/shoplite/local.mjs run SHOP-101 [--generate]     # make the dev change, gap report (+ generate tests)
 //   node sandbox/shoplite/local.mjs run SHOP-101 --regression     # also run the existing tests qa-sentinel selected, against the change
+//   node sandbox/shoplite/local.mjs run SHOP-105 --generate --showcase   # then run the suite and attach evidence if every AC passed
 //   node sandbox/shoplite/local.mjs reset                          # every service back to main, env stopped
 //   node sandbox/shoplite/local.mjs env start|stop
 import fs from "node:fs";
@@ -86,6 +87,16 @@ switch (cmd) {
       });
       envStop(true);
       const branch = git(tests, "branch", "--show-current");
+      if (f.showcase) {
+        // Showcase: run the whole suite on the generated branch (json reporter keeps evidence), then attach evidence
+        // for the story if every acceptance criterion passed. Without JIRA_* it only assesses (--dry-run).
+        envStart();
+        run("npx", ["playwright", "test", "--project=api"], { cwd: tests, env: { ...process.env, QA_BASE_URL: "http://127.0.0.1:8080" } });
+        envStop(true);
+        const jira = process.env.JIRA_BASE_URL && process.env.JIRA_API_TOKEN;
+        run("node", [CLI, "showcase", "--story", s.id, "--story-file", story, ...(jira ? [] : ["--dry-run"]), "-o", `../${s.id}-showcase.md`], { cwd: tests });
+        log(`showcase summary: ${path.join(work, `${s.id}-showcase.md`)}`);
+      }
       log(`generation exit ${code}; MR description: ${path.join(tests, "qa-sentinel-summary.md")}; branch: ${branch}`);
       if (branch.startsWith("qa-sentinel/")) log(`review the generated tests: git -C ${tests} diff main ${branch}`);
       process.exitCode = code;
