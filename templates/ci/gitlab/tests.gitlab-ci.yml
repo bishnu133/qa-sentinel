@@ -15,15 +15,16 @@
 
 variables:
   QA_SENTINEL_VERSION: "0.2.0"
-  # Where to install qa-sentinel from. Until it is on npm, use the GitHub repo, e.g. "github:bishnu133/qa-sentinel#main".
-  QA_SENTINEL_PACKAGE: "qa-sentinel@${QA_SENTINEL_VERSION}"
+  # Where to install qa-sentinel from: set QA_SENTINEL_PACKAGE as a group/project CI/CD variable, e.g.
+  # "github:bishnu133/qa-sentinel#main" until it is on npm. Default: qa-sentinel@$QA_SENTINEL_VERSION.
+  # (Not defined here on purpose: trigger jobs forward YAML variables downstream, where they override CI/CD variables.)
 
 # Install qa-sentinel from QA_SENTINEL_PACKAGE. A GitHub source ("github:owner/repo#branch") is cloned, built and
 # packed here first: npm's own build-on-install for git dependencies is unreliable for global installs.
 .qa-sentinel-install:
   script:
     - |
-      qa_pkg="${QA_SENTINEL_PACKAGE}"
+      qa_pkg="${QA_SENTINEL_PACKAGE:-qa-sentinel@${QA_SENTINEL_VERSION}}"
       case "$qa_pkg" in
         github:*|git+https://github.com/*|https://github.com/*)
           src="${qa_pkg#github:}"; src="${src#git+}"; src="${src#https://github.com/}"
@@ -65,10 +66,14 @@ qa-generate:
     # .gitlab-ci.yml variables, e.g. "source qa-env/start.sh"; it may export {{baseUrlEnv}}.
     - if [ -n "$QA_ENV_START" ]; then eval "$QA_ENV_START"; fi
     - git remote set-url origin "${CI_SERVER_URL}/${CI_PROJECT_PATH}.git"   # strip the job token GitLab put in .git/config
+    # A manually started upstream pipeline has no "before" commit (all zeros): compare with the parent instead.
+    - |
+      QA_BASE="$QA_SERVICE_BEFORE_SHA"
+      case "$QA_BASE" in ""|0000000000000000000000000000000000000000) QA_BASE="$(git -C "/tmp/services/$QA_SERVICE_NAME" rev-parse "$QA_SERVICE_SHA~1")" ;; esac
     - >
       qa-sentinel generate
       --service "$QA_SERVICE_NAME" --service-path "/tmp/services/$QA_SERVICE_NAME"
-      --base "$QA_SERVICE_BEFORE_SHA" --head "$QA_SERVICE_SHA" --push
+      --base "$QA_BASE" --head "$QA_SERVICE_SHA" --push
   artifacts:
     when: always
     paths: [qa-sentinel-summary.md, .qa-sentinel/runs/]

@@ -13,8 +13,9 @@
 
 variables:
   QA_SENTINEL_VERSION: "0.2.0"
-  # Where to install qa-sentinel from. Until it is on npm, use the GitHub repo, e.g. "github:bishnu133/qa-sentinel#main".
-  QA_SENTINEL_PACKAGE: "qa-sentinel@${QA_SENTINEL_VERSION}"
+  # Where to install qa-sentinel from: set QA_SENTINEL_PACKAGE as a group/project CI/CD variable, e.g.
+  # "github:bishnu133/qa-sentinel#main" until it is on npm. Default: qa-sentinel@$QA_SENTINEL_VERSION.
+  # (Not defined here on purpose: trigger jobs forward YAML variables downstream, where they override CI/CD variables.)
   QA_SERVICE_NAME: "$CI_PROJECT_NAME"
 
 # Install qa-sentinel from QA_SENTINEL_PACKAGE. A GitHub source ("github:owner/repo#branch") is cloned, built and
@@ -22,7 +23,7 @@ variables:
 .qa-sentinel-install:
   script:
     - |
-      qa_pkg="${QA_SENTINEL_PACKAGE}"
+      qa_pkg="${QA_SENTINEL_PACKAGE:-qa-sentinel@${QA_SENTINEL_VERSION}}"
       case "$qa_pkg" in
         github:*|git+https://github.com/*|https://github.com/*)
           src="${qa_pkg#github:}"; src="${src#git+}"; src="${src#https://github.com/}"
@@ -73,6 +74,8 @@ qa-trigger-generation:
   stage: test
   rules:
     - if: $CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+    # Re-run by hand: Build › Pipelines › New pipeline on the default branch (generates for its latest commit).
+    - if: $CI_PIPELINE_SOURCE == "web" && $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
   variables:
     QA_SERVICE_NAME: "$QA_SERVICE_NAME"
     QA_SERVICE_PROJECT: "$CI_PROJECT_PATH"
