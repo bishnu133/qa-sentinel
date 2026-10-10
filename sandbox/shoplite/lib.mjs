@@ -74,6 +74,31 @@ variables:
 `;
 }
 
+/**
+ * Lockfiles record where each package was downloaded from. On a machine with a private npm mirror
+ * (company Nexus/Artifactory) those URLs point at the mirror, which CI runners can't reach, and they leak
+ * the mirror's hostname into the repo. Rewrite them to the public registry; the integrity hashes are unchanged.
+ */
+export function publicLockfile(dir) {
+  const file = path.join(dir, "package-lock.json");
+  if (!fs.existsSync(file)) return 0;
+  let n = 0;
+  const text = fs.readFileSync(file, "utf8").replace(
+    /"resolved": "https?:\/\/(?!registry\.npmjs\.org\/)[^"]*?\/((?:@[^/"]+\/)?[^/"@]+\/-\/[^/"]+\.tgz)"/g,
+    (_m, tail) => {
+      n++;
+      return `"resolved": "https://registry.npmjs.org/${tail}"`;
+    },
+  );
+  if (n) {
+    fs.writeFileSync(file, text);
+    log(`${path.basename(dir)}: lockfile URLs pointed at registry.npmjs.org (${n} from a private mirror)`);
+  }
+  const left = (text.match(/"resolved": "https?:\/\/(?!registry\.npmjs\.org\/)[^"]+"/g) ?? []).length;
+  if (left) die(`${file} still has ${left} download URL(s) outside registry.npmjs.org; CI could not install them.`);
+  return n;
+}
+
 /** Create the three service repos (with lockfiles) in work/. */
 export function buildServices(work, { group } = {}) {
   for (const svc of SERVICES) {
@@ -83,6 +108,7 @@ export function buildServices(work, { group } = {}) {
     if (group) fs.writeFileSync(path.join(dir, ".gitlab-ci.yml"), serviceCi(group));
     log(`${svc}: npm install (lockfile)`);
     sh("npm", ["install", "--no-audit", "--no-fund", "--silent"], { cwd: dir });
+    publicLockfile(dir);
     git(dir, "init", "-q", "-b", "main");
     commitAll(dir, "ShopLite: initial service");
   }
@@ -102,6 +128,7 @@ export function buildTests(work, o = {}) {
   if (o.group) fs.writeFileSync(path.join(dir, ".gitlab-ci.yml"), testsCi(o.group));
   log(`${TEST_REPO}: npm install (lockfile)`);
   sh("npm", ["install", "--no-audit", "--no-fund", "--silent"], { cwd: dir });
+  publicLockfile(dir);
   git(dir, "init", "-q", "-b", "main");
   commitAll(dir, "ShopLite: test repo set up with qa-sentinel");
   return dir;
