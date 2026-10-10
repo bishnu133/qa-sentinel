@@ -11,6 +11,8 @@ import type { RiskedChange } from "./plan/risk.js";
 import { RISK_BADGE, decisionTable } from "./plan/render.js";
 
 export interface MrDescriptionInput {
+  /** Named environment the tests ran against (from `environments`), if any. */
+  environment?: string;
   service: string;
   sha: string;
   version: string;
@@ -40,6 +42,7 @@ export function mrDescription(i: MrDescriptionInput): string {
     "",
     requirementsLine(i.requirements),
     "",
+    ...(i.environment ? [`**Environment:** tests ran against \`${i.environment}\` before this MR was opened.`, ""] : []),
     verificationMarkdown(i.verification),
   ];
   if (i.plan) {

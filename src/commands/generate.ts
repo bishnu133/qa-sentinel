@@ -4,11 +4,13 @@ import { loadConfig } from "../config.js";
 import { changeSet, commitMessages, ensureAtCommit, git, hasChanges, isGitRepo, resolveSha, workingChanges } from "../git.js";
 import { matchesAny } from "../fsutil.js";
 import { formatUsage } from "../claude.js";
-import { ARTIFACT_GLOBS, VERSION, agentEnv, bashRuleForTests, cleanAgentAnswer, createRunDir, findService, startManifest, testEnv, writeManifest } from "../run.js";
+import { useEnvironment, ARTIFACT_GLOBS, VERSION, agentEnv, bashRuleForTests, cleanAgentAnswer, createRunDir, findService, startManifest, testEnv, writeManifest } from "../run.js";
 import { checkContent, checkPaths, checkServiceUntouched, findingsMarkdown, generatePolicy, snapshotTree, violations } from "../guardrails.js";
 import { resolveRequirements, storyMarkdown } from "../requirements.js";
 import { findDiscrepancies, verifyChanges } from "../verification.js";
 import { mrDescription } from "../reporting.js";
+import { generationSummary } from "../reporting/jiraSummary.js";
+import { publish } from "../reporting/publish.js";
 import { reviewMarkdown, reviewTests, type ReviewOutcome } from "../review/reviewer.js";
 import { TEST_FILE, addedLines } from "../guardrails.js";
 import { buildTestIndex, changedTests, checkNewTests, checkTestMap, readTestMap, traceMarkdown, traceStory } from "../analysis/testIndex.js";
@@ -29,6 +31,8 @@ export interface GenerateOptions {
   checkout?: boolean;
   storyFile?: string;
   push?: boolean;
+  /** Named environment from `environments` to run the tests against before anything is pushed. */
+  env?: string;
   dryRun?: boolean;
 }
 
@@ -46,6 +50,8 @@ export async function generateCommand(o: GenerateOptions): Promise<number> {
   const service = findService(c, o.service, cwd, o.servicePath);
   const repo = path.resolve(cwd, service.path);
   if (!isGitRepo(repo)) throw new Error(`${repo} is not a git repository`);
+  const environment = useEnvironment(c, o.env);
+  if (environment) log.step(`environment: ${environment} (${process.env[c.tests.api.baseUrlEnv]})`);
   if (!isGitRepo(cwd)) throw new Error(`The test repo (${cwd}) must be a git repository`);
   if (hasChanges(cwd) && !o.dryRun) throw new Error("The test repo has uncommitted changes; commit or stash them first.");
 
@@ -226,6 +232,7 @@ export async function generateCommand(o: GenerateOptions): Promise<number> {
 
   const usage = formatUsage(addUsage(...runs));
   const description = mrDescription({
+    environment,
     service: service.name,
     sha: cs.head,
     version: VERSION,
@@ -254,6 +261,10 @@ export async function generateCommand(o: GenerateOptions): Promise<number> {
   ]);
   log.ok(`committed ${paths.length} file(s) on ${branch}`);
 
+  if (o.push && c.verification.requireVerifiedToPush && verification.status !== "VERIFIED") {
+    log.warn(`not pushed: verification is ${verification.status}${environment ? ` on ${environment}` : ""} and verification.requireVerifiedToPush is on. The branch ${branch} stays local for inspection.`);
+    return finish(`not-pushed-${verification.status.toLowerCase()}`, 1);
+  }
   if (o.push) {
     // Push with a one-off URL so the token never sits in .git/config where an agent could read it.
     const projectPath = c.ci.testRepoProject && !/^\d+$/.test(c.ci.testRepoProject) ? c.ci.testRepoProject : process.env.CI_PROJECT_PATH;
@@ -280,6 +291,22 @@ export async function generateCommand(o: GenerateOptions): Promise<number> {
         ],
       });
       log.ok(`merge request ${mr.action}: ${mr.web_url}`);
+      if (c.reporting.targets.includes("jira")) {
+        const acText = new Map(req.acceptanceCriteria.map((a) => [a.id, a.text]));
+        const jiraSummary = generationSummary({
+          service: service.name,
+          risk: planned.risked.overall,
+          verification: verification.status,
+          environment,
+          mrUrl: mr.web_url,
+          trace: trace.acs,
+          acText,
+          discrepancies,
+          weakTests: review.review?.tests.filter((t) => t.verdict === "weak" || t.verdict === "wrong-oracle").length,
+        });
+        fs.writeFileSync(path.join(run.dir, "jira-summary.md"), jiraSummary);
+        await publish(c, { report: description, jiraSummary, service: service.name, storyKey: req.storyKey, mr: {}, targets: ["jira"] });
+      }
     }
   } else {
     log.info(`Review locally, then push ${branch} and open a merge request (or rerun with --push).`);

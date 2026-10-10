@@ -84,6 +84,7 @@ program
   .option("--checkout", "check out the head commit in the service repo if it is not already there (CI)")
   .option("--story-file <file>", "file with the story / acceptance criteria")
   .option("--push", "push the branch and open a GitLab merge request")
+  .option("--env <name>", "run the tests against this environment from `environments:` (e.g. dev, sit) before pushing")
   .option("--dry-run", "do everything except call Claude and commit")
   .action(wrap(async (o) => generateCommand({ cwd: cwd(), ...o })));
 
@@ -101,6 +102,7 @@ program
   .option("--base <ref>", "compare with this ref (default: MR diff base in CI, else origin/<targetBranch>)")
   .option("--policy", "also enforce the agent write policy (use on qa-sentinel/* branches)")
   .option("-o, --out <file>", "write the verification summary (markdown) here")
+  .option("--env <name>", "run against this environment from `environments:`")
   .action(wrap(async (o) => verifyCommand({ cwd: cwd(), ...o })));
 
 program.parseAsync();

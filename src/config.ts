@@ -102,6 +102,8 @@ export const ConfigSchema = z.object({
       targets: z.array(z.enum(["gitlab-mr", "jira"])).min(1).default(["gitlab-mr"]),
       jira: z
         .object({
+          /** summary: plain-language status per acceptance criterion (default); full: the whole technical report. */
+          format: z.enum(["summary", "full"]).default("summary"),
           /** Restrict the Jira comment, e.g. { type: "role", value: "Developers" }. */
           visibility: z.object({ type: z.enum(["role", "group"]), value: z.string() }).optional(),
           /** Jira caps comments at 32,767 characters; longer reports are cut and linked to the CI artifact. */
@@ -200,7 +202,20 @@ export const ConfigSchema = z.object({
       /** Check that the base URL answers before running tests (unreachable = BLOCKED). */
       preflight: z.boolean().default(true),
       timeoutMinutes: z.number().positive().default(15),
+      /** Environment `generate`/`verify` run against when --env is not given (a key of `environments`). */
+      defaultEnvironment: z.string().optional(),
+      /** With --push: keep the branch local unless verification is VERIFIED (no draft MRs). */
+      requireVerifiedToPush: z.boolean().default(false),
     })
+    .default({}),
+  /** Named lower environments the tests can run against before an MR is opened, e.g. dev and sit. */
+  environments: z
+    .record(
+      z.object({
+        baseUrl: z.string().url(),
+        description: z.string().optional(),
+      }),
+    )
     .default({}),
 });
 
