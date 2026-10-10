@@ -109,6 +109,10 @@ async function setup() {
 
   saveState(work, { group, gitlabUrl: gl?.url, level, projects: Object.fromEntries(Object.entries(projects).map(([k, v]) => [k, { id: v.id, web_url: v.web_url }])) });
   const base = gl?.url ?? "https://gitlab.com";
+  if (dry) {
+    console.log(`\n✓ Dry run complete: nothing was changed on GitLab. Run again without --dry-run to create ${base}/${group}.`);
+    return;
+  }
   console.log(`
 ✓ ShopLite is on GitLab (level ${level}).
   ${base}/${group}
