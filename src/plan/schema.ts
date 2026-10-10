@@ -9,7 +9,7 @@ import { z } from "zod";
 /** Optional fields accept null too (models often write null for "not applicable"); normalised to undefined. */
 const opt = <T extends z.ZodTypeAny>(t: T) => t.nullish().transform((v) => (v === null ? undefined : v)) as unknown as z.ZodOptional<T>;
 
-export const EVIDENCE_SOURCES = ["requirement", "source-code", "openapi", "contract-diff", "existing-test", "runtime"] as const;
+export const EVIDENCE_SOURCES = ["requirement", "source-code", "openapi", "contract-diff", "domain-rule", "existing-test", "runtime"] as const;
 
 export const EvidenceSchema = z
   .object({

@@ -90,6 +90,18 @@ For a single-line or trivial diff you may do steps 2 and 3 yourself, but the rul
 - `existingTests` and `impactedTests` must be real files in the test repo.
 - `requirementIds` must be ids from `acceptanceCriteriaIds` in `context.json`. When the oracle is `missing`, leave them empty, and no change may be `approved`.
 - A `conflicting` oracle is always turned into `review` by qa-sentinel. Write the decision as `review` yourself.
+- The decision must fit this table (qa-sentinel's decision engine checks it; the safety rows are corrected for you, the others are errors):
+
+  | Change | Allowed decisions |
+  | --- | --- |
+  | suspicious instruction | skip |
+  | not observable | reuse (tests exist) or skip |
+  | oracle `conflicting` or `ambiguous` | review |
+  | oracle `missing`, with `openapi` or `contract-diff` evidence | create, update or review (the contract is the oracle) |
+  | oracle `missing`, no contract evidence | review |
+  | type `removed` | update or review |
+  | approved, coverage `covered` | reuse or review |
+  | approved, coverage `partial`, `outdated`, `missing` or `unknown` | create, update or review |
 - Choose risk factors from evidence only. `auth`, `money` and `personal-data` make a change critical, so use them only when the change really touches those.
 - Sensitive factors, defined:
   - `auth`: login, sessions, tokens, roles, permissions, access checks

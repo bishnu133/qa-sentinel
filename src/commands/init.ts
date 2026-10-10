@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import YAML from "yaml";
+import { KB_README } from "../kb.js";
 import { confirm, input, select } from "@inquirer/prompts";
 import { CONFIG_FILE, type Config, ConfigSchema, configPath, writeConfig } from "../config.js";
 import { defaultRunCommand, detectProject, discoverServices, type Detection } from "../detect.js";
@@ -144,6 +145,8 @@ export async function initCommand(opts: InitOptions): Promise<Config> {
   }
 
   writeTestMap(cwd, config, det);
+
+  writeKbReadme(cwd, config);
   ensureGitignore(cwd);
   if (mode === "scratch") mergePackageJson(cwd);
 
@@ -253,6 +256,14 @@ function writeTestMap(cwd: string, c: Config, det: Detection) {
     '# Example endpoint entry:  "POST /orders": [tests/api/orders/create-order.spec.ts]\n';
   fs.writeFileSync(file, header + YAML.stringify(doc));
   log.dim("  created  test-map.yaml");
+}
+
+function writeKbReadme(cwd: string, c: Config) {
+  const file = path.join(cwd, c.knowledge.dir, "README.md");
+  if (fs.existsSync(file)) return;
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, KB_README);
+  log.dim(`  created  ${c.knowledge.dir}/README.md (add domain rules here; agents read them)`);
 }
 
 function ensureGitignore(cwd: string) {

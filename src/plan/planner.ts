@@ -7,6 +7,7 @@ import { type ContractDiff, breakingEndpoints, contractDiffMarkdown, diffSpecs }
 import type { AgentEngine, AgentResult } from "../engines/AgentEngine.js";
 import type { RequirementSnapshot } from "../requirements.js";
 import { type RunDir, agentEnv } from "../run.js";
+import { writeKnowledge } from "../kb.js";
 import { type PlanValidation, validatePlan } from "./validate.js";
 import { type RiskedChange, applyRisk } from "./risk.js";
 import type { RiskLevel, TestPlan } from "./schema.js";
@@ -59,6 +60,7 @@ export async function planChange(i: PlanInput): Promise<PlanOutcome> {
   const planRel = `${run.rel}/test-plan.json`;
   const planAbs = path.join(i.cwd, planRel);
   const oracle = oracleOf(i.req);
+  const knowledge = writeKnowledge(i.cwd, c, run.dir, run.rel);
   fs.writeFileSync(
     path.join(run.dir, "context.json"),
     JSON.stringify(
@@ -71,6 +73,7 @@ export async function planChange(i: PlanInput): Promise<PlanOutcome> {
         oracle,
         acceptanceCriteriaIds: i.req.acceptanceCriteria.map((a) => a.id),
         contractDiff: `${run.rel}/contract-diff.md`,
+        ...(knowledge ? { knowledge } : {}),
         planPath: planRel,
         ...i.context,
       },
@@ -97,6 +100,7 @@ export async function planChange(i: PlanInput): Promise<PlanOutcome> {
     prompt: [
       "Use the qa-plan skill.",
       `Run context: ${run.rel}/context.json, diff: ${run.rel}/change.diff, story: ${run.rel}/story.md, computed contract diff: ${run.rel}/contract-diff.md.`,
+      ...(knowledge ? [`Team domain rules: ${knowledge}. They rank after the story and the API contract as an oracle; cite them as evidence source "domain-rule".`] : []),
       `Write the plan as JSON to ${planRel}. That is the only file you may write. Then answer "done".`,
     ].join("\n"),
     maxTurns: c.agent.maxTurns.gapReport,
@@ -119,7 +123,7 @@ export async function planChange(i: PlanInput): Promise<PlanOutcome> {
       return { __error: fs.existsSync(planAbs) ? `test-plan.json is not valid JSON: ${(e as Error).message}` : "test-plan.json was not written" };
     }
   };
-  const check = (raw: any): PlanValidation => (raw?.__error ? { ok: false, errors: [raw.__error], corrections: [], warnings: [] } : validatePlan(raw, ctx));
+  const check = (raw: any): PlanValidation => (raw?.__error ? { ok: false, errors: [raw.__error], corrections: [], warnings: [], rules: {} } : validatePlan(raw, ctx));
 
   let validation = check(read());
   if (!validation.ok) {

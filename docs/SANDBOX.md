@@ -77,6 +77,17 @@ This starts the QA environment (all three services behind `http://127.0.0.1:8080
 - `git -C shoplite-local/qa-tests log -1 --stat` on the `qa-sentinel/...` branch: the generated tests;
 - `shoplite-local/qa-tests/.qa-sentinel/runs/<latest>/`: the run manifest, the plan and the agent logs.
 
+New in v0.3, worth trying:
+
+```bash
+node sandbox/shoplite/local.mjs run SHOP-101 --regression   # run the existing tests qa-sentinel selected, against the change
+(cd shoplite-local/qa-tests && npx qa-sentinel trace --story SHOP-102)   # AC → test matrix after a SHOP-102 generation
+```
+
+- The gap report now has a **Regression selection** section. With `--regression` you see whether the predicted breaks really happen.
+- The generated MR description has **Requirement traceability** (from the test tags) and an **Independent test review**.
+- `qa-tests/kb/` holds team rules (payments rules, review lessons). Edit them and rerun to see the agents follow them.
+
 Other commands:
 
 ```bash
@@ -171,6 +182,8 @@ node sandbox/shoplite/setup-gitlab.mjs --force --package github:bishnu133/qa-sen
 > `--force` re-pushes all four projects (it rewrites their `main`). Close any open sandbox MRs first.
 
 From now on `dev.mjs open` uses the real Jira keys in MR titles and doesn't copy the story into the MR description, so the acceptance criteria can only come from Jira. The gap report's "Requirements" line should say `jira` with the issue's status.
+
+Because Jira is connected, the setup also sets `reporting.targets: [gitlab-mr, jira]`: the gap report appears as an MR comment **and** as a comment on the Jira story (one per service, updated on every push).
 
 Try this: move a story back to **To Do** and push again. The requirement should show as **not approved**, and the plan should treat its acceptance criteria accordingly.
 

@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import YAML from "yaml";
+import { buildTestIndex, checkTestMap, readTestMap } from "../analysis/testIndex.js";
 import { CONFIG_FILE, configPath, loadConfig } from "../config.js";
 import { claudeAvailable } from "../claude.js";
 import { isGitRepo } from "../git.js";
@@ -68,6 +69,13 @@ export function runChecks(cwd: string, env: NodeJS.ProcessEnv = process.env): Ch
     const mapped = services.filter((s) => Object.keys(s?.endpoints ?? {}).length > 0).length;
     const level: Level = services.length && mapped === services.length ? "ok" : "warn";
     add(level, `test-map: ${mapped}/${services.length} services have endpoints mapped`, level === "warn" ? "run `qa-sentinel learn`" : undefined);
+  }
+  const index = buildTestIndex(cwd, c.tests.api.dir);
+  if (index.length) {
+    const tagged = index.filter((t) => t.endpoints.length).length;
+    add(tagged === index.length ? "ok" : "warn", `test tags: ${tagged}/${index.length} tests have @endpoint`, tagged === index.length ? undefined : "tag tests so impact analysis and traceability can find them (`qa-sentinel trace`)");
+    const mismatches = checkTestMap(index, readTestMap(cwd), cwd).filter((f) => f.level === "warning").length;
+    if (mismatches) add("warn", `test-map.yaml agrees with test tags`, `${mismatches} mismatch(es); run \`qa-sentinel trace\``);
   }
 
   if (env[c.tests.api.baseUrlEnv]) add("ok", `${c.tests.api.baseUrlEnv} set`);

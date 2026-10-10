@@ -14,9 +14,9 @@ The analysis is already done. `test-plan.validated.json` (path in the prompt) is
 
 1. Read the validated plan, `context.json`, `story.md` and `change.diff`.
 2. **test-data** sub-agent: preconditions for the proposed scenarios, and any new setup helpers.
-3. **api-test-author** sub-agent: implement only the `update`, `create` and `review` decisions and their `proposedScenarios`, and update `test-map.yaml`.
+3. **api-test-author** sub-agent: implement only the `update`, `create` and `review` decisions and their `proposedScenarios`, and update `test-map.yaml`. Every new or changed test carries `@service`, `@endpoint`, `@story` and `@ac` tags (the scenario's `requirementIds`); qa-sentinel builds the MR's requirement → test matrix from them and flags tests without them.
 4. **test-executor** sub-agent: run only the changed specs and fix test bugs (max attempts in `context.json`).
-5. Review the overall diff yourself (`git diff`, `git status`). Check for: no secrets, no environment URLs, no unreported assertion removals, no duplicate tests for `update` decisions, and nothing outside the allowed paths.
+5. Review the overall diff yourself (`git diff`, `git status`). Check for: every new test tagged with `@endpoint`, `@story` and `@ac`; no secrets, no environment URLs, no unreported assertion removals, no duplicate tests for `update` decisions, and nothing outside the allowed paths.
 
 Keep the scope tight. Do not refactor unrelated tests.
 

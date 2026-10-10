@@ -1,6 +1,6 @@
 {
   "name": "qa-sentinel",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Plug-in AI QA agents for any project: gap reports on every merge request and auto-generated API tests, powered by Claude Code and run in GitLab CI or Jenkins.",
   "type": "module",
   "bin": {
