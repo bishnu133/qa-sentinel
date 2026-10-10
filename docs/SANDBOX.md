@@ -172,6 +172,8 @@ node sandbox/shoplite/setup-gitlab.mjs --force --package github:bishnu133/qa-sen
 
 From now on `dev.mjs open` uses the real Jira keys in MR titles and doesn't copy the story into the MR description, so the acceptance criteria can only come from Jira. The gap report's "Requirements" line should say `jira` with the issue's status.
 
+Because Jira is connected, the setup also sets `reporting.targets: [gitlab-mr, jira]`: the gap report appears as an MR comment **and** as a comment on the Jira story (one per service, updated on every push).
+
 Try this: move a story back to **To Do** and push again. The requirement should show as **not approved**, and the plan should treat its acceptance criteria accordingly.
 
 ---

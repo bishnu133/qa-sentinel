@@ -131,6 +131,9 @@ requirements:
     projectKeys: [SHOP]              # story keys are found in MR title, branch or commit messages
     acceptanceCriteriaField: customfield_10045   # optional; else AC are read from the description
     approvedStatuses: [Ready for Dev, In Progress, Done]   # these statuses make AC "approved"
+reporting:
+  targets: [gitlab-mr]               # where `gap-report --post` publishes: gitlab-mr, jira, or both
+  jira: { maxChars: 30000 }          # optional visibility: { type: role, value: Developers }
 ci: { platform: gitlab, testRepoProject: my-group/qa-tests, targetBranch: main }
 agent:
   model: <optional, passed to claude --model>
@@ -192,7 +195,7 @@ The order follows external review #1 ([response](docs/REVIEW-RESPONSE-1.md)):
 | **v0.1.1** ✅ | Safety and correctness: requirement provenance, SHA pinning, enforced guardrails, independent verification, run limits, credential isolation |
 | **v0.2** ✅ | Zod-validated `TestPlan` and plan → author split, risk computed in code, deterministic OpenAPI contract diff, `AgentEngine` interface, benchmark (8 scenarios, recall/precision/accuracy), Jira requirements (REST), operating levels |
 | v0.2.x | ShopLite sandbox and historical replay ✅; real GitLab pilot (read-only on historical MRs first) |
-| v0.2.x next | Jira as a report target (`reporting.targets: [gitlab-mr, jira]`): one updated comment per story, Jira formatting, size-capped with a link to the full report |
+| v0.2.x ✅ | Jira as a report target (`reporting.targets: [gitlab-mr, jira]`): one updated comment per story, Jira formatting, size-capped with a link to the full report |
 | v0.3 | Decision engine and risk in code, scenario-level traceability, regression selection, AI assertion-strength review, `kb/` |
 | v0.4 | Multi-service: auto-assembled feature manifests with deployment readiness, contract impact |
 | v0.5 | Web (Playwright, optional [Bubblegum](https://github.com/bishnu133/bubblegum) healing) and Mobile (WebdriverIO + Appium) via a cross-platform workflow planner and shared data layer |

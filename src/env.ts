@@ -39,7 +39,7 @@ export function scrubbedEnv(o: EnvOptions, env: NodeJS.ProcessEnv = process.env)
   }
   if (o.forAgent) for (const k of claudeAuthNames(env)) if (env[k] !== undefined) out[k] = env[k];
   // Belt and braces: these are publisher-only credentials.
-  for (const k of ["QA_SENTINEL_GITLAB_TOKEN", "GITLAB_TOKEN", "CI_JOB_TOKEN", "GITHUB_TOKEN", "GH_TOKEN"]) {
+  for (const k of ["QA_SENTINEL_GITLAB_TOKEN", "GITLAB_TOKEN", "CI_JOB_TOKEN", "GITHUB_TOKEN", "GH_TOKEN", "JIRA_API_TOKEN", "JIRA_PAT", "JIRA_EMAIL"]) {
     if (!o.passEnv.includes(k)) delete out[k];
   }
   return out;

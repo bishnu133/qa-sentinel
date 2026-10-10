@@ -83,6 +83,20 @@ export const ConfigSchema = z.object({
         .default({}),
     })
     .default({}),
+  /** Where `gap-report --post` publishes. One comment per target, updated in place on every run. */
+  reporting: z
+    .object({
+      targets: z.array(z.enum(["gitlab-mr", "jira"])).min(1).default(["gitlab-mr"]),
+      jira: z
+        .object({
+          /** Restrict the Jira comment, e.g. { type: "role", value: "Developers" }. */
+          visibility: z.object({ type: z.enum(["role", "group"]), value: z.string() }).optional(),
+          /** Jira caps comments at 32,767 characters; longer reports are cut and linked to the CI artifact. */
+          maxChars: z.number().int().min(2000).max(32000).default(30000),
+        })
+        .default({}),
+    })
+    .default({}),
   ci: z.object({
     platform: z.enum(["gitlab", "jenkins"]),
     scm: z.enum(["gitlab", "github", "none"]).default("gitlab"),
