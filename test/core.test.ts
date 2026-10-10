@@ -251,3 +251,15 @@ describe("generate helpers", () => {
     expect(cleanAgentAnswer("### QA impact\nok")).toBe("### QA impact\nok");
   });
 });
+
+describe("findService", () => {
+  const c = { workspace: { services: [{ name: "payments-service", path: "../payments-service", dependsOn: [] }] } } as any;
+  it("rejects a service name that is an unexpanded CI variable", async () => {
+    const { findService } = await import("../src/run.js");
+    expect(() => findService(c, "$QA_SERVICE_NAME", "/tmp", "/tmp/services/x")).toThrow(/unexpanded CI variable/);
+  });
+  it("keeps configured settings when an override path is given", async () => {
+    const { findService } = await import("../src/run.js");
+    expect(findService(c, "payments-service", "/tmp", "/tmp/services/payments-service")).toMatchObject({ name: "payments-service", path: "/tmp/services/payments-service" });
+  });
+});

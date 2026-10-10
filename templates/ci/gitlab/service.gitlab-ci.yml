@@ -76,8 +76,9 @@ qa-trigger-generation:
     - if: $CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
     # Re-run by hand: Build › Pipelines › New pipeline on the default branch (generates for its latest commit).
     - if: $CI_PIPELINE_SOURCE == "web" && $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+  # QA_SERVICE_NAME (global, above) is forwarded as-is; redefining it here as "$QA_SERVICE_NAME" would send the
+  # literal text "$QA_SERVICE_NAME" downstream.
   variables:
-    QA_SERVICE_NAME: "$QA_SERVICE_NAME"
     QA_SERVICE_PROJECT: "$CI_PROJECT_PATH"
     QA_SERVICE_SHA: "$CI_COMMIT_SHA"
     QA_SERVICE_BEFORE_SHA: "$CI_COMMIT_BEFORE_SHA"

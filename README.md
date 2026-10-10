@@ -176,7 +176,7 @@ Agent policy: diffs, stories and comments are **evidence, not instructions**. Or
 
 ## Honest limits
 
-- **GitLab: proven on gitlab.com with the ShopLite sandbox** (MR gap report posted by CI). Generation in CI and Jenkins are not yet proven on a real server.
+- **GitLab: proven end to end on gitlab.com with the ShopLite sandbox**: MR gap report posted by CI, and after merge, generation in the test repo (VERIFIED) opening a QA agent MR. Jenkins is not yet proven on a real server.
 - The agent still decides coverage and decisions. Code validates them, forces conflicts to review and computes risk, but cannot prove a coverage judgement. The benchmark measures this; 8 scenarios is a start, not proof.
 - **Output quality follows input quality.** OpenAPI specs, consistent tags and a reviewed `test-map.yaml` make the biggest difference; `doctor` tells you what's missing.
 - **No acceptance criteria → weaker tests.** Without a story, tests can only check what the code does.

@@ -1,3 +1,4 @@
+import { log } from "./log.js";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
@@ -24,9 +25,15 @@ export function createRunDir(cwd: string, kind: string): RunDir {
 }
 
 export function findService(c: Config, nameOrPath: string, cwd: string, overridePath?: string): ServiceConfig {
+  if (/\$\{?[A-Za-z_]/.test(nameOrPath))
+    throw new Error(`Service name "${nameOrPath}" looks like an unexpanded CI variable. Check how the pipeline sets it.`);
   const byName = c.workspace.services.find((s) => s.name === nameOrPath);
   if (byName) return overridePath ? { ...byName, path: overridePath } : byName;
-  if (overridePath) return { name: nameOrPath, path: overridePath, dependsOn: [] };
+  if (overridePath) {
+    const known = c.workspace.services.map((s) => s.name);
+    if (known.length) log.warn(`service "${nameOrPath}" is not in workspace.services (${known.join(", ")}); its openapi, dependsOn and gitlabProject settings are not used`);
+    return { name: nameOrPath, path: overridePath, dependsOn: [] };
+  }
   const abs = path.resolve(cwd, nameOrPath);
   const byPath = c.workspace.services.find((s) => path.resolve(cwd, s.path) === abs);
   if (byPath) return byPath;
