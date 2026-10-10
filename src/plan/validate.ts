@@ -60,7 +60,11 @@ export function validatePlan(raw: unknown, ctx: PlanContext): PlanValidation {
   for (const c of plan.changes) {
     checkReqIds(`change ${c.id}`, c.requirementIds);
     if (c.type === "suspicious-instruction" && c.observable) errors.push(`change ${c.id}: a suspicious instruction is not an observable behaviour change`);
-    if (c.type === "internal" && c.observable) warnings.push(`change ${c.id} is typed internal but marked observable`);
+    if (c.type === "internal" && c.observable) {
+      // An internal change has no observable behaviour by definition; don't let it raise risk or demand new tests.
+      corrections.push(`change ${c.id}: typed "internal" so marked non-observable`);
+      c.observable = false;
+    }
     if (c.observable && !c.riskFactors.length) errors.push(`change ${c.id}: an observable change needs at least one risk factor`);
     if (ctx.requirementsMissing && c.oracleStatus === "approved") errors.push(`change ${c.id}: oracle cannot be "approved" when no requirements were provided`);
     for (const e of c.evidence) {
@@ -96,10 +100,12 @@ export function validatePlan(raw: unknown, ctx: PlanContext): PlanValidation {
         if (d.coverage !== "covered") errors.push(`${where}: "reuse" requires coverage "covered" (got "${d.coverage}")`);
         break;
       case "update":
+        if (c.type === "internal") errors.push(`${where}: an internal change needs no new tests; use "reuse" (existing tests) or "skip"`);
         if (!d.existingTests.length) errors.push(`${where}: "update" must name the spec(s) to change`);
         if (!d.proposedScenarios.length) errors.push(`${where}: "update" needs at least one proposed scenario`);
         break;
       case "create":
+        if (c.type === "internal") errors.push(`${where}: an internal change needs no new tests; use "reuse" (existing tests) or "skip"`);
         if (!d.proposedScenarios.length) errors.push(`${where}: "create" needs at least one proposed scenario`);
         break;
       case "review":

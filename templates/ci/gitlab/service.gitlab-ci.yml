@@ -12,15 +12,39 @@
 # The service's name in qa-sentinel.config.yaml must equal $CI_PROJECT_NAME (or set QA_SERVICE_NAME).
 
 variables:
-  QA_SENTINEL_VERSION: "0.1.1"
+  QA_SENTINEL_VERSION: "0.2.0"
+  # Where to install qa-sentinel from: set QA_SENTINEL_PACKAGE as a group/project CI/CD variable, e.g.
+  # "github:bishnu133/qa-sentinel#main" until it is on npm. Default: qa-sentinel@$QA_SENTINEL_VERSION.
+  # (Not defined here on purpose: trigger jobs forward YAML variables downstream, where they override CI/CD variables.)
   QA_SERVICE_NAME: "$CI_PROJECT_NAME"
+
+# Install qa-sentinel from QA_SENTINEL_PACKAGE. A GitHub source ("github:owner/repo#branch") is cloned, built and
+# packed here first: npm's own build-on-install for git dependencies is unreliable for global installs.
+.qa-sentinel-install:
+  script:
+    - |
+      qa_pkg="${QA_SENTINEL_PACKAGE:-qa-sentinel@${QA_SENTINEL_VERSION}}"
+      case "$qa_pkg" in
+        github:*|git+https://github.com/*|https://github.com/*)
+          src="${qa_pkg#github:}"; src="${src#git+}"; src="${src#https://github.com/}"
+          repo="${src%%#*}"; repo="${repo%.git}"; ref="main"
+          case "$src" in *"#"*) ref="${src#*#}" ;; esac
+          rm -rf /tmp/qa-sentinel-src /tmp/qa-sentinel-*.tgz
+          git clone -q --depth 1 --branch "$ref" "https://github.com/${repo}.git" /tmp/qa-sentinel-src
+          (cd /tmp/qa-sentinel-src && npm ci --no-audit --no-fund --loglevel=error && npm pack --silent --pack-destination /tmp > /dev/null)
+          qa_pkg="$(ls /tmp/qa-sentinel-*.tgz | head -n 1)"
+          ;;
+      esac
+      npm i -g --no-audit --no-fund --loglevel=error "$qa_pkg"
+      qa-sentinel --version
 
 .qa-sentinel:
   image: node:22
   variables:
     GIT_DEPTH: 0
   before_script:
-    - npm i -g @anthropic-ai/claude-code "qa-sentinel@${QA_SENTINEL_VERSION}"
+    - npm i -g --no-audit --no-fund --loglevel=error @anthropic-ai/claude-code
+    - !reference [.qa-sentinel-install, script]
     - git clone --depth 1 --branch {{targetBranch}} "https://gitlab-ci-token:${CI_JOB_TOKEN}@${CI_SERVER_HOST}/${QA_TESTS_PROJECT}.git" /tmp/qa-tests
     - git -C /tmp/qa-tests remote remove origin   # no token in .git/config for the agent to read
     - (cd /tmp/qa-tests && npm ci --ignore-scripts)
@@ -50,8 +74,11 @@ qa-trigger-generation:
   stage: test
   rules:
     - if: $CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+    # Re-run by hand: Build › Pipelines › New pipeline on the default branch (generates for its latest commit).
+    - if: $CI_PIPELINE_SOURCE == "web" && $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+  # QA_SERVICE_NAME (global, above) is forwarded as-is; redefining it here as "$QA_SERVICE_NAME" would send the
+  # literal text "$QA_SERVICE_NAME" downstream.
   variables:
-    QA_SERVICE_NAME: "$QA_SERVICE_NAME"
     QA_SERVICE_PROJECT: "$CI_PROJECT_PATH"
     QA_SERVICE_SHA: "$CI_COMMIT_SHA"
     QA_SERVICE_BEFORE_SHA: "$CI_COMMIT_BEFORE_SHA"

@@ -1,0 +1,25 @@
+# Traceability map: service → endpoint → test files. Agents read and update this file.
+version: 1
+services:
+  orders-service:
+    path: ../orders-service
+    openapi: openapi.yaml
+    endpoints:
+      POST /orders: [tests/api/orders/orders.spec.ts]
+      GET /orders/{id}: [tests/api/orders/orders.spec.ts]
+    screens: {}
+  payments-service:
+    path: ../payments-service
+    openapi: openapi.yaml
+    endpoints:
+      POST /payments/authorize: [tests/api/payments/payments.spec.ts]
+      GET /payments/{id}: [tests/api/payments/payments.spec.ts]
+    screens: {}
+  notifications-service:
+    path: ../notifications-service
+    openapi: openapi.yaml
+    endpoints:
+      POST /notifications: [tests/api/notifications/notifications.spec.ts]
+      GET /notifications: [tests/api/notifications/notifications.spec.ts]
+    screens: {}
+unmapped: []

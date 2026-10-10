@@ -25,7 +25,22 @@ pipeline {
     stage('Prepare') {
       steps {
         sh 'npm ci'
-        sh 'npm i -g --prefix "$WORKSPACE/.npm-global" @anthropic-ai/claude-code qa-sentinel@0.1.1'
+        sh '''
+          # Install qa-sentinel from QA_SENTINEL_PACKAGE; a GitHub source is cloned, built and packed first.
+          qa_pkg="${QA_SENTINEL_PACKAGE:-qa-sentinel@0.2.0}"
+          case "$qa_pkg" in
+            github:*|git+https://github.com/*|https://github.com/*)
+              src="${qa_pkg#github:}"; src="${src#git+}"; src="${src#https://github.com/}"
+              repo="${src%%#*}"; repo="${repo%.git}"; ref="main"
+              case "$src" in *"#"*) ref="${src#*#}" ;; esac
+              rm -rf "$WORKSPACE/.qa-sentinel-src" "$WORKSPACE"/qa-sentinel-*.tgz
+              git clone -q --depth 1 --branch "$ref" "https://github.com/${repo}.git" "$WORKSPACE/.qa-sentinel-src"
+              (cd "$WORKSPACE/.qa-sentinel-src" && npm ci --no-audit --no-fund --loglevel=error && npm pack --silent --pack-destination "$WORKSPACE" > /dev/null)
+              qa_pkg="$(ls "$WORKSPACE"/qa-sentinel-*.tgz | head -n 1)"
+              ;;
+          esac
+          npm i -g --prefix "$WORKSPACE/.npm-global" --no-audit --no-fund --loglevel=error @anthropic-ai/claude-code "$qa_pkg"
+        '''
         dir("/tmp/services/${params.QA_SERVICE_NAME}") {
           git url: params.QA_SERVICE_REPO, branch: 'main', credentialsId: 'gitlab-checkout'
           // Pin to the merged commit and drop the remote before any agent runs.

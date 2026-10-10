@@ -94,6 +94,15 @@ describe("TestPlan validation", () => {
     expect(none).toMatch(/no requirements were provided/);
   });
 
+  it("treats internal changes as non-observable and refuses new tests for them", () => {
+    const p: any = basePlan();
+    p.changes[2] = { ...p.changes[2], observable: true, riskFactors: ["money"] };
+    const v = validatePlan(p, ctx);
+    expect(v.corrections.join()).toContain('typed "internal" so marked non-observable');
+    expect(v.plan!.changes[2].observable).toBe(false);
+    p.decisions[2] = { ...p.decisions[2], decision: "update", existingTests: ["tests/api/orders/create-order.spec.ts"], proposedScenarios: [{ title: "t", requirementIds: [], setup: [], assertions: ["a"] }] };
+    expect(validatePlan(p, ctx).errors.join()).toMatch(/internal change needs no new tests/);
+  });
   it("rejects skip on an observable change and covered-but-create", () => {
     const p: any = basePlan();
     p.decisions[0] = { ...p.decisions[0], decision: "skip", evidence: ev() };

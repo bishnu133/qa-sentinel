@@ -22,7 +22,9 @@
     "test": "vitest run",
     "lint": "tsc -p tsconfig.json --noEmit",
     "prepublishOnly": "npm run build && npm test",
-    "bench": "tsx bench/run.ts"
+    "bench": "tsx bench/run.ts",
+    "prepare": "tsc -p tsconfig.json",
+    "replay": "tsx bench/replay.ts"
   },
   "keywords": [
     "qa",

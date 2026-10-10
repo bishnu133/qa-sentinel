@@ -19,6 +19,7 @@ Two files, two repos:
 - [ ] Using Jira for requirements: `JIRA_EMAIL` + `JIRA_API_TOKEN` (Cloud) or `JIRA_PAT` (Server/DC) as masked variables in both repos. They are used by the CLI only and never passed to agents.
 - [ ] `QA_TESTS_PROJECT` in each service repo's `variables:`
 - [ ] Job token allowlist: this repo's CI_JOB_TOKEN can read service repos, service repos' tokens can read this repo
+- [ ] (maintenance level) Test repo › Settings › CI/CD › Variables › **Minimum role to use pipeline variables: Developer**. Service repos trigger generation with variables; new gitlab.com projects default to "No one allowed" and the trigger job fails in seconds.
 - [ ] `ci.testRepoProject` set in `qa-sentinel.config.yaml`
 - [ ] Protect the `{{targetBranch}}` branch: MRs from `qa-sentinel/*` need 1 approval
 - [ ] `gitlabProject` set for each service in `qa-sentinel.config.yaml` (or rely on `QA_SERVICE_PROJECT` from the trigger), so generation can fetch the MR's acceptance criteria

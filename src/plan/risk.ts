@@ -26,8 +26,9 @@ export function deriveFactors(change: Change, ctx: { breakingEndpoints: Set<stri
   const f = new Set<RiskFactor>(change.riskFactors);
   if (change.oracleStatus === "conflicting" && change.observable) f.add("conflicting-oracle");
   if (change.endpoint && ctx.breakingEndpoints.has(normaliseEndpoint(change.endpoint))) f.add("breaking-contract");
-  // Consumers exist and the change alters what they receive or send.
-  if (ctx.crossService && change.observable && ["contract-change", "removed", "error-handling"].includes(change.type)) f.add("cross-service");
+  // Other services consume this one and the change breaks what they send or receive.
+  const breaking = Boolean(change.endpoint && ctx.breakingEndpoints.has(normaliseEndpoint(change.endpoint)));
+  if (ctx.crossService && change.observable && (change.type === "removed" || breaking)) f.add("cross-service");
   return [...f];
 }
 

@@ -1,0 +1,36 @@
+openapi: 3.0.3
+info: { title: Notifications, version: 1.0.0 }
+paths:
+  /notifications/health:
+    get: { responses: { "200": { description: ok } } }
+  /notifications:
+    post:
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [orderId, channel, message]
+              properties:
+                orderId: { type: string }
+                channel: { type: string, enum: [email, sms] }
+                message: { type: string }
+      responses:
+        "202": { description: queued, content: { application/json: { schema: { $ref: '#/components/schemas/Notification' } } } }
+        "400": { description: invalid }
+    get:
+      parameters: [{ in: query, name: orderId, required: false, schema: { type: string } }]
+      responses:
+        "200": { description: ok, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/Notification' } } } } }
+components:
+  schemas:
+    Notification:
+      type: object
+      required: [id, orderId, channel, message, status]
+      properties:
+        id: { type: string }
+        orderId: { type: string }
+        channel: { type: string, enum: [email, sms] }
+        message: { type: string }
+        status: { type: string, enum: [queued] }

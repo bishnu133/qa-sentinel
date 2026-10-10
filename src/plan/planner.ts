@@ -81,7 +81,8 @@ export async function planChange(i: PlanInput): Promise<PlanOutcome> {
 
   const base = {
     cwd: i.cwd,
-    readOnlyDirs: [i.repo, ...c.workspace.services.filter((s) => i.service.dependsOn.includes(s.name)).map((s) => path.resolve(i.cwd, s.path))],
+    // Dependency services are readable when checked out alongside (locally); in CI they may not exist.
+    readOnlyDirs: [i.repo, ...c.workspace.services.filter((s) => i.service.dependsOn.includes(s.name)).map((s) => path.resolve(i.cwd, s.path))].filter((d) => fs.existsSync(d)),
     write: { allowed: [planRel], blocked: [] },
     bash: [],
     env: agentEnv(c),
