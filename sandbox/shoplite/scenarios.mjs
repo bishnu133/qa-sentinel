@@ -142,7 +142,7 @@ app.get("/payments/:id", (req, res) => {`,
 
 ## Acceptance criteria
 1. Order totals are unchanged (qty × unitPrice, rounded to cents).`,
-    expect: "Low risk. Reuse/skip only; no new tests.",
+    expect: "Low, or medium because pricing is money code (a refactor in money code still deserves a regression run). Reuse/skip only; no new tests.",
     edits: {
       "src/server.js": [
         ["async function post(url, body) {", "function orderTotal(qty, unitPrice) {\n  return Math.round(qty * unitPrice * 100) / 100;\n}\n\nasync function post(url, body) {"],

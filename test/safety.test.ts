@@ -224,6 +224,15 @@ describe("verification", () => {
     const d = findDiscrepancies(r, start, workingChanges(r));
     expect(d).toEqual([{ file: "tests/api/o.spec.ts", test: "returns 409 for the 4th order", note: "AC-3 expects 409 on 4th order; service allows 5" }]);
   });
+  it("keeps a QA-AGENT note that spans several comment lines", () => {
+    const r = tmp();
+    write(r, "tests/api/p.spec.ts", "test('old', () => {});\n");
+    gitInit(r);
+    const start = sh(r, "rev-parse", "HEAD").trim();
+    write(r, "tests/api/p.spec.ts", "test('old', () => {});\n// QA-AGENT: AC-2 says total refunds never exceed the authorised amount,\n// but the service only checks each refund on its own | see server.js:26\ntest.fixme('cumulative refunds over the amount return 422', async () => {});\n");
+    const [d] = findDiscrepancies(r, start, workingChanges(r));
+    expect(d.note).toBe("AC-2 says total refunds never exceed the authorised amount, but the service only checks each refund on its own \\| see server.js:26");
+  });
 });
 
 describe("runner limits and publishing", () => {

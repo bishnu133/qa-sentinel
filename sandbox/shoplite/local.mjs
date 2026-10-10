@@ -60,6 +60,8 @@ switch (cmd) {
     const s = scenario(arg);
     const svcDir = path.join(work, s.service);
     for (const svc of SERVICES) git(path.join(work, svc), "checkout", "-q", "-f", "main");
+    const prev = git(tests, "branch", "--show-current");
+    if (prev.startsWith("qa-sentinel/")) log(`generated tests stay on branch ${prev} (review: git -C ${tests} diff main ${prev})`);
     git(tests, "checkout", "-q", "-f", "main");
     log(`${s.id}: developer change on ${s.service} (${s.branch})`);
     makeChange(svcDir, s);
@@ -74,7 +76,9 @@ switch (cmd) {
         env: { ...process.env, QA_BASE_URL: "http://127.0.0.1:8080" },
       });
       envStop(true);
-      log(`generation exit ${code}; MR description: ${path.join(tests, "qa-sentinel-summary.md")}; branch: ${git(tests, "branch", "--show-current")}`);
+      const branch = git(tests, "branch", "--show-current");
+      log(`generation exit ${code}; MR description: ${path.join(tests, "qa-sentinel-summary.md")}; branch: ${branch}`);
+      log(`review the generated tests: git -C ${tests} diff main ${branch}`);
       process.exitCode = code;
     } else process.exitCode = gap;
     break;
