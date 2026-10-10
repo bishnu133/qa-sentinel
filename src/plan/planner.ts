@@ -119,7 +119,7 @@ export async function planChange(i: PlanInput): Promise<PlanOutcome> {
       return { __error: fs.existsSync(planAbs) ? `test-plan.json is not valid JSON: ${(e as Error).message}` : "test-plan.json was not written" };
     }
   };
-  const check = (raw: any): PlanValidation => (raw?.__error ? { ok: false, errors: [raw.__error], corrections: [], warnings: [] } : validatePlan(raw, ctx));
+  const check = (raw: any): PlanValidation => (raw?.__error ? { ok: false, errors: [raw.__error], corrections: [], warnings: [], rules: {} } : validatePlan(raw, ctx));
 
   let validation = check(read());
   if (!validation.ok) {

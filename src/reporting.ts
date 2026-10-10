@@ -18,6 +18,8 @@ export interface MrDescriptionInput {
   verification: VerificationReport;
   findings: Finding[];
   discrepancies: Discrepancy[];
+  /** Requirement → test matrix built from test tags (empty when the story has no AC). */
+  traceability?: string;
   agentSummary: string;
   usage: string;
   runId: string;
@@ -54,6 +56,7 @@ export function mrDescription(i: MrDescriptionInput): string {
       ...i.discrepancies.map((d) => `| ${d.test} | \`${d.file}\` | ${d.note ?? "_no QA-AGENT note: ask the author agent why it is skipped_"} |`),
     );
   }
+  if (i.traceability) parts.push("", i.traceability);
   if (warnings.length) parts.push("", "### Policy warnings", findingsMarkdown(warnings));
   parts.push(
     "",

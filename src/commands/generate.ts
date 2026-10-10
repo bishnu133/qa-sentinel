@@ -9,6 +9,7 @@ import { checkContent, checkPaths, checkServiceUntouched, findingsMarkdown, gene
 import { resolveRequirements, storyMarkdown } from "../requirements.js";
 import { findDiscrepancies, verifyChanges } from "../verification.js";
 import { mrDescription } from "../reporting.js";
+import { buildTestIndex, checkNewTests, checkTestMap, readTestMap, traceMarkdown, traceStory } from "../analysis/testIndex.js";
 import { createOrUpdateMergeRequest, gitlabContext, pushUrl } from "../scm/gitlab.js";
 import { engineFor } from "../engines/ClaudeCodeEngine.js";
 import { type AgentResult, addUsage } from "../engines/AgentEngine.js";
@@ -194,6 +195,16 @@ export async function generateCommand(o: GenerateOptions): Promise<number> {
   log.step(`verifying ${changes.length} changed file(s) independently`);
   const verification = await verifyChanges({ cwd, c, changes, runDir: run.dir, env: testEnv(c) });
   const discrepancies = findDiscrepancies(cwd, startSha, changes);
+  // Traceability from the tests' own tags: what each AC is now proven by, and tests that don't say what they prove.
+  const index = buildTestIndex(cwd, c.tests.api.dir);
+  fs.writeFileSync(path.join(run.dir, "test-index.json"), JSON.stringify(index, null, 2));
+  const changedFiles = changes.filter((x) => x.status !== "D").map((x) => x.path);
+  const traceFindings = [
+    ...checkNewTests(index, changedFiles, req.storyKey, req.acceptanceCriteria.map((a) => a.id)),
+    ...checkTestMap(index, readTestMap(cwd), cwd).filter((f) => f.level === "warning" && changedFiles.some((cf) => f.file.startsWith(cf) || f.file === "test-map.yaml")),
+  ];
+  findings.push(...traceFindings.map((f) => ({ level: "warning" as const, rule: "traceability" as const, file: f.file, message: f.message })));
+  const trace = traceStory(index, req.storyKey, req.acceptanceCriteria);
   manifest.verification = { status: verification.status };
   log[verification.status === "VERIFIED" ? "ok" : "warn"](`verification: ${verification.status} – ${verification.checks.map((x) => `${x.name} ${x.status}`).join(", ")}`);
 
@@ -206,6 +217,7 @@ export async function generateCommand(o: GenerateOptions): Promise<number> {
     verification,
     findings,
     discrepancies,
+    traceability: traceMarkdown(req.storyKey, trace),
     agentSummary: cleanAgentAnswer(author.result),
     usage,
     runId: run.id,

@@ -18,7 +18,12 @@ These conventions ship with the qa-sentinel Playwright scaffold. Change them her
 - **Setup data:** use builders in `src/data/` and setup helpers in `{{helpersDir}}`; every test creates the data it needs.
 - **Structure:** `test.describe('<METHOD> <path>')` per endpoint; test titles state the behaviour: `returns 400 when deliverySlot is missing`.
 - **Assertions:** status first, then schema (`expectSchema(body, schema)` from `src/schemas`), then the specific values the test is about.
-- **Tags:** in the title, e.g. `test('creates an order @service:orders @endpoint:POST_/orders @story:SHOP-123', …)`.
+- **Tags (required on every new or changed test, fixme tests included):** in the title, e.g.
+  `test('rejects the 4th order in a slot @service:orders-service @endpoint:POST_/orders @story:SHOP-123 @ac:AC-3', …)`.
+  `@ac:` lists the acceptance criteria the test proves (comma-separated, `@ac:AC-1,AC-2`), using the ids from the story.
+  qa-sentinel builds the requirement → test matrix in the MR from these tags, so a test without them is invisible
+  to traceability. Tags may come from a `const tags = "…"` in the same file. Use the endpoint exactly as in test-map.yaml
+  (`METHOD_/path/{param}`).
 - **Known product bug / AC mismatch:** `test.fixme(...)` with a comment `// QA-AGENT: <mismatch>`.
 - **Example:** `{{apiDir}}/example/health.spec.ts`.
 {{/if}}
