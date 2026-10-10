@@ -21,6 +21,8 @@ These conventions ship with the qa-sentinel Playwright scaffold. Change them her
 - **Tags (required on every new or changed test, fixme tests included):** in the title, e.g.
   `test('rejects the 4th order in a slot @service:orders-service @endpoint:POST_/orders @story:SHOP-123 @ac:AC-3', …)`.
   `@ac:` lists the acceptance criteria the test proves (comma-separated, `@ac:AC-1,AC-2`), using the ids from the story.
+  Use `@ac:none` for a test that deliberately goes beyond the ACs (e.g. contract-only behaviour). Only tag ACs the
+  test really proves: an unrelated setup call doesn't count (an independent reviewer checks this).
   qa-sentinel builds the requirement → test matrix in the MR from these tags, so a test without them is invisible
   to traceability. Tags may come from a `const tags = "…"` in the same file. Use the endpoint exactly as in test-map.yaml
   (`METHOD_/path/{param}`).

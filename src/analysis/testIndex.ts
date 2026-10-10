@@ -50,7 +50,11 @@ export function parseTags(raw: string): Pick<IndexedTest, "services" | "endpoint
     if (k === "service") out.services.push(...vals);
     else if (k === "endpoint") out.endpoints.push(...vals.map(endpointFromTag));
     else if (k === "story") out.stories.push(...vals);
-    else if (k === "ac") out.acs.push(...vals.map((a) => a.toUpperCase()));
+    else if (k === "ac") {
+      // "@ac:none" says on purpose that no acceptance criterion covers this test (e.g. contract-only behaviour).
+      if (vals.some((a) => /^(none|-)$/i.test(a))) out.tags.push("ac:none");
+      out.acs.push(...vals.filter((a) => !/^(none|-)$/i.test(a)).map((a) => a.toUpperCase()));
+    }
     else out.tags.push(v ? `${k}:${v}` : k);
     return "";
   }).trim();
@@ -187,10 +191,14 @@ export interface AcTrace {
   text?: string;
   active: IndexedTest[];
   pending: IndexedTest[]; // fixme / skip
-  status: "covered" | "discrepancy" | "pending-only" | "not-traced";
+  status: "covered" | "weak" | "discrepancy" | "pending-only" | "not-traced";
 }
 
-export function traceStory(index: IndexedTest[], storyKey: string | undefined, acs: { id: string; text?: string }[]): { acs: AcTrace[]; storyOnly: IndexedTest[] } {
+export function traceStory(
+  index: IndexedTest[],
+  storyKey: string | undefined,
+  acs: { id: string; text?: string }[],
+): { acs: AcTrace[]; storyOnly: IndexedTest[]; outsideAcs: IndexedTest[] } {
   const forStory = index.filter((t) => (storyKey ? t.stories.includes(storyKey) : false) || (!t.stories.length && t.acs.length && !storyKey));
   const rows = acs.map(({ id, text }) => {
     const hits = forStory.filter((t) => t.acs.includes(id.toUpperCase()));
@@ -199,22 +207,29 @@ export function traceStory(index: IndexedTest[], storyKey: string | undefined, a
     const status = active.length && pending.length ? "discrepancy" : active.length ? "covered" : pending.length ? "pending-only" : "not-traced";
     return { ac: id, text, active, pending, status } as AcTrace;
   });
-  return { acs: rows, storyOnly: forStory.filter((t) => !t.acs.length) };
+  return { acs: rows, storyOnly: forStory.filter((t) => !t.acs.length && !t.tags.includes("ac:none")), outsideAcs: forStory.filter((t) => t.tags.includes("ac:none")) };
 }
 
-const STATUS_ICON = { covered: "✅", discrepancy: "⚠️", "pending-only": "⏸️", "not-traced": "⬜" } as const;
+const STATUS_ICON = { covered: "✅", weak: "🟠", discrepancy: "⚠️", "pending-only": "⏸️", "not-traced": "⬜" } as const;
 
-export function traceMarkdown(storyKey: string | undefined, trace: ReturnType<typeof traceStory>): string {
+/**
+ * Render the matrix. `flagged` holds tests the independent reviewer judged weak or wrong-oracle: they are marked,
+ * and an AC whose only passing tests are flagged is shown as weak rather than covered.
+ */
+export function traceMarkdown(storyKey: string | undefined, trace: ReturnType<typeof traceStory>, flagged: Map<string, string> = new Map()): string {
   if (!trace.acs.length) return "";
-  const cell = (ts: IndexedTest[]) => (ts.length ? ts.map((t) => `\`${t.file}:${t.line}\` ${t.title}`).join("<br>") : "–");
+  const mark = (t: IndexedTest) => (flagged.has(t.id) ? ` 🟠 _${flagged.get(t.id)}_` : "");
+  const cell = (ts: IndexedTest[]) => (ts.length ? ts.map((t) => `\`${t.file}:${t.line}\` ${t.title}${mark(t)}`).join("<br>") : "–");
+  const status = (r: AcTrace) => (r.status === "covered" && r.active.every((t) => flagged.has(t.id)) ? "weak" : r.status);
   const lines = [
     `### Requirement traceability${storyKey ? ` (${storyKey})` : ""}`,
-    "_Built from test tags (`@story`, `@ac`), not from the agent's claims._",
+    `_Built from test tags (\`@story\`, \`@ac\`), not from the agent's claims${flagged.size ? "; 🟠 = judged weak or wrong-oracle by the independent review" : ""}._`,
     "",
     "| AC | Status | Passing tests | Pending (fixme/skip) |",
     "| --- | --- | --- | --- |",
-    ...trace.acs.map((r) => `| ${r.ac} | ${STATUS_ICON[r.status]} ${r.status} | ${cell(r.active)} | ${cell(r.pending)} |`),
+    ...trace.acs.map((r) => `| ${r.ac} | ${STATUS_ICON[status(r)]} ${status(r)} | ${cell(r.active)} | ${cell(r.pending)} |`),
   ];
+  if (trace.outsideAcs.length) lines.push("", `Outside the story's ACs on purpose (\`@ac:none\`): ${trace.outsideAcs.map((t) => `\`${t.file}:${t.line}\` ${t.title}${t.status !== "active" ? ` (${t.status})` : ""}`).join(", ")}.`);
   if (trace.storyOnly.length) lines.push("", `${trace.storyOnly.length} test(s) are tagged with the story but no AC: ${trace.storyOnly.map((t) => `\`${t.file}:${t.line}\``).join(", ")}.`);
   return lines.join("\n");
 }

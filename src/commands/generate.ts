@@ -233,7 +233,7 @@ export async function generateCommand(o: GenerateOptions): Promise<number> {
     verification,
     findings,
     discrepancies,
-    traceability: traceMarkdown(req.storyKey, trace),
+    traceability: traceMarkdown(req.storyKey, trace, new Map((review.review?.tests ?? []).filter((t) => t.verdict === "weak" || t.verdict === "wrong-oracle").map((t) => [t.id, t.verdict]))),
     review: reviewMarkdown(review, toReview),
     agentSummary: cleanAgentAnswer(author.result),
     usage,

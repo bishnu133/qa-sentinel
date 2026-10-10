@@ -70,3 +70,23 @@ test.fixme(\`cumulative refunds over the amount \${t}\`, async () => {});`);
     expect(traceStory(idx, "S-1", [{ id: "AC-2" }]).acs[0].status).toBe("discrepancy");
   });
 });
+
+describe("@ac:none and reviewer flags", () => {
+  const idx = indexSource("r.spec.ts", `const t = "@story:S-1 @endpoint:POST_/x";
+test(\`authorises \${t} @ac:AC-1\`, async () => {});
+test(\`refunds \${t} @ac:AC-2\`, async () => {});
+test.fixme(\`zero amount \${t} @ac:none\`, async () => {});`);
+  it("treats @ac:none as deliberately outside the ACs, not as an AC called NONE", () => {
+    expect(idx[2].acs).toEqual([]);
+    expect(checkNewTests(idx, ["r.spec.ts"], "S-1", ["AC-1", "AC-2"])).toEqual([]);
+    const tr = traceStory(idx, "S-1", [{ id: "AC-1" }, { id: "AC-2" }]);
+    expect(tr.outsideAcs.map((x) => x.line)).toEqual([4]);
+    expect(tr.storyOnly).toEqual([]);
+  });
+  it("shows an AC proven only by reviewer-flagged tests as weak", () => {
+    const md = traceMarkdown("S-1", traceStory(idx, "S-1", [{ id: "AC-1" }, { id: "AC-2" }]), new Map([["r.spec.ts:2", "weak"]]));
+    expect(md).toContain("| AC-1 | 🟠 weak | `r.spec.ts:2` authorises 🟠 _weak_ |");
+    expect(md).toContain("| AC-2 | ✅ covered |");
+    expect(md).toContain("Outside the story's ACs on purpose (`@ac:none`): `r.spec.ts:4` zero amount (fixme)");
+  });
+});
