@@ -167,11 +167,31 @@ export function gitlab(env = process.env) {
   const token = env.GITLAB_TOKEN;
   if (!token) die("Set GITLAB_TOKEN (a personal access token with the api and write_repository scopes).");
   const api = async (method, route, body) => {
-    const res = await fetch(`${url}/api/v4${route}`, {
-      method,
-      headers: { "PRIVATE-TOKEN": token, "content-type": "application/json" },
-      body: body ? JSON.stringify(body) : undefined,
-    });
+    let res;
+    for (let attempt = 1; ; attempt++) {
+      try {
+        res = await fetch(`${url}/api/v4${route}`, {
+          method,
+          headers: { "PRIVATE-TOKEN": token, "content-type": "application/json" },
+          body: body ? JSON.stringify(body) : undefined,
+        });
+        break;
+      } catch (e) {
+        // Node's fetch says only "fetch failed"; the reason (DNS, proxy, TLS certificate…) is in e.cause.
+        const c = e.cause ?? {};
+        const why = [c.code, c.message].filter(Boolean).join(": ") || e.message;
+        if (attempt < 3 && /ECONNRESET|ETIMEDOUT|EAI_AGAIN|UND_ERR_SOCKET|UND_ERR_CONNECT_TIMEOUT/.test(why)) {
+          await new Promise((r) => setTimeout(r, 1000 * attempt));
+          continue;
+        }
+        const hint = /CERT|certificate|SELF_SIGNED|UNABLE_TO/i.test(why)
+          ? " (TLS: this network inspects HTTPS. Node doesn't use the macOS keychain; see docs/SANDBOX.md › Troubleshooting)"
+          : /ENOTFOUND|EAI_AGAIN/.test(why)
+            ? " (DNS: check GITLAB_URL and your network)"
+            : "";
+        throw new Error(`GitLab ${method} ${url}/api/v4${route} failed: ${why}${hint}`);
+      }
+    }
     const text = await res.text();
     const data = text ? JSON.parse(text) : undefined;
     if (!res.ok) {

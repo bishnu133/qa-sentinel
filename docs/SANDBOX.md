@@ -237,6 +237,7 @@ Cost and time are in each run's `manifest.json` (`.qa-sentinel/runs/<id>/` local
 | "Not logged in · Please run /login" | `ANTHROPIC_API_KEY` is empty in this terminal. Check with `echo ${#ANTHROPIC_API_KEY}` (it should be about 108), then set it with `read -s ANTHROPIC_API_KEY && export ANTHROPIC_API_KEY`. |
 | "API Error … (429) … rate limit you configured in workspace" | The key belongs to a Console workspace with a zero or very low limit. Create the key in the **Default** workspace (or one with real limits) and delete the old one. |
 | `claude -p` is silent for minutes | Claude Code is retrying an API error. Wait for the JSON, or press Ctrl+C and run `curl -sS -m 15 -o /dev/null -w "%{http_code}\n" https://api.anthropic.com/v1/messages` (405 or 401 means the network is fine). |
+| `setup-gitlab.mjs` / `dev.mjs`: "fetch failed … CERT" or "UNABLE_TO_GET_ISSUER_CERT_LOCALLY", while `curl` works | Your network inspects HTTPS with its own certificate, which macOS trusts but Node doesn't by default. Run with `NODE_OPTIONS=--use-system-ca` (Node 22.15+), e.g. `NODE_OPTIONS=--use-system-ca node sandbox/shoplite/setup-gitlab.mjs …`. On a managed device, check that you're allowed to run personal projects there. |
 | Local `run` hangs | Something is holding port 3001–3003 or 8080. Run `node sandbox/shoplite/local.mjs env stop`. |
 | Jira returns 401/403 | Check the email and token pair. The project key must be `SHOP`, or set `JIRA_PROJECT`. |
 
