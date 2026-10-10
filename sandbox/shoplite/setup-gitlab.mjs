@@ -63,11 +63,28 @@ async function allow(projectId, targetId, label) {
   }
 }
 
-function push(dir, projectPath, { skipCi = true, force = false } = {}) {
+/**
+ * Push main. gitlab.com protects main against force pushes; with --force we allow it for this one push and
+ * restore the protection afterwards (the sandbox repos are yours, and --force means "replace what's there").
+ */
+async function push(dir, projectPath, { skipCi = true, force = false } = {}) {
   if (dry) return log(`[dry-run] git push ${projectPath}`);
   const args = ["push", ...(force ? ["--force"] : []), ...(skipCi ? ["-o", "ci.skip"] : []), gl.remote(projectPath), "HEAD:refs/heads/main"];
-  git(dir, ...args);
-  log(`pushed ${projectPath}${skipCi ? " (CI skipped for the initial push)" : ""}`);
+  const route = `/projects/${enc(projectPath)}/protected_branches/main`;
+  let restore;
+  if (force) {
+    const prot = await api("GET", route).catch((e) => (e.status === 404 ? undefined : Promise.reject(e)));
+    if (prot && !prot.allow_force_push) {
+      await api("PATCH", `${route}?allow_force_push=true`);
+      restore = () => api("PATCH", `${route}?allow_force_push=false`);
+    }
+  }
+  try {
+    git(dir, ...args);
+  } finally {
+    if (restore) await restore().catch((e) => log(`⚠ could not restore force-push protection on ${projectPath}/main: ${e.message}`));
+  }
+  log(`pushed ${projectPath}${force ? " (replaced main)" : ""}${skipCi ? " (CI skipped)" : ""}`);
 }
 
 async function setup() {
@@ -97,8 +114,8 @@ async function setup() {
   }
 
   // qa-tests must exist before services include its CI file.
-  push(path.join(work, TEST_REPO), `${group}/${TEST_REPO}`, { force: Boolean(f.force) });
-  for (const svc of SERVICES) push(path.join(work, svc), `${group}/${svc}`, { force: Boolean(f.force) });
+  await push(path.join(work, TEST_REPO), `${group}/${TEST_REPO}`, { force: Boolean(f.force) });
+  for (const svc of SERVICES) await push(path.join(work, svc), `${group}/${svc}`, { force: Boolean(f.force) });
 
   // Job tokens: services clone qa-tests (gap report); qa-tests clones services (generation, QA env).
   const t = projects[TEST_REPO];
@@ -139,7 +156,7 @@ async function setLevel(level) {
   fs.writeFileSync(path.join(dir, ".gitlab-ci.yml"), testsCi(group));
   git(dir, "checkout", "-q", "--", "tests", "src", "package.json", "playwright.config.ts", "tsconfig.json");
   commitAll(dir, `ShopLite: switch qa-sentinel to level ${level}`);
-  push(dir, `${group}/${TEST_REPO}`, { skipCi: true, force: true });
+  await push(dir, `${group}/${TEST_REPO}`, { skipCi: true, force: true });
   saveState(work, { ...st, level });
   log(`level is now ${level}; service pipelines pick up the new jobs from ${TEST_REPO} automatically`);
 }

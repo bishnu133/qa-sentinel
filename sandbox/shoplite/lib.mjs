@@ -13,12 +13,30 @@ export const TEST_REPO = "qa-tests";
 
 export const log = (...a) => console.log("›", ...a);
 export const die = (msg) => {
-  console.error(`✗ ${msg}`);
+  console.error(`✗ ${redact(msg)}`);
   process.exit(1);
 };
 
+/** Remove credentials from anything we print: push URLs, tokens and keys (errors from git echo the full URL). */
+export function redact(text) {
+  let out = String(text ?? "")
+    .replace(/(\/\/[^/:@\s]+:)[^@\s]+@/g, "$1***@")
+    .replace(/glpat-[\w.-]+/g, "glpat-***")
+    .replace(/sk-ant-[\w-]+/g, "sk-ant-***");
+  for (const k of ["GITLAB_TOKEN", "ANTHROPIC_API_KEY", "JIRA_API_TOKEN"]) {
+    const v = process.env[k];
+    if (v && v.length >= 8) out = out.split(v).join("***");
+  }
+  return out;
+}
+
 export function sh(cmd, args, opts = {}) {
-  return execFileSync(cmd, args, { encoding: "utf8", stdio: opts.quiet === false ? "inherit" : ["ignore", "pipe", "pipe"], ...opts }).trim();
+  try {
+    return execFileSync(cmd, args, { encoding: "utf8", stdio: opts.quiet === false ? "inherit" : ["ignore", "pipe", "pipe"], ...opts }).trim();
+  } catch (e) {
+    const detail = [e.stderr, e.stdout].filter(Boolean).map(String).join("\n").trim();
+    throw new Error(redact(`${cmd} ${args[0] ?? ""} failed (exit ${e.status ?? "?"})${detail ? `:\n${detail}` : ""}`));
+  }
 }
 export const git = (cwd, ...args) => sh("git", args, { cwd });
 
