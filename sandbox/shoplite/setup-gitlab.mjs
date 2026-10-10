@@ -87,6 +87,20 @@ async function push(dir, projectPath, { skipCi = true, force = false } = {}) {
   log(`pushed ${projectPath}${force ? " (replaced main)" : ""}${skipCi ? " (CI skipped)" : ""}`);
 }
 
+/**
+ * The service repos trigger qa-tests with variables (QA_SERVICE_NAME, QA_SERVICE_SHA, …). New gitlab.com projects
+ * don't allow pipeline variables by default ("Minimum role to use pipeline variables: No one allowed"), and the
+ * downstream pipeline then fails to start. Allow Developer and up on the test repo.
+ */
+async function allowPipelineVariables(projectPath) {
+  try {
+    await api("PUT", `/projects/${enc(projectPath)}`, { ci_pipeline_variables_minimum_override_role: "developer" });
+    log(`pipeline variables allowed for Developer+ on ${projectPath} (needed by the generation trigger)`);
+  } catch (e) {
+    log(`⚠ could not allow pipeline variables on ${projectPath}: ${e.message}. Set it in the UI: Settings › CI/CD › Variables › Minimum role to use pipeline variables › Developer.`);
+  }
+}
+
 async function setup() {
   if (!fs.existsSync(CLI)) die("Build qa-sentinel first: npm install && npm run build");
   if (!env.ANTHROPIC_API_KEY && !dry) die("Set ANTHROPIC_API_KEY (it becomes a masked group CI/CD variable).");
@@ -116,6 +130,8 @@ async function setup() {
   // qa-tests must exist before services include its CI file.
   await push(path.join(work, TEST_REPO), `${group}/${TEST_REPO}`, { force: Boolean(f.force) });
   for (const svc of SERVICES) await push(path.join(work, svc), `${group}/${svc}`, { force: Boolean(f.force) });
+
+  await allowPipelineVariables(`${group}/${TEST_REPO}`);
 
   // Job tokens: services clone qa-tests (gap report); qa-tests clones services (generation, QA env).
   const t = projects[TEST_REPO];
@@ -157,6 +173,7 @@ async function setLevel(level) {
   git(dir, "checkout", "-q", "--", "tests", "src", "package.json", "playwright.config.ts", "tsconfig.json");
   commitAll(dir, `ShopLite: switch qa-sentinel to level ${level}`);
   await push(dir, `${group}/${TEST_REPO}`, { skipCi: true, force: true });
+  if (level === "maintenance") await allowPipelineVariables(`${group}/${TEST_REPO}`);
   saveState(work, { ...st, level });
   log(`level is now ${level}; service pipelines pick up the new jobs from ${TEST_REPO} automatically`);
 }
