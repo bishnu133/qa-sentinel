@@ -22,6 +22,15 @@ const ServiceSchema = z.object({
   openapi: z.string().optional().describe("Path to the OpenAPI spec inside the service repo"),
   gitlabProject: z.string().optional().describe("GitLab project path of the service, e.g. group/orders-service"),
   dependsOn: z.array(z.string()).default([]),
+  /** How to ask a running environment which commit of this service is deployed (for feature readiness). */
+  version: z
+    .object({
+      /** Path appended to the environment's base URL, e.g. /orders/version or /actuator/info. */
+      path: z.string(),
+      /** Field holding the commit SHA in the JSON response (dot path), e.g. commit or git.commit.id. */
+      field: z.string().default("commit"),
+    })
+    .optional(),
 });
 
 export const ConfigSchema = z.object({

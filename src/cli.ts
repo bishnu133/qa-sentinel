@@ -7,6 +7,7 @@ import { gapReportCommand } from "./commands/gapReport.js";
 import { generateCommand } from "./commands/generate.js";
 import { traceCommand } from "./commands/trace.js";
 import { showcaseCommand } from "./commands/showcase.js";
+import { featureCommand } from "./commands/feature.js";
 import { verifyCommand } from "./commands/verify.js";
 import { VERSION } from "./run.js";
 import { log } from "./log.js";
@@ -96,6 +97,17 @@ program
   .option("--story-file <file>", "story with acceptance criteria (otherwise the ACs claimed by the tests are listed)")
   .option("--json", "print the full index as JSON")
   .action(wrap(async (o) => traceCommand({ cwd: cwd(), ...o })));
+
+program
+  .command("feature <story>")
+  .description("one story across services: which changes are merged and deployed, AC coverage, and (--run) the story's end-to-end tests once all parts are deployed")
+  .option("--env <name>", "environment to check deployments in (from `environments:`)")
+  .option("--story-file <file>", "acceptance criteria from a file instead of Jira")
+  .option("--run", "run the story's tests when every part is deployed")
+  .option("--force", "with --run: run even if not every part is deployed")
+  .option("--post", "post the feature status on the Jira story")
+  .option("--json", "print the manifest as JSON")
+  .action(wrap(async (story, o) => featureCommand({ cwd: cwd(), story, ...o })));
 
 program
   .command("showcase")

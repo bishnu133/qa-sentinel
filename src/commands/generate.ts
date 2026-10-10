@@ -53,7 +53,7 @@ export async function generateCommand(o: GenerateOptions): Promise<number> {
   const environment = useEnvironment(c, o.env);
   if (environment) log.step(`environment: ${environment} (${process.env[c.tests.api.baseUrlEnv]})`);
   if (!isGitRepo(cwd)) throw new Error(`The test repo (${cwd}) must be a git repository`);
-  if (hasChanges(cwd) && !o.dryRun) throw new Error("The test repo has uncommitted changes; commit or stash them first.");
+  if (workingChanges(cwd).some((x) => !matchesAny(x.path, ARTIFACT_GLOBS)) && !o.dryRun) throw new Error("The test repo has uncommitted changes; commit or stash them first.");
 
   const headRef = o.head ?? "HEAD";
   // GitLab sends 0000… as the "before" SHA for new branches; fall back to the previous commit.

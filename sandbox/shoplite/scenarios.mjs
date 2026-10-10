@@ -205,4 +205,36 @@ app.get("/payments/:id", (req, res) => {`,
       ],
     },
   },
+  {
+    id: "SHOP-106b",
+    storyKey: "SHOP-106",
+    service: "orders-service",
+    branch: "feature/SHOP-106-ship-order",
+    title: "SHOP-106: Notify customers when an order ships (part 2 of 2)",
+    expect: "Part 2 of the multi-service story: PATCH /orders/{id}/ship calls notifications with the order-shipped template. Use `local.mjs feature SHOP-106` to see both parts, merged and deployed, then run the story's tests.",
+    edits: {
+      "src/server.js": [
+        [
+          'app.get("/orders/:id", (req, res) => {',
+          `// Ship an order: record the tracking number and tell the customer (exactly one notification).
+app.patch("/orders/:id/ship", async (req, res) => {
+  const order = orders.get(req.params.id);
+  if (!order) return res.status(404).json({ error: "order not found" });
+  const { trackingNumber } = req.body || {};
+  if (typeof trackingNumber !== "string" || !trackingNumber) return res.status(400).json({ error: "trackingNumber is required" });
+  if (order.status === "shipped") return res.status(409).json({ error: "order already shipped" });
+  order.status = "shipped";
+  order.trackingNumber = trackingNumber;
+  await post(\`\${NOTIFICATIONS_URL}/notifications\`, { orderId: order.id, channel: "email", message: \`Order \${order.id} shipped\`, template: "order-shipped", trackingNumber }).catch(() => {});
+  res.json(order);
+});
+
+app.get("/orders/:id", (req, res) => {`,
+        ],
+      ],
+    },
+  },
 ];
+
+// Part 2 of a story shares the story (and its acceptance criteria) with part 1.
+for (const s of SCENARIOS) if (s.storyKey && !s.story) s.story = SCENARIOS.find((x) => x.id === s.storyKey)?.story;

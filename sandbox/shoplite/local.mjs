@@ -6,6 +6,9 @@
 //   node sandbox/shoplite/local.mjs run SHOP-101 [--generate]     # make the dev change, gap report (+ generate tests)
 //   node sandbox/shoplite/local.mjs run SHOP-101 --regression     # also run the existing tests qa-sentinel selected, against the change
 //   node sandbox/shoplite/local.mjs run SHOP-105 --generate --showcase   # then run the suite and attach evidence if every AC passed
+//   node sandbox/shoplite/local.mjs run SHOP-106 --change-only    # just make the developer change (no agent, no cost)
+//   node sandbox/shoplite/local.mjs merge SHOP-106                 # merge a scenario's branch into main (like merging the MR)
+//   node sandbox/shoplite/local.mjs feature SHOP-106 [--run]       # one story across services: merged? deployed? AC tests? (then run them)
 //   node sandbox/shoplite/local.mjs reset                          # every service back to main, env stopped
 //   node sandbox/shoplite/local.mjs env start|stop
 import fs from "node:fs";
@@ -57,6 +60,31 @@ switch (cmd) {
     git(tests, "checkout", "-q", "-f", "main");
     log("all repos back on main; environment stopped");
     break;
+  case "merge": {
+    // Play the developer merging a scenario's branch into main (local stand-in for an MR merge).
+    const s = scenario(arg);
+    const dir = path.join(work, s.service);
+    git(dir, "checkout", "-q", "-f", "main");
+    git(dir, "merge", "-q", "--no-ff", s.branch, "-m", `Merge branch '${s.branch}' into 'main'`);
+    log(`${s.service}: merged ${s.branch} into main`);
+    break;
+  }
+  case "feature": {
+    // Story across services: deploy main of every service locally, then ask qa-sentinel where the feature stands.
+    const key = String(arg ?? "").toUpperCase();
+    if (!key) die("usage: local.mjs feature SHOP-106 [--run]");
+    for (const svc of SERVICES) git(path.join(work, svc), "checkout", "-q", "-f", "main");
+    envStart();
+    const storyFile = path.join(work, "stories", `${key}.md`);
+    const code = run("node", [CLI, "feature", key, "--env", "local", ...(fs.existsSync(storyFile) ? ["--story-file", storyFile] : []), ...(f.run ? ["--run"] : [])], {
+      cwd: tests,
+      env: { ...process.env, QA_BASE_URL: "http://127.0.0.1:8080" },
+    });
+    envStop(true);
+    log(`feature summary: ${path.join(tests, `qa-feature-${key}.md`)}`);
+    process.exitCode = code;
+    break;
+  }
   case "run": {
     if (!fs.existsSync(tests)) die(`no sandbox in ${work}; run: node sandbox/shoplite/local.mjs setup`);
     const s = scenario(arg);
@@ -68,6 +96,10 @@ switch (cmd) {
     log(`${s.id}: developer change on ${s.service} (${s.branch})`);
     makeChange(svcDir, s);
     console.log(`  expect: ${s.expect}\n`);
+    if (f["change-only"]) {
+      log(`change committed on ${s.service} branch ${s.branch}; no qa-sentinel run (--change-only)`);
+      break;
+    }
     const story = path.join(work, "stories", `${s.id}.md`);
     const gap = run("node", [CLI, "gap-report", "-s", s.service, "--base", "main", "--head", "HEAD", "--story-file", story, "-o", `../${s.id}-gap-report.md`], { cwd: tests });
     log(`gap report: ${path.join(work, `${s.id}-gap-report.md`)}`);
@@ -104,5 +136,5 @@ switch (cmd) {
     break;
   }
   default:
-    console.log(fs.readFileSync(new URL(import.meta.url), "utf8").split("\n").slice(1, 9).join("\n").replace(/^\/\/ ?/gm, ""));
+    console.log(fs.readFileSync(new URL(import.meta.url), "utf8").split("\n").slice(1, 14).join("\n").replace(/^\/\/ ?/gm, ""));
 }

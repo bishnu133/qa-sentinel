@@ -7,7 +7,8 @@ import { formatUsage } from "../claude.js";
 import { ARTIFACT_GLOBS, createRunDir, findService, startManifest, writeManifest } from "../run.js";
 import { checkServiceUntouched, diffSnapshots, findingsMarkdown, snapshotTree, type Finding } from "../guardrails.js";
 import { requirementsLine, resolveRequirements, storyMarkdown } from "../requirements.js";
-import { gitlabMrFromEnv } from "../scm/gitlab.js";
+import { gitlabContext, gitlabMrFromEnv } from "../scm/gitlab.js";
+import { assembleFeature } from "../feature/manifest.js";
 import { publish } from "../reporting/publish.js";
 import { engineFor } from "../engines/ClaudeCodeEngine.js";
 import { addUsage } from "../engines/AgentEngine.js";
@@ -127,6 +128,20 @@ export async function gapReportCommand(o: GapReportOptions): Promise<{ report: s
         rules: outcome.validation?.rules,
         traceability: traced ? traceMarkdown(req.storyKey, trace) : undefined,
       }) + `\n\n${footer}`;
+    // The same story in other services (one feature, many services): say so, so nobody tests half a feature.
+    let featureLine = "";
+    if (req.storyKey) {
+      try {
+        const m = await assembleFeature({ c, cwd, story: req.storyKey, gitlab: c.workspace.services.some((x) => x.gitlabProject) ? gitlabContext(c.ci.gitlabUrl) : undefined });
+        const others = m.parts.filter((p) => p.service !== service.name);
+        if (others.length) {
+          featureLine = `**Feature ${req.storyKey} also changes:** ${others.map((p) => `${p.service} (${p.mr ? `[!${p.mr.iid}](${p.mr.url}), ` : ""}${p.merged ? "merged" : "not merged yet"})`).join(", ")}. Acceptance criteria that need several services are checked with \`qa-sentinel feature ${req.storyKey}\` once every part is deployed.`;
+          report = report.replace(footer, `${featureLine}\n\n${footer}`);
+        }
+      } catch (e) {
+        log.dim(`feature lookup skipped: ${(e as Error).message}`);
+      }
+    }
     jiraSummary = gapSummary({
       service: service.name,
       plan: outcome.plan,
@@ -136,6 +151,7 @@ export async function gapReportCommand(o: GapReportOptions): Promise<{ report: s
       reportUrl: process.env.CI_JOB_URL ? `${process.env.CI_JOB_URL}/artifacts/file/qa-gap-report.md` : undefined,
       regressionTests: selection.runFullSuite ? undefined : selection.tests.length,
     });
+    if (featureLine) jiraSummary += `\n\n${featureLine}`;
     fs.writeFileSync(path.join(run.dir, "jira-summary.md"), jiraSummary);
     manifest.outcome = "reported";
     log.ok(`plan valid · ${outcome.risked.overall} risk · ${outcome.plan.decisions.length} decision(s)`);
