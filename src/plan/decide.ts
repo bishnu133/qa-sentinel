@@ -14,7 +14,7 @@ type DecisionKind = TestPlan["decisions"][number]["decision"];
  *   not observable (refactor, logging, …)       | reuse (tests exist) or skip
  *   oracle conflicting                          | review                         (a human decides)
  *   oracle ambiguous                            | review
- *   oracle missing, contract-backed evidence    | create / update / review       (the API contract is the oracle)
+ *   oracle missing, contract or kb-rule evidence| create / update / review       (the contract or rule is the oracle)
  *   oracle missing, no contract evidence        | review                         (nothing to test against)
  *   removed behaviour                           | update / review                (obsolete tests must change)
  *   approved, coverage covered                  | reuse / review
@@ -38,8 +38,9 @@ export function ruleFor(c: Change, d: Pick<Decision, "coverage">): DecisionRule 
   if (c.oracleStatus === "ambiguous") return { allowed: ["review"], fallback: "review", rule: "requirement is ambiguous → human review", safety: true };
   if (c.oracleStatus === "missing") {
     const contractBacked = c.evidence.some((e) => e.source === "openapi" || e.source === "contract-diff");
-    return contractBacked
-      ? { allowed: ["create", "update", "review"], fallback: "review", rule: "no requirement, but the API contract defines the behaviour → test against the contract" }
+    const ruleBacked = c.evidence.some((e) => e.source === "domain-rule");
+    return contractBacked || ruleBacked
+      ? { allowed: ["create", "update", "review"], fallback: "review", rule: `no requirement, but ${contractBacked ? "the API contract" : "a team domain rule (kb/)"} defines the behaviour → test against it` }
       : { allowed: ["review"], fallback: "review", rule: "no requirement and no contract evidence → nothing to test against, human review", safety: true };
   }
   if (c.type === "removed") return { allowed: ["update", "review"], fallback: "review", rule: "behaviour removed → obsolete tests must change" };

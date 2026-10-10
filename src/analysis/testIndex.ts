@@ -18,6 +18,8 @@ export interface IndexedTest {
   id: string; // file:line
   file: string;
   line: number;
+  /** Last line of the test's block (up to the next test). */
+  endLine: number;
   title: string; // without tags
   describe?: string;
   status: TestStatus;
@@ -27,6 +29,8 @@ export interface IndexedTest {
   acs: string[]; // "AC-2"
   tags: string[]; // other bare tags, e.g. "smoke"
   assertions: number;
+  /** Every assertion only checks the HTTP status (a common sign of a weak test). */
+  statusOnly: boolean;
 }
 
 const SPEC = /\.(spec|test)\.[cm]?[jt]sx?$/;
@@ -88,14 +92,17 @@ export function indexSource(file: string, src: string): IndexedTest[] {
   return found.map((f, k) => {
     const end = k + 1 < found.length ? found[k + 1].line - 1 : lines.length;
     const body = lines.slice(f.line - 1, end).join("\n");
+    const asserts = body.split("\n").filter((l) => ASSERT.test(l) && ((ASSERT.lastIndex = 0), true));
     const parsed = parseTags(f.raw);
     return {
       id: `${file}:${f.line}`,
       file,
       line: f.line,
+      endLine: end,
       describe: (f as any).describe,
       status: f.kind === "fixme" || f.kind === "fail" ? "fixme" : f.kind === "skip" ? "skip" : "active",
       assertions: (body.match(ASSERT) ?? []).length,
+      statusOnly: asserts.length > 0 && asserts.every((l) => /\.status\(\)\)?\s*\)?\s*\.(toBe|toEqual)\(\s*\d{3}\s*\)/.test(l) || /expect\([^)]*status\(\)\)/.test(l)),
       ...parsed,
     } satisfies IndexedTest;
   });
@@ -210,4 +217,18 @@ export function traceMarkdown(storyKey: string | undefined, trace: ReturnType<ty
   ];
   if (trace.storyOnly.length) lines.push("", `${trace.storyOnly.length} test(s) are tagged with the story but no AC: ${trace.storyOnly.map((t) => `\`${t.file}:${t.line}\``).join(", ")}.`);
   return lines.join("\n");
+}
+
+/** Tests whose code changed since `ref` (any added line inside the test's block), for review and reporting. */
+export function changedTests(index: IndexedTest[], repo: string, files: string[], added: (file: string) => string[]): IndexedTest[] {
+  const out: IndexedTest[] = [];
+  for (const f of new Set(files)) {
+    const set = new Set(added(f).map((l) => l.trim()).filter(Boolean));
+    if (!set.size) continue;
+    const lines = fs.readFileSync(path.join(repo, f), "utf8").split(/\r?\n/);
+    for (const t of index.filter((x) => x.file === f)) {
+      if (lines.slice(t.line - 1, t.endLine).some((l) => set.has(l.trim()))) out.push(t);
+    }
+  }
+  return out;
 }

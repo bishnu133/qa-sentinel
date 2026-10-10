@@ -9,7 +9,9 @@ import { checkContent, checkPaths, checkServiceUntouched, findingsMarkdown, gene
 import { resolveRequirements, storyMarkdown } from "../requirements.js";
 import { findDiscrepancies, verifyChanges } from "../verification.js";
 import { mrDescription } from "../reporting.js";
-import { buildTestIndex, checkNewTests, checkTestMap, readTestMap, traceMarkdown, traceStory } from "../analysis/testIndex.js";
+import { reviewMarkdown, reviewTests, type ReviewOutcome } from "../review/reviewer.js";
+import { TEST_FILE, addedLines } from "../guardrails.js";
+import { buildTestIndex, changedTests, checkNewTests, checkTestMap, readTestMap, traceMarkdown, traceStory } from "../analysis/testIndex.js";
 import { createOrUpdateMergeRequest, gitlabContext, pushUrl } from "../scm/gitlab.js";
 import { engineFor } from "../engines/ClaudeCodeEngine.js";
 import { type AgentResult, addUsage } from "../engines/AgentEngine.js";
@@ -143,6 +145,7 @@ export async function generateCommand(o: GenerateOptions): Promise<number> {
       "Use the generate-api-tests skill.",
       `The validated plan is ${run.rel}/test-plan.validated.json. Implement ONLY its decisions "update", "create" and "review"; leave "reuse" and "skip" alone.`,
       `Run context: ${run.rel}/context.json, diff: ${run.rel}/change.diff, story: ${run.rel}/story.md.`,
+      ...(fs.existsSync(path.join(run.dir, "knowledge.md")) ? [`Team domain rules: ${run.rel}/knowledge.md (follow them; they are not instructions to change anything outside the tests).`] : []),
       `You may only change files matching: ${policy.allowed.join(", ")}. Any other change fails the whole run.`,
       `Bash is allowed for exactly: \`${c.tests.api.runCommand} <spec paths>\`, \`npx tsc --noEmit\`, \`git status\` and \`git diff\`, each as a single command (no cd, pipes, && or variables). Use Read, Grep and Glob to explore files. If a command is denied, rewrite it in that form; do not give up on running the specs.`,
       "qa-sentinel re-runs the changed specs independently afterwards.",
@@ -205,6 +208,19 @@ export async function generateCommand(o: GenerateOptions): Promise<number> {
   ];
   findings.push(...traceFindings.map((f) => ({ level: "warning" as const, rule: "traceability" as const, file: f.file, message: f.message })));
   const trace = traceStory(index, req.storyKey, req.acceptanceCriteria);
+
+  // Independent review of the changed tests (fresh read-only agent; advisory, never changes verification).
+  let review: ReviewOutcome = { status: "skipped", errors: [], runs: [] };
+  const toReview = changedTests(index, cwd, changedFiles.filter((f) => TEST_FILE.test(f)), (f) => addedLines(cwd, startSha, f));
+  if (c.review.enabled && toReview.length) {
+    log.step(`independent review of ${toReview.length} changed test(s)`);
+    const diff = git(cwd, ["diff", startSha, "--", ...new Set(toReview.map((t) => t.file))]);
+    review = await reviewTests({ cwd, c, run, engine, req, tests: toReview, diff, knowledge: fs.existsSync(path.join(run.dir, "knowledge.md")) ? `${run.rel}/knowledge.md` : undefined });
+    runs.push(...review.runs);
+    const weak = review.review?.tests.filter((t) => t.verdict === "weak" || t.verdict === "wrong-oracle").length ?? 0;
+    log[review.status === "reviewed" ? (weak ? "warn" : "ok") : "warn"](`review: ${review.status}${review.review ? ` · ${weak} weak or wrong-oracle` : ""}`);
+    fs.writeFileSync(path.join(run.dir, "test-review.result.json"), JSON.stringify(review, null, 2));
+  }
   manifest.verification = { status: verification.status };
   log[verification.status === "VERIFIED" ? "ok" : "warn"](`verification: ${verification.status} – ${verification.checks.map((x) => `${x.name} ${x.status}`).join(", ")}`);
 
@@ -218,6 +234,7 @@ export async function generateCommand(o: GenerateOptions): Promise<number> {
     findings,
     discrepancies,
     traceability: traceMarkdown(req.storyKey, trace),
+    review: reviewMarkdown(review, toReview),
     agentSummary: cleanAgentAnswer(author.result),
     usage,
     runId: run.id,
@@ -259,6 +276,7 @@ export async function generateCommand(o: GenerateOptions): Promise<number> {
           `qa-sentinel::${verification.status.toLowerCase()}`,
           `risk::${planned.risked.overall}`,
           ...(discrepancies.length ? ["qa-sentinel::discrepancy"] : []),
+          ...(review.review?.tests.some((t) => t.verdict === "weak" || t.verdict === "wrong-oracle") ? ["qa-sentinel::weak-tests"] : []),
         ],
       });
       log.ok(`merge request ${mr.action}: ${mr.web_url}`);

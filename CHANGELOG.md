@@ -1,5 +1,33 @@
 # Changelog
 
+## 0.3.0 — Traceability, regression selection, decision engine, test review, kb
+
+### Requirement traceability from test tags
+- Tests declare what they prove in their titles: `@service`, `@endpoint`, `@story`, `@ac` (constants such as `const tags = "…"` are resolved). qa-sentinel indexes every spec on each run (status, ACs, assertion count, status-only flag).
+- MR descriptions (and gap reports, when tests already trace the story) show an AC → test matrix: covered, discrepancy (passing tests plus a fixme), pending only, not traced.
+- New tests without `@endpoint`, or citing ACs that aren't in the story, are policy warnings. Tags are checked against `test-map.yaml`.
+- New command `qa-sentinel trace`; `doctor` reports tag coverage and test-map mismatches.
+
+### Regression selection
+- Computed in code from plan-named tests, changed endpoints (plan + contract diff), `test-map.yaml`, consumer services for breaking or cross-service changes, and a service-wide fallback for changes without an endpoint. Fixme/skip tests are never selected.
+- Gap reports include the list with reasons and a ready runner command; `qa-regression.txt` holds `file:line` arguments.
+- Sandbox: `local.mjs run <id> --regression` runs the selection against the change (SHOP-101: the 3 predicted breaks failed, the other 3 passed).
+
+### Decision engine
+- `src/plan/decide.ts`: one table of allowed decisions per change, from oracle status, coverage and observability. Safety rows are corrected in code (conflicting or ambiguous oracle → review; no oracle and no contract or kb evidence → review; suspicious instruction → skip). Other mismatches are repair errors. The applied rule is shown with each decision.
+- With no story, the API contract (or a kb rule) can be the oracle: create/update are allowed when the change cites `openapi`, `contract-diff` or `domain-rule` evidence.
+
+### Independent test review
+- After verification, a second read-only agent with a fresh context (it never sees the author's notes) judges each changed test against the ACs: strong / adequate / weak / wrong-oracle, with issues and a suggestion, plus scenarios it thinks are missing. Validated JSON, one repair round, rendered in the MR, `qa-sentinel::weak-tests` label. Advisory; it never changes the verification status. `review.enabled`, `agent.*.review` limits ($1 default).
+- First real run (SHOP-102): flagged the zero-amount 400 test as wrong-oracle (code-only behaviour as an active test), the same issue found in human review.
+
+### Knowledge base
+- `kb/` Markdown (domain rules, glossary, review lessons) is gathered per run and given to planner, author and reviewer; new evidence source `domain-rule`. `kb/**` is blocked for agent writes. `init` scaffolds `kb/README.md`; the sandbox ships payments rules and review lessons.
+
+### Also
+- Jira as a gap-report target (`reporting.targets`), see below.
+- Discrepancy titles resolve tag constants (`${tags}`).
+
 ## Unreleased — Sandbox, replay and Jira reporting
 
 ### Jira as a report target

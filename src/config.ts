@@ -83,6 +83,19 @@ export const ConfigSchema = z.object({
         .default({}),
     })
     .default({}),
+  /** Team knowledge base (domain rules, glossary, review lessons) read by every agent. */
+  knowledge: z
+    .object({
+      dir: z.string().default("kb"),
+      maxChars: z.number().int().min(1000).max(200_000).default(40_000),
+    })
+    .default({}),
+  /** Independent review of generated tests (assertion strength against the acceptance criteria). */
+  review: z
+    .object({
+      enabled: z.boolean().default(true),
+    })
+    .default({}),
   /** Where `gap-report --post` publishes. One comment per target, updated in place on every run. */
   reporting: z
     .object({
@@ -117,6 +130,7 @@ export const ConfigSchema = z.object({
           gapReport: z.number().int().positive().default(30),
           generate: z.number().int().positive().default(60),
           learn: z.number().int().positive().default(40),
+          review: z.number().int().positive().default(25),
         })
         .default({}),
       maxFixAttempts: z.number().int().min(0).max(10).default(3),
@@ -125,6 +139,7 @@ export const ConfigSchema = z.object({
           gapReport: z.number().positive().default(15),
           generate: z.number().positive().default(30),
           learn: z.number().positive().default(20),
+          review: z.number().positive().default(10),
         })
         .default({}),
       maxBudgetUsd: z
@@ -132,6 +147,7 @@ export const ConfigSchema = z.object({
           gapReport: z.number().positive().default(2),
           generate: z.number().positive().default(5),
           learn: z.number().positive().default(3),
+          review: z.number().positive().default(1),
         })
         .default({}),
       skipPaths: z
@@ -149,6 +165,7 @@ export const ConfigSchema = z.object({
         .default([
           ".claude/**",
           "CLAUDE.md",
+          "kb/**",
           "qa-sentinel.config.yaml",
           ".gitlab-ci.yml",
           "**/*.gitlab-ci.yml",

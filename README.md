@@ -60,6 +60,15 @@ The **TestPlan** (`src/plan/schema.ts`) is the only handoff between AI and code.
 
 Risk is a fixed rule that you can read: **critical** for auth, money or personal data; **high** for business rules, breaking contracts, error handling on write paths, cross-service changes or requirement conflicts; **medium** for new endpoints, validations or compatible contract changes; otherwise **low**. Changes that don't alter behaviour are low. The agent names the factors with evidence; qa-sentinel adds `breaking-contract` (from the computed contract diff), `conflicting-oracle` and `cross-service` itself.
 
+### What's in v0.3
+
+- **Requirement traceability from test tags.** Tests say what they prove in their titles (`@endpoint:POST_/orders @story:SHOP-12 @ac:AC-3`). qa-sentinel builds an index from the code on every run (status, ACs, assertion count) and renders an **AC → test matrix** in MRs: ✅ covered, ⚠️ discrepancy (passing tests plus a fixme), ⏸️ pending only, ⬜ not traced. Because it is rebuilt from the tests, it can't drift.
+- **Regression selection in code.** Gap reports list the existing tests to run and why: named by the plan, on a changed endpoint (plan and computed contract diff), from `test-map.yaml`, consumer services for breaking changes, or the whole service for changes without an endpoint. `qa-regression.txt` holds `file:line` arguments for the runner. In the sandbox, the selected tests for SHOP-101 were run against the change: exactly the 3 the plan predicted failed.
+- **Decision engine.** One readable table ([`src/plan/decide.ts`](src/plan/decide.ts)) decides which of reuse/update/create/review/skip fits each change, from oracle, coverage and observability. Safety rows (conflicting or ambiguous oracle, no oracle at all, suspicious instructions) are corrected in code; other mismatches go back to the agent. The rule is printed with every decision.
+- **Independent test review.** After verification, a second read-only agent with a fresh context judges every changed test against the ACs: strong / adequate / weak / wrong-oracle, with issues and the missing assertion. Advisory: it labels the MR (`qa-sentinel::weak-tests`) but never changes VERIFIED.
+- **Knowledge base (`kb/`).** Team-written domain rules and review lessons, read by every agent and citable as `domain-rule` evidence. When a story is silent, a kb rule can be the oracle. Agents can't edit it.
+- **Jira as a report target.** `reporting.targets: [gitlab-mr, jira]` posts the gap report on the story too.
+
 ## Quick start
 
 ```bash
@@ -86,6 +95,7 @@ Starting from nothing? `qa-sentinel init --mode scratch` scaffolds Playwright AP
 | `gap-report -s <service>` | Read-only, risk-ranked analysis. The run is discarded if anything changed in either repo. `--post` creates or updates a single MR comment. Skips the agent for docs- or config-only changes. |
 | `generate -s <service>` | Writes and updates tests on a branch. **Rejected with nothing committed** on any guardrail violation. Otherwise independently verified, then committed. `--push` opens or updates a GitLab MR (Draft unless VERIFIED). Exit code 0 only when VERIFIED. |
 | `verify [--policy] [--base <ref>]` | The same independent checks, for any branch. Use it as the blocking CI gate on agent MRs. |
+| `trace [--story KEY] [--story-file f] [--json]` | Requirement traceability from test tags: which tests prove which acceptance criteria, and whether `test-map.yaml` agrees with the tags. |
 
 Common flags: `--service-path` (where the service is checked out, for CI), `--checkout` (detach the service to the analysed SHA), `--story-file`, `--dry-run` (prints the Claude command instead of running it).
 
@@ -196,7 +206,7 @@ The order follows external review #1 ([response](docs/REVIEW-RESPONSE-1.md)):
 | **v0.2** ✅ | Zod-validated `TestPlan` and plan → author split, risk computed in code, deterministic OpenAPI contract diff, `AgentEngine` interface, benchmark (8 scenarios, recall/precision/accuracy), Jira requirements (REST), operating levels |
 | v0.2.x | ShopLite sandbox and historical replay ✅; real GitLab pilot (read-only on historical MRs first) |
 | v0.2.x ✅ | Jira as a report target (`reporting.targets: [gitlab-mr, jira]`): one updated comment per story, Jira formatting, size-capped with a link to the full report |
-| v0.3 | Decision engine and risk in code, scenario-level traceability, regression selection, AI assertion-strength review, `kb/` |
+| **v0.3** ✅ | Decision engine, requirement traceability from test tags, regression selection, independent AI test review, `kb/` |
 | v0.4 | Multi-service: auto-assembled feature manifests with deployment readiness, contract impact |
 | v0.5 | Web (Playwright, optional [Bubblegum](https://github.com/bishnu133/bubblegum) healing) and Mobile (WebdriverIO + Appium) via a cross-platform workflow planner and shared data layer |
 | Later | Learning from review feedback, mutation checks in the benchmark, alternative engines |
