@@ -28,12 +28,12 @@ Six scenarios play the developer. Each one is a real code change and a story wit
 
 | Id | Service | Change | What qa-sentinel should find |
 | --- | --- | --- | --- |
-| SHOP-101 | orders | new `promoCode` discount | conflict between AC-3 and the code |
-| SHOP-102 | payments | partial refunds | cumulative refunds can exceed the payment (critical, money) |
-| SHOP-103 | orders | `total` renamed to `totalCents` | breaking contract, and a consumer is affected |
-| SHOP-104 | notifications | internal refactor | low risk, nothing to test (skip) |
-| SHOP-105 | notifications | templated messages | template injection flagged |
-| SHOP-106 | orders | order history | AC-3 can't be verified from one service |
+| SHOP-101 | orders | delivery slots | high risk; AC-3 conflicts with the code (allows 5); an existing test breaks |
+| SHOP-102 | payments | refunds (new endpoint) | critical (money); planted bug: partial refunds can exceed the authorised amount |
+| SHOP-103 | notifications | `channel` renamed to `medium` | breaking contract; orders-service still sends `channel` (cross-service) |
+| SHOP-104 | orders | pricing refactor | low/medium, reuse or skip, no new tests |
+| SHOP-105 | payments | list payments for an order | create tests; prompt injection in a code comment flagged and ignored; Showcase demo |
+| SHOP-106 / 106b | notifications + orders | notify when an order ships | one story across two services: AC-3 needs both (feature manifest demo) |
 
 `node sandbox/shoplite/local.mjs list` prints them. Real outputs from our runs are in [sandbox/shoplite/example-output/](../sandbox/shoplite/example-output/), so you know what "good" looks like.
 
@@ -87,6 +87,26 @@ node sandbox/shoplite/local.mjs run SHOP-101 --regression   # run the existing t
 - The gap report now has a **Regression selection** section. With `--regression` you see whether the predicted breaks really happen.
 - The generated MR description has **Requirement traceability** (from the test tags) and an **Independent test review**.
 - `qa-tests/kb/` holds team rules (payments rules, review lessons). Edit them and rerun to see the agents follow them.
+
+New in v0.4:
+
+```bash
+# Showcase: generate tests for SHOP-105, run the suite, and collect the evidence once every AC passes
+node sandbox/shoplite/local.mjs run SHOP-105 --generate --showcase
+
+# Feature across services: SHOP-106 changes notifications-service AND orders-service
+node sandbox/shoplite/local.mjs run SHOP-106 --change-only     # notifications part (no agent, no cost)
+node sandbox/shoplite/local.mjs run SHOP-106b --change-only    # orders part
+node sandbox/shoplite/local.mjs feature SHOP-106               # "in development": nothing merged yet
+node sandbox/shoplite/local.mjs merge SHOP-106                 # merge the notifications part
+node sandbox/shoplite/local.mjs merge SHOP-106b                # merge the orders part
+node sandbox/shoplite/local.mjs feature SHOP-106 --run         # env restarted on main: "ready for feature tests", runs tests tagged @story:SHOP-106
+```
+
+- **Showcase:** without Jira, the evidence goes to `shoplite-local/qa-tests/qa-showcase/SHOP-105/` (an evidence `.md` with the request and response of every API call, per AC). With Jira configured (Part C), the same files are attached to the story once; run it again and it says "already attached". Add the `qa-showcase-refresh` label on the story to attach a fresh copy.
+- **Feature:** `--run` needs tests for the story; generate them first (`run SHOP-106 --generate`, then review and merge the branch in `qa-tests`), or it reports that none are tagged. The status moves from in development → part merged → ready. The services' `/version` endpoints tell qa-sentinel which commit is running on the environment. `shoplite-local/qa-tests/qa-feature-SHOP-106.md` is the manifest.
+- **Jira comments:** with Jira configured, the story gets a short plain-language comment (risk, a status per AC, decisions needed), and the MR keeps the full report.
+- **Lower environment:** the sandbox config has `environments.local`. `qa-sentinel generate --env local` runs the tests there before committing; in a real project use `dev` or `sit`.
 
 Other commands:
 
