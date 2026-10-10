@@ -6,6 +6,8 @@ import { doctorCommand } from "./commands/doctor.js";
 import { gapReportCommand } from "./commands/gapReport.js";
 import { generateCommand } from "./commands/generate.js";
 import { traceCommand } from "./commands/trace.js";
+import { showcaseCommand } from "./commands/showcase.js";
+import { featureCommand } from "./commands/feature.js";
 import { verifyCommand } from "./commands/verify.js";
 import { VERSION } from "./run.js";
 import { log } from "./log.js";
@@ -84,6 +86,7 @@ program
   .option("--checkout", "check out the head commit in the service repo if it is not already there (CI)")
   .option("--story-file <file>", "file with the story / acceptance criteria")
   .option("--push", "push the branch and open a GitLab merge request")
+  .option("--env <name>", "run the tests against this environment from `environments:` (e.g. dev, sit) before pushing")
   .option("--dry-run", "do everything except call Claude and commit")
   .action(wrap(async (o) => generateCommand({ cwd: cwd(), ...o })));
 
@@ -96,11 +99,35 @@ program
   .action(wrap(async (o) => traceCommand({ cwd: cwd(), ...o })));
 
 program
+  .command("feature <story>")
+  .description("one story across services: which changes are merged and deployed, AC coverage, and (--run) the story's end-to-end tests once all parts are deployed")
+  .option("--env <name>", "environment to check deployments in (from `environments:`)")
+  .option("--story-file <file>", "acceptance criteria from a file instead of Jira")
+  .option("--run", "run the story's tests when every part is deployed")
+  .option("--force", "with --run: run even if not every part is deployed")
+  .option("--post", "post the feature status on the Jira story")
+  .option("--json", "print the manifest as JSON")
+  .action(wrap(async (story, o) => featureCommand({ cwd: cwd(), story, ...o })));
+
+program
+  .command("showcase")
+  .description("after a test run: attach evidence to each story whose acceptance criteria all passed (once per story)")
+  .option("--story <key...>", "only these stories (default: every story tagged in the tests)")
+  .option("--story-file <file>", "acceptance criteria from a file instead of Jira (one story)")
+  .option("--results <file>", "test results with attachments (default: test-results/results.json, else junit.xml)")
+  .option("--env <name>", "environment the run used, shown on the story")
+  .option("--force", "attach again even if this story was already showcased")
+  .option("--dry-run", "assess and list the files, attach nothing")
+  .option("-o, --out <file>", "summary file", "qa-showcase.md")
+  .action(wrap(async (o) => showcaseCommand({ cwd: cwd(), ...o })));
+
+program
   .command("verify")
   .description("independent checks on changed tests (policy, type-check, lint, changed specs); exit 0 only when VERIFIED")
   .option("--base <ref>", "compare with this ref (default: MR diff base in CI, else origin/<targetBranch>)")
   .option("--policy", "also enforce the agent write policy (use on qa-sentinel/* branches)")
   .option("-o, --out <file>", "write the verification summary (markdown) here")
+  .option("--env <name>", "run against this environment from `environments:`")
   .action(wrap(async (o) => verifyCommand({ cwd: cwd(), ...o })));
 
 program.parseAsync();

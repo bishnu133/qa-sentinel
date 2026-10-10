@@ -12,7 +12,7 @@
 # The service's name in qa-sentinel.config.yaml must equal $CI_PROJECT_NAME (or set QA_SERVICE_NAME).
 
 variables:
-  QA_SENTINEL_VERSION: "0.3.0"
+  QA_SENTINEL_VERSION: "0.4.0"
   # Where to install qa-sentinel from: set QA_SENTINEL_PACKAGE as a group/project CI/CD variable, e.g.
   # "github:bishnu133/qa-sentinel#main" until it is on npm. Default: qa-sentinel@$QA_SENTINEL_VERSION.
   # (Not defined here on purpose: trigger jobs forward YAML variables downstream, where they override CI/CD variables.)

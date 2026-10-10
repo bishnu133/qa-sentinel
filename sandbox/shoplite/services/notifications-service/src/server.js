@@ -6,6 +6,8 @@ const CHANNELS = ["email", "sms"];
 const notifications = [];
 
 app.get("/notifications/health", (_req, res) => res.json({ status: "ok", service: "notifications" }));
+// Which commit is running (qa-sentinel feature readiness reads this).
+app.get("/notifications/version", (_req, res) => res.json({ service: "notifications-service", commit: process.env.GIT_SHA || "unknown" }));
 
 // Queue a notification about an order.
 app.post("/notifications", (req, res) => {

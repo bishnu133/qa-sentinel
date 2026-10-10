@@ -1,5 +1,33 @@
 # Changelog
 
+## 0.4.0 — Simple Jira comments, lower-environment runs, Showcase, feature manifests
+
+### Jira comments in plain language
+- `reporting.jira.format: summary` (default): the story gets a short comment for POs, developers and QA leads (risk, what changed, what QA will do, a table of acceptance criteria with a status each, decisions needed, open questions, a link to the full report on the MR). `full` keeps the technical report.
+- After `generate --push`, the same comment is updated with the results per AC (tested and passing, weak test, product doesn't match the story, waiting for a fix, no test yet) and the environment the tests ran on.
+- Publishing moved to `src/reporting/publish.ts`, shared by gap reports, generation and feature manifests.
+
+### Run on a lower environment before the MR
+- New `environments:` (name → `baseUrl`, description). `generate --env sit` and `verify --env sit` run the verification against that environment; `verification.defaultEnvironment` sets the default.
+- `verification.requireVerifiedToPush: true`: nothing is pushed or opened as an MR unless verification was VERIFIED on the environment.
+
+### Showcase agent
+- `qa-sentinel showcase --story KEY` reads the run results (Playwright JSON preferred, JUnit attachments as fallback) and checks the story is ready: every AC has active passing tests, none failed or did not run, no pending fixme (`showcase.requireNoPending`).
+- Attaches an evidence file (per AC: tests, environment, and the request/response of each API call) plus videos and screenshots from the run, within `maxFiles`/`maxFileMb`, and posts a short comment.
+- One time per story: what was attached is stored in the issue property `qa-sentinel.showcase`. It attaches again only when QA adds the `qa-showcase-refresh` label (removed afterwards; the previous evidence is deleted with `replaceOnRefresh`) or with `--force`.
+- `--dry-run`, or no Jira configured: the evidence is saved to `qa-showcase/<story>/`.
+- Scaffolded API client records each call (no headers; bodies clipped) and fixtures attach `api-log.json` to the test (`QA_API_LOG=off` disables it). The Playwright config adds the JSON reporter.
+- GitLab template: optional `qa-showcase` job after `api-tests` (`QA_SHOWCASE: "true"`).
+
+### Feature manifests across services
+- `qa-sentinel feature KEY [--env sit]`: finds the story's MRs (GitLab) or branches and commits (local git, exact-key match) in every service, checks each service's `version` endpoint for the deployed SHA, and reports a status: no changes found, in development, merged, waiting for deployment, ready for feature tests. `--run` runs the story's tests when ready; `--post` updates the Jira story. Writes `qa-feature-<KEY>.md/.json`.
+- Gap reports say which other services change in the same feature.
+
+### Also
+- `generate` ignores qa-sentinel's own output files when checking for a clean repo.
+- Benchmark: injected instructions are no longer matched against expected product changes (they are scored by the suspicious-content check). Decision accuracy back to 100% on the saved plans.
+- Sandbox: SHOP-106 is a two-service feature (notifications + orders); services expose `/version`; `local.mjs merge`, `feature`, `run --change-only`, `run --generate --showcase`.
+
 ## 0.3.0 — Traceability, regression selection, decision engine, test review, kb
 
 ### Requirement traceability from test tags
