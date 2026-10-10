@@ -13,6 +13,7 @@
 
 ### CI
 - `QA_SENTINEL_PACKAGE` variable chooses where CI installs qa-sentinel from (for example a GitHub branch while it isn't on npm). GitLab and Jenkins templates.
+- CI installs a GitHub source (`github:owner/repo#branch`) by cloning, building and packing it first; npm's build-on-install for global git dependencies failed on GitLab runners.
 - `QA_ENV_START` hook: a command run before generation and API tests, to start an ephemeral QA environment inside the job.
 
 ### Rules

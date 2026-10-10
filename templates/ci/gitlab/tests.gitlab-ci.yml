@@ -18,6 +18,26 @@ variables:
   # Where to install qa-sentinel from. Until it is on npm, use the GitHub repo, e.g. "github:bishnu133/qa-sentinel#main".
   QA_SENTINEL_PACKAGE: "qa-sentinel@${QA_SENTINEL_VERSION}"
 
+# Install qa-sentinel from QA_SENTINEL_PACKAGE. A GitHub source ("github:owner/repo#branch") is cloned, built and
+# packed here first: npm's own build-on-install for git dependencies is unreliable for global installs.
+.qa-sentinel-install:
+  script:
+    - |
+      qa_pkg="${QA_SENTINEL_PACKAGE}"
+      case "$qa_pkg" in
+        github:*|git+https://github.com/*|https://github.com/*)
+          src="${qa_pkg#github:}"; src="${src#git+}"; src="${src#https://github.com/}"
+          repo="${src%%#*}"; repo="${repo%.git}"; ref="main"
+          case "$src" in *"#"*) ref="${src#*#}" ;; esac
+          rm -rf /tmp/qa-sentinel-src /tmp/qa-sentinel-*.tgz
+          git clone -q --depth 1 --branch "$ref" "https://github.com/${repo}.git" /tmp/qa-sentinel-src
+          (cd /tmp/qa-sentinel-src && npm ci --no-audit --no-fund --loglevel=error && npm pack --silent --pack-destination /tmp > /dev/null)
+          qa_pkg="$(ls /tmp/qa-sentinel-*.tgz | head -n 1)"
+          ;;
+      esac
+      npm i -g --no-audit --no-fund --loglevel=error "$qa_pkg"
+      qa-sentinel --version
+
 .qa-node:
   image: mcr.microsoft.com/playwright:v1.49.0-noble
   before_script:
@@ -34,7 +54,8 @@ qa-generate:
   resource_group: qa-sentinel-generate
   timeout: 45m
   script:
-    - npm i -g @anthropic-ai/claude-code "${QA_SENTINEL_PACKAGE}"
+    - npm i -g --no-audit --no-fund --loglevel=error @anthropic-ai/claude-code
+    - !reference [.qa-sentinel-install, script]
     - git clone "https://gitlab-ci-token:${CI_JOB_TOKEN}@${CI_SERVER_HOST}/${QA_SERVICE_PROJECT}.git" "/tmp/services/$QA_SERVICE_NAME"
     # Pin the service to the merged commit and drop the token-bearing remote before any agent runs.
     - git -C "/tmp/services/$QA_SERVICE_NAME" checkout --quiet --detach "$QA_SERVICE_SHA"
@@ -67,7 +88,7 @@ qa-agent-mr-checks:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
       changes: ["{{apiDir}}/**/*"]
   script:
-    - npm i -g "${QA_SENTINEL_PACKAGE}"
+    - !reference [.qa-sentinel-install, script]
     # Optional ephemeral QA environment (e.g. start the services under test). Set QA_ENV_START in your
     # .gitlab-ci.yml variables, e.g. "source qa-env/start.sh"; it may export {{baseUrlEnv}}.
     - if [ -n "$QA_ENV_START" ]; then eval "$QA_ENV_START"; fi
