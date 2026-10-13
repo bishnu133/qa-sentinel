@@ -312,6 +312,8 @@ export const ConfigSchema = z.object({
       timeoutMinutes: z.number().positive().default(15),
       /** Environment `generate`/`verify` run against when --env is not given (a key of `environments`). */
       defaultEnvironment: z.string().optional(),
+      /** Re-run failed specs once; a test that passes on retry is reported as flaky instead of failed. */
+      retryFailed: z.boolean().default(true),
       /** With --push: keep the branch local unless verification is VERIFIED (no draft MRs). */
       requireVerifiedToPush: z.boolean().default(false),
     })

@@ -5,6 +5,7 @@ import { addWebCommand, initCommand, upgradeCommand } from "./commands/init.js";
 import { healedCommand } from "./commands/healed.js";
 import { reviewStoryCommand } from "./commands/reviewStoryCmd.js";
 import { bugsCommand } from "./commands/bugs.js";
+import { tagCommand } from "./commands/tag.js";
 import { learnCommand } from "./commands/learn.js";
 import { doctorCommand } from "./commands/doctor.js";
 import { gapReportCommand } from "./commands/gapReport.js";
@@ -90,6 +91,14 @@ program
   .option("--env <name>", "environment the run used")
   .option("--dry-run", "list what would be raised")
   .action(wrap(async (o) => bugsCommand({ cwd: cwd(), story: o.story, results: o.results, env: o.env, dryRun: o.dryRun })));
+
+program
+  .command("tag")
+  .description("one-off: add @service/@endpoint/@page tags to existing tests (only titles change; checked) on a branch")
+  .option("--push", "push the branch and open a merge request")
+  .option("--limit <n>", "at most this many tests", (v) => Number(v))
+  .option("--dry-run", "list the untagged tests")
+  .action(wrap(async (o) => tagCommand({ cwd: cwd(), push: o.push, limit: o.limit, dryRun: o.dryRun })));
 
 program
   .command("healed")

@@ -214,3 +214,20 @@ describe("add-web and healing safety", () => {
     expect(findings.map((f) => [f.file, f.rule])).toEqual([["src/web/healing.ts", "blocked-path"], ["src/fixtures/web.ts", "blocked-path"]]);
   });
 });
+
+describe("flaky retry", () => {
+  it("re-runs failed specs once and reports a pass on retry as flaky, not failed", async () => {
+    const repo = repoDir();
+    await initCommand({ cwd: repo, yes: true, mode: "scratch", ci: "gitlab", level: "maintenance", name: "f" });
+    // Fails on the first run, passes on the second (a counter file), like a timing-dependent test.
+    const runner = `node -e "const fs=require('fs');const n='${repo}/count';const k=fs.existsSync(n)?+fs.readFileSync(n,'utf8'):0;fs.writeFileSync(n,String(k+1));const ok=k>0;fs.writeFileSync(process.env.PLAYWRIGHT_JUNIT_OUTPUT_NAME,'<testsuite><testcase name=\\"t\\" file=\\"tests/api/a.spec.ts\\">'+(ok?'':'<failure message=\\"boom\\"/>')+'</testcase></testsuite>');process.exit(ok?0:1)"`;
+    const cfg = path.join(repo, "qa-sentinel.config.yaml");
+    fs.writeFileSync(cfg, fs.readFileSync(cfg, "utf8").replace(/runCommand: npx playwright test --project=api/, `runCommand: ${JSON.stringify(runner)}`));
+    const c = loadConfig(repo);
+    fs.writeFileSync(path.join(repo, "tests/api/a.spec.ts"), "x");
+    const r = await verifyChanges({ cwd: repo, c: { ...c, verification: { ...c.verification, preflight: false, typecheck: "never" } }, changes: [{ status: "A", path: "tests/api/a.spec.ts" }], runDir: tmp(), env: { PATH: process.env.PATH } });
+    expect(r.status).toBe("VERIFIED");
+    expect(r.flaky).toEqual(["t"]);
+    expect(r.checks.find((x) => x.name === "tests")!.detail).toContain("1 only on retry (flaky)");
+  });
+});

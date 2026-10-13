@@ -114,7 +114,7 @@ Scope items can be cited in `requirementIds` like ACs. They are weaker oracles t
 ### Enums
 - `type`: new-endpoint · contract-change · validation-change · business-rule · error-handling · removed · ui-change · internal · suspicious-instruction
 - `oracleStatus`: approved · conflicting · ambiguous · missing
-- `riskFactors`: auth · money · personal-data · business-rule · breaking-contract · write-path-error-handling · cross-service · conflicting-oracle · new-endpoint · validation · non-breaking-contract · read-only · internal · user-journey · ui-visible
+- `riskFactors`: auth · money · price-display · personal-data · business-rule · breaking-contract · write-path-error-handling · cross-service · conflicting-oracle · new-endpoint · validation · non-breaking-contract · read-only · internal · user-journey · ui-visible
 - `coverage`: covered · partial · missing · outdated · unknown
 - `decision`: reuse · update · create · review · skip
 - evidence `source`: requirement · source-code · openapi · contract-diff · domain-rule · existing-test · runtime. Use paths relative to the repo they live in.
@@ -144,5 +144,6 @@ Scope items can be cited in `requirementIds` like ACs. They are weaker oracles t
 - Choose risk factors from evidence only. `auth`, `money` and `personal-data` make a change critical, so use them only when the change really touches those.
 - Sensitive factors, defined:
   - `auth`: login, sessions, tokens, roles, permissions, access checks
-  - `money`: prices, amounts, discounts, fees, taxes, totals, refunds, payments, balances, currency
+  - `money`: code that calculates, stores, charges or refunds money: prices, amounts, discounts, fees, taxes, totals, refunds, payments, balances, currency conversion
+  - `price-display`: a screen or response only *shows* prices or totals computed and charged elsewhere (high, not critical). If the display code itself calculates the amount the customer is charged, it is `money`.
   - `personal-data`: names, contact details, addresses, IDs, dates of birth, health or financial details of people

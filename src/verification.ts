@@ -29,6 +29,8 @@ export interface TestCase {
 
 export interface VerificationReport {
   status: VerificationStatus;
+  /** Tests that failed once and passed on the automatic retry: not a product bug, but not stable either. */
+  flaky?: string[];
   checks: Check[];
   specs: string[];
   cases: TestCase[];
@@ -139,6 +141,7 @@ export async function verifyChanges(o: VerifyOptions): Promise<VerificationRepor
   // 4. Tests: only the changed specs, per layer (each with its own command and base URL), with a machine-readable report.
   let cases: TestCase[] = [];
   const outputs: string[] = [];
+  const flaky: string[] = [];
   if (!specs.length) {
     checks.push({ name: "tests", status: "not-run", detail: codeFiles.length ? "helpers changed but no spec files changed" : "no spec files changed" });
   }
@@ -152,8 +155,24 @@ export async function verifyChanges(o: VerifyOptions): Promise<VerificationRepor
     if (junit && fs.existsSync(junit)) fs.rmSync(junit);
     const env = { ...o.env, ...(l.isPlaywright && junit ? { PLAYWRIGHT_JUNIT_OUTPUT_NAME: junit } : {}) };
     const cmd = `${l.runCommand} ${layerSpecs.map(shq).join(" ")}${l.isPlaywright ? " --reporter=line,junit" : ""}`;
-    const r = await runProcess(cmd, [], { cwd, env, timeoutMs, shell: true });
-    const mine = (junit && fs.existsSync(junit) ? parseJUnit(fs.readFileSync(junit, "utf8")) : []).map((x) => ({ ...x, layer: l.layer }));
+    let r = await runProcess(cmd, [], { cwd, env, timeoutMs, shell: true });
+    let mine = (junit && fs.existsSync(junit) ? parseJUnit(fs.readFileSync(junit, "utf8")) : []).map((x) => ({ ...x, layer: l.layer }));
+    // One retry of the failed specs before calling it a failure: a test that passes on retry is flaky, not a bug.
+    const firstFailed = mine.filter((x) => x.status === "failed" && !ENV_ERROR.test(x.message ?? ""));
+    if (c.verification.retryFailed && firstFailed.length && !r.timedOut && junit) {
+      const retrySpecs = layerSpecs.filter((sp) => firstFailed.some((f) => f.file && (sp.endsWith(f.file) || f.file.endsWith(sp))));
+      if (retrySpecs.length) {
+        fs.rmSync(junit, { force: true });
+        const r2 = await runProcess(`${l.runCommand} ${retrySpecs.map(shq).join(" ")}${l.isPlaywright ? " --reporter=line,junit" : ""}`, [], { cwd, env, timeoutMs, shell: true });
+        const again = fs.existsSync(junit) ? parseJUnit(fs.readFileSync(junit, "utf8")) : [];
+        const healedNames = firstFailed.filter((f) => again.some((a) => a.name === f.name && a.status === "passed")).map((f) => f.name);
+        if (healedNames.length) {
+          flaky.push(...healedNames);
+          mine = mine.map((x) => (healedNames.includes(x.name) ? { ...x, status: "passed" as const, message: "passed on retry (flaky)" } : x));
+          if (mine.every((x) => x.status !== "failed")) r = { ...r2, code: 0 };
+        }
+      }
+    }
     cases = cases.concat(mine);
     const failed = mine.filter((x) => x.status === "failed");
     const envFailures = failed.length > 0 && failed.every((x) => ENV_ERROR.test(x.message ?? ""));
@@ -163,7 +182,7 @@ export async function verifyChanges(o: VerifyOptions): Promise<VerificationRepor
     else if (junit && mine.length === 0) [status, detail] = [r.code === 0 ? "not-run" : "failed", `no test results produced (exit ${r.code})${r.code ? `: ${tail(r.stdout + r.stderr)}` : ""}`];
     else if (envFailures) [status, detail] = ["blocked", `environment errors: ${failed[0].message}`];
     else if (r.code !== 0 || failed.length) [status, detail] = ["failed", `${failed.length} failed${failed[0] ? `: ${failed[0].name}` : `, exit ${r.code}`}`];
-    else [status, detail] = ["passed", mine.length ? `${mine.filter((x) => x.status === "passed").length} passed, ${mine.filter((x) => x.status === "skipped").length} skipped` : "exit 0 (no JUnit report configured)"];
+    else [status, detail] = ["passed", mine.length ? `${mine.filter((x) => x.status === "passed").length} passed, ${mine.filter((x) => x.status === "skipped").length} skipped${flaky.length ? `, ${flaky.length} only on retry (flaky)` : ""}` : "exit 0 (no JUnit report configured)"];
     checks.push({ name: "tests", ...(specsByLayer.size > 1 || l.layer !== "api" ? { layer: l.layer } : {}), status, detail, durationMs: r.durationMs });
     outputs.push(`### ${l.layer}: ${cmd}\n${r.stdout}\n${r.stderr}`);
   }
@@ -171,6 +190,7 @@ export async function verifyChanges(o: VerifyOptions): Promise<VerificationRepor
 
   const report: VerificationReport = {
     status: overallStatus(checks),
+    ...(flaky.length ? { flaky } : {}),
     checks,
     specs,
     cases,
@@ -248,5 +268,6 @@ export function verificationMarkdown(r: VerificationReport): string {
     ...rows,
     ...(r.counts.total ? ["", `Tests: ${r.counts.passed} passed · ${r.counts.failed} failed · ${r.counts.skipped} skipped (of ${r.counts.total}).`] : []),
     ...(failed.length ? ["", "Failed:", ...failed.map((f) => `- \`${f.name}\` – ${f.message ?? ""}`)] : []),
+    ...(r.flaky?.length ? ["", `⚠️ Flaky (failed once, passed on the automatic retry; make them deterministic before merging): ${r.flaky.map((f) => `\`${f}\``).join(", ")}`] : []),
   ].join("\n");
 }

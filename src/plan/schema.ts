@@ -41,6 +41,8 @@ export const ORACLE_STATUSES = ["approved", "conflicting", "ambiguous", "missing
 export const RISK_FACTORS = [
   "auth",
   "money",
+  /** Shows prices or totals that are calculated and charged elsewhere (display only). */
+  "price-display",
   "personal-data",
   "business-rule",
   "breaking-contract",
