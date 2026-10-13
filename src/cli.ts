@@ -4,6 +4,7 @@ import { Command, Option } from "commander";
 import { addWebCommand, initCommand, upgradeCommand } from "./commands/init.js";
 import { healedCommand } from "./commands/healed.js";
 import { reviewStoryCommand } from "./commands/reviewStoryCmd.js";
+import { bugsCommand } from "./commands/bugs.js";
 import { learnCommand } from "./commands/learn.js";
 import { doctorCommand } from "./commands/doctor.js";
 import { gapReportCommand } from "./commands/gapReport.js";
@@ -80,6 +81,15 @@ program
   .option("-o, --out <file>", "markdown output", "qa-story-review.md")
   .option("--dry-run", "prepare the inputs without calling the agent")
   .action(wrap(async (o) => reviewStoryCommand({ cwd: cwd(), story: o.story, storyFile: o.storyFile, post: o.post, out: o.out, dryRun: o.dryRun })));
+
+program
+  .command("bugs")
+  .description("after a suite run: raise a bug per story requirement whose tests fail (bugs.mode), once; note fixes on earlier bugs")
+  .option("--story <key...>", "only these stories")
+  .option("--results <file>", "Playwright JSON report", "test-results/results.json")
+  .option("--env <name>", "environment the run used")
+  .option("--dry-run", "list what would be raised")
+  .action(wrap(async (o) => bugsCommand({ cwd: cwd(), story: o.story, results: o.results, env: o.env, dryRun: o.dryRun })));
 
 program
   .command("healed")

@@ -18,6 +18,8 @@ export interface RunResult {
   title: string;
   status: "passed" | "failed" | "skipped";
   evidence: Evidence[];
+  /** First line of the failure, when failed. */
+  error?: string;
 }
 
 export function kindOf(name: string, contentType = "", file = ""): Evidence["kind"] {
@@ -39,7 +41,8 @@ function fromPlaywrightJson(json: any, baseDir: string): RunResult[] {
         const evidence: Evidence[] = (last?.attachments ?? [])
           .filter((a: any) => a.path)
           .map((a: any) => ({ kind: kindOf(a.name, a.contentType, a.path), name: a.name, path: path.resolve(baseDir, a.path), contentType: a.contentType }));
-        out.push({ file: spec.file, line: spec.line, title: spec.title, status, evidence });
+        const err = last?.error?.message ?? last?.errors?.[0]?.message;
+        out.push({ file: spec.file, line: spec.line, title: spec.title, status, evidence, ...(status === "failed" && err ? { error: String(err).replace(/\u001b\[[0-9;]*m/g, "").split("\n").slice(0, 3).join(" ").slice(0, 300) } : {}) });
       }
     }
   };

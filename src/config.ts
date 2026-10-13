@@ -184,6 +184,26 @@ export const ConfigSchema = z.object({
       requireNoPending: z.boolean().default(true),
     })
     .default({}),
+  /**
+   * Bug cards from evidence. off (default) · suggest: list the proposed bugs on the story, ready to create ·
+   * create: create them in Jira, linked to the story, once per story and AC; comment on them when the test passes.
+   * "Not working" bugs come from tests written to an AC that fail (on a run, or the fixme a generation wrote);
+   * "not built" bugs from a story-wide gap report, only when every part of the story is merged (suspected).
+   */
+  bugs: z
+    .object({
+      mode: z.enum(["off", "suggest", "create"]).default("off"),
+      /** Jira project for the bugs (default: the story's project). */
+      project: z.string().optional(),
+      /** Issue type; falls back to Task (labelled "bug") when the project has no such type. */
+      issueType: z.string().default("Bug"),
+      priority: z.string().optional(),
+      labels: z.array(z.string()).default(["qa-sentinel"]),
+      linkType: z.string().default("Relates"),
+      /** Also raise "not built" bugs from story-wide gap reports (static analysis: labelled suspected). */
+      notBuilt: z.boolean().default(true),
+    })
+    .default({}),
   /** Where `gap-report --post` publishes. One comment per target, updated in place on every run. */
   reporting: z
     .object({

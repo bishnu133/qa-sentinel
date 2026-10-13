@@ -248,3 +248,38 @@ export async function attachFile(ctx: JiraContext, key: string, fileName: string
 export async function deleteAttachment(ctx: JiraContext, id: string): Promise<void> {
   await jiraCall(ctx, "DELETE", `/rest/api/2/attachment/${encodeURIComponent(id)}`);
 }
+
+// ---------------------------------------------------------------------------------------------
+// Bugs: create, link to the story, comment.
+
+export async function projectIssueTypes(ctx: JiraContext, projectKey: string): Promise<string[]> {
+  const j = await jiraCall(ctx, "GET", `/rest/api/2/project/${encodeURIComponent(projectKey)}`);
+  return (j.issueTypes ?? []).filter((t: any) => !t.subtask).map((t: any) => String(t.name));
+}
+
+export async function createIssue(ctx: JiraContext, fields: { project: string; issueType: string; summary: string; description: string; labels?: string[]; priority?: string }): Promise<{ key: string; url: string }> {
+  const j = await jiraCall(ctx, "POST", "/rest/api/2/issue", {
+    fields: {
+      project: { key: fields.project },
+      issuetype: { name: fields.issueType },
+      summary: fields.summary.slice(0, 250),
+      description: fields.description,
+      ...(fields.labels?.length ? { labels: fields.labels } : {}),
+      ...(fields.priority ? { priority: { name: fields.priority } } : {}),
+    },
+  });
+  return { key: j.key, url: `${ctx.baseUrl}/browse/${j.key}` };
+}
+
+export async function linkIssues(ctx: JiraContext, from: string, to: string, type = "Relates"): Promise<void> {
+  await jiraCall(ctx, "POST", "/rest/api/2/issueLink", { type: { name: type }, inwardIssue: { key: from }, outwardIssue: { key: to } });
+}
+
+export async function addComment(ctx: JiraContext, key: string, body: string): Promise<void> {
+  await jiraCall(ctx, "POST", `/rest/api/2/issue/${encodeURIComponent(key)}/comment`, { body });
+}
+
+export async function issueStatus(ctx: JiraContext, key: string): Promise<{ status: string; category?: string }> {
+  const j = await jiraCall(ctx, "GET", `/rest/api/2/issue/${encodeURIComponent(key)}?fields=status`);
+  return { status: String(j.fields?.status?.name ?? ""), category: j.fields?.status?.statusCategory?.key };
+}

@@ -20,6 +20,8 @@ import { indexTests, readTestMap, traceMarkdown, traceStory } from "../analysis/
 import { mergeSelections, regressionCommands, regressionMarkdown, selectRegression } from "../analysis/regression.js";
 import { contractDiffMarkdown } from "../analysis/contractDiff.js";
 import { log } from "../log.js";
+import { bugsFromPlan, fileBugs } from "../bugs/bugs.js";
+import { jiraContext } from "../scm/jira.js";
 import type { ServiceConfig } from "../config.js";
 import type { ChangeSet } from "../git.js";
 import { type StoryPart, combinedChange, storyParts } from "../story.js";
@@ -202,5 +204,14 @@ export async function gapReportCommand(o: GapReportOptions): Promise<{ report: s
   log.ok(`report written to ${path.relative(cwd, out)}${u ? ` (${u})` : ""}`);
 
   if (o.post) await publish(c, { report, jiraSummary, service: service.name, storyKey: req.storyKey, mr });
+  // Story mode with every part merged: requirements nothing builds (or builds differently) become (suspected) bugs.
+  if (o.post && parts && parts.every((p) => p.merged) && c.bugs.mode !== "off" && req.storyKey && outcome.plan) {
+    const jira = jiraContext(c.requirements.jira.baseUrl);
+    if (jira) {
+      const r = await fileBugs(jira, c, req.storyKey, bugsFromPlan(req.storyKey, requirementItems(req), outcome.plan)).catch((e) => (log.warn(`bugs: ${(e as Error).message}`), undefined));
+      if (r?.created.length) log.ok(`bug(s) raised on ${req.storyKey}: ${r.created.join(", ")}`);
+      if (r?.suggested) log.ok(`${r.suggested} bug(s) proposed on ${req.storyKey}`);
+    }
+  }
   return { report, skipped: false, exitCode };
 }
