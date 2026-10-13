@@ -142,7 +142,7 @@ node ../../dist/cli.js metrics                                             # →
 cd ../..
 ```
 
-- **Showcase pack:** `shoplite-local/qa-tests/qa-showcase/SHOP-108/` now holds `SHOP-108-showcase.mp4` (an intro card, then per AC a title card and its web test re-recorded slowly, with the element being used outlined) and `SHOP-108-showcase.pdf` (results per AC, a screenshot per web test, the API requests and responses). With Jira (Part C) both are attached to the story once, and the people in `showcase.notify` are tagged. Without ffmpeg you get the PDF and the separate videos.
+- **Showcase pack:** `shoplite-local/qa-showcase/SHOP-108/` now holds `SHOP-108-showcase.mp4` (an intro card, then per AC a title card and its web test re-recorded slowly, with the element being used outlined) and `SHOP-108-showcase.pdf` (results per AC, a screenshot per web test, the API requests and responses). With Jira (Part C) both are attached to the story once, and the people in `showcase.notify` are tagged. Without ffmpeg you get the PDF and the separate videos.
 - **Is the story built?** The gap report has a table with a status per AC and per scope item (the story's "Tech scope" and "Expected results" lists become TS-n / ER-n). Scope items no AC covers are listed for the PO.
 - **Story mode:** the story gap report covers both services' changes (and only those: work merged to `main` in the meantime is left out); the story's AC-3 needs tests across the two services.
 - **Bug cards:** set `bugs: { mode: suggest }` (or `create`) in `shoplite-local/qa-tests/qa-sentinel.config.yaml` and run SHOP-107 with `--generate`: the planted total bug becomes a proposed bug on the story (Jira, Part C), with expected vs actual and the test to reproduce it.
