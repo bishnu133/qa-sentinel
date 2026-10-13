@@ -1,3 +1,4 @@
+import { layers } from "./layers.js";
 import fs from "node:fs";
 import { execFileSync } from "node:child_process";
 import path from "node:path";
@@ -21,8 +22,7 @@ export const TEST_FILE = /\.(spec|test)\.(ts|tsx|js|mjs|cjs)$/;
 
 /** Globs the agent may change in `generate`. */
 export function generatePolicy(c: Config): WritePolicy {
-  const t = c.tests.api;
-  const derived = [`${t.dir}/**`, `${t.helpersDir}/**`, ...t.extraWritePaths, "test-map.yaml"];
+  const derived = [...layers(c).flatMap((t) => [`${t.dir}/**`, `${t.helpersDir}/**`, ...t.extraWritePaths]), "test-map.yaml"];
   return {
     allowed: c.guardrails.allowedWritePaths.length ? c.guardrails.allowedWritePaths : derived,
     blocked: c.guardrails.blockedWritePaths,
@@ -103,6 +103,8 @@ export interface ContentCheckOptions {
   ref: string; // what the agent started from
   allowedHosts: string[];
   baseUrl?: string;
+  /** Other base URLs whose hosts are allowed too (e.g. the web front end). */
+  extraBaseUrls?: string[];
   assertionRemoval: "warn" | "fail";
 }
 
@@ -110,9 +112,10 @@ export interface ContentCheckOptions {
 export function checkContent(changes: FileChange[], o: ContentCheckOptions): Finding[] {
   const findings: Finding[] = [];
   const hosts = [...o.allowedHosts];
-  if (o.baseUrl) {
+  for (const u of [o.baseUrl, ...(o.extraBaseUrls ?? [])]) {
+    if (!u) continue;
     try {
-      hosts.push(new URL(o.baseUrl).hostname);
+      hosts.push(new URL(u).hostname);
     } catch {
       /* ignore malformed base URL */
     }

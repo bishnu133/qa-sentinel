@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 import { ClaudeAccessError } from "./claude.js";
 import { Command, Option } from "commander";
-import { initCommand } from "./commands/init.js";
+import { addWebCommand, initCommand } from "./commands/init.js";
+import { healedCommand } from "./commands/healed.js";
 import { learnCommand } from "./commands/learn.js";
 import { doctorCommand } from "./commands/doctor.js";
 import { gapReportCommand } from "./commands/gapReport.js";
@@ -44,6 +45,7 @@ program
   .addOption(new Option("--api-framework <name>").choices([...API_FRAMEWORKS]))
   .option("--workspace <dir>", "folder containing the service repos", "..")
   .option("--name <name>", "project name")
+  .option("--web", "also set up web (Playwright UI) tests: page objects, ui helper, fixtures")
   .option("-y, --yes", "accept detected defaults, no prompts")
   .option("--force", "overwrite generated files")
   .action(
@@ -51,6 +53,20 @@ program
       await initCommand({ cwd: cwd(), ...o });
     }),
   );
+
+program
+  .command("add-web")
+  .description("add the web (Playwright UI) test layer to an existing qa-sentinel project")
+  .addOption(new Option("--healing <mode>", "none | bubblegum (runtime locator healing in scheduled runs)").choices(["none", "bubblegum"]))
+  .action(wrap(async (o) => void addWebCommand({ cwd: cwd(), healing: o.healing })));
+
+program
+  .command("healed")
+  .description("after a run with QA_HEALING=bubblegum: list healed steps as page-object fixes (qa-healed.md/.json)")
+  .option("--results <file>", "Playwright JSON report", "test-results/results.json")
+  .option("-o, --out <file>", "markdown output", "qa-healed.md")
+  .option("--fail-on-heal", "exit 1 when any step was healed (default: tests.web.bubblegum.failOnHeal)")
+  .action(wrap(async (o) => healedCommand({ cwd: cwd(), results: o.results, out: o.out, failOnHeal: o.failOnHeal })));
 
 program
   .command("learn")

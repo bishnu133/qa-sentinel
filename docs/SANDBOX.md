@@ -14,17 +14,19 @@ This guide shows how to try qa-sentinel end to end on your own accounts, without
 
 ## What ShopLite is
 
-ShopLite is a tiny shop with three Node services and one test repo:
+ShopLite is a tiny shop with three Node services, a web front end and one test repo:
 
 ```
 orders-service         POST /orders → payments-service /authorize → notifications-service /notify
 payments-service       /authorize, /refunds
 notifications-service  /notify
-qa-tests               Playwright API tests (13 baseline tests, all passing), qa-sentinel config,
-                       test-map.yaml, qa-env/ (starts all three services behind a gateway on :8080)
+storefront             web front end on :8081: /orders/new (order form), /orders/:id (order page)
+qa-tests               Playwright tests: 13 API + 4 web baseline tests (all passing), page objects,
+                       qa-sentinel config, test-map.yaml, qa-env/ (starts everything: APIs behind
+                       a gateway on :8080, the storefront on :8081)
 ```
 
-Six scenarios play the developer. Each one is a real code change and a story with acceptance criteria, and each has a known catch:
+Eight scenarios play the developer. Each one is a real code change and a story with acceptance criteria, and each has a known catch:
 
 | Id | Service | Change | What qa-sentinel should find |
 | --- | --- | --- | --- |
@@ -34,6 +36,8 @@ Six scenarios play the developer. Each one is a real code change and a story wit
 | SHOP-104 | orders | pricing refactor | low/medium, reuse or skip, no new tests |
 | SHOP-105 | payments | list payments for an order | create tests; prompt injection in a code comment flagged and ignored; Showcase demo |
 | SHOP-106 / 106b | notifications + orders | notify when an order ships | one story across two services: AC-3 needs both (feature manifest demo) |
+| SHOP-107 | storefront (web) | "Checkout" button, payment status on the order page | renamed button breaks 2 web tests (page object first); planted bug: total shows the unit price (AC-3 conflict) |
+| SHOP-108 | storefront (web) | price preview on the order form | web tests through the page object, no bug; Showcase with videos |
 
 `node sandbox/shoplite/local.mjs list` prints them. Real outputs from our runs are in [sandbox/shoplite/example-output/](../sandbox/shoplite/example-output/), so you know what "good" looks like.
 
@@ -47,7 +51,7 @@ Six scenarios play the developer. Each one is a real code change and a story wit
 ```bash
 git clone https://github.com/bishnu133/qa-sentinel.git
 cd qa-sentinel
-git checkout sandbox            # until the open PRs are merged into main
+git checkout v0.5               # until the open PRs are merged into main
 npm install && npm run build
 export ANTHROPIC_API_KEY=sk-ant-...      # in your shell only; never commit it
 ```
@@ -107,6 +111,18 @@ node sandbox/shoplite/local.mjs feature SHOP-106 --run         # env restarted o
 - **Feature:** `--run` needs tests for the story; generate them first (`run SHOP-106 --generate`, then review and merge the branch in `qa-tests`), or it reports that none are tagged. The status moves from in development → part merged → ready. The services' `/version` endpoints tell qa-sentinel which commit is running on the environment. `shoplite-local/qa-tests/qa-feature-SHOP-106.md` is the manifest.
 - **Jira comments:** with Jira configured, the story gets a short plain-language comment (risk, a status per AC, decisions needed), and the MR keeps the full report.
 - **Lower environment:** the sandbox config has `environments.local`. `qa-sentinel generate --env local` runs the tests there before committing; in a real project use `dev` or `sit`.
+
+New in v0.5 (web):
+
+```bash
+node sandbox/shoplite/local.mjs run SHOP-107 --regression --generate   # web gap report, predicted breaks, generated web tests
+node sandbox/shoplite/local.mjs run SHOP-108 --generate --showcase     # web tests, then evidence with a video per AC
+```
+
+- **SHOP-107:** the gap report lists the two new-order web tests as broken by the renamed button, and `--regression` shows exactly those failing. Generation updates the `NewOrderPage` page object first, adds a payment-status test that creates its order **through the API** (the "flow" line in the report shows the setup steps), and writes the AC-3 test as `fixme` because the page shows the unit price.
+- **SHOP-108:** new locators go into the page object, then 4 tests, one or more per AC. With `--showcase`, `shoplite-local/qa-showcase/SHOP-108/` holds the evidence file plus a **video and a screenshot per acceptance criterion**.
+- Before writing web tests, qa-sentinel opens the affected pages and saves their accessibility tree and a screenshot for the agent: see `page-snapshots/` in the run directory.
+- **Browser:** `setup` runs `npx playwright install chromium`. If your network blocks that download, use the installed Google Chrome without videos: `export QA_BROWSER_CHANNEL=chrome QA_VIDEO=off`. Watch the browser with `QA_HEADED=1`.
 
 Other commands:
 
@@ -273,7 +289,9 @@ Cost and time are in each run's `manifest.json` (`.qa-sentinel/runs/<id>/` local
 | `setup-gitlab.mjs` / `dev.mjs`: "fetch failed … CERT" or "UNABLE_TO_GET_ISSUER_CERT_LOCALLY", while `curl` works | Your network inspects HTTPS with its own certificate, which macOS trusts but Node doesn't by default. Run with `NODE_OPTIONS=--use-system-ca` (Node 22.15+), e.g. `NODE_OPTIONS=--use-system-ca node sandbox/shoplite/setup-gitlab.mjs …`. On a managed device, check that you're allowed to run personal projects there. |
 | CI: `npm ci` fails with `403 Forbidden - GET https://<your-company-mirror>/…` | Your laptop installs npm packages through a company mirror, and the lockfiles recorded its URLs. The scripts now rewrite them to registry.npmjs.org; update and re-push with `setup-gitlab.mjs --force`. |
 | `qa-trigger-generation` fails within seconds after a merge | The test repo doesn't accept pipeline variables. Run `setup-gitlab.mjs level maintenance` again, or set qa-tests › Settings › CI/CD › Variables › Minimum role to use pipeline variables › Developer. Then retry the job. |
-| Local `run` hangs | Something is holding port 3001–3003 or 8080. Run `node sandbox/shoplite/local.mjs env stop`. |
+| Local `run` hangs | Something is holding port 3001–3003, 8080 or 8081. Run `node sandbox/shoplite/local.mjs env stop`. |
+| Web tests: "Executable doesn't exist at …/chromium" or "…/ffmpeg" | Playwright's browser (or ffmpeg, for videos) isn't downloaded. Run `npx playwright install chromium` in `shoplite-local/qa-tests`; if the download is blocked, `export QA_BROWSER_CHANNEL=chrome QA_VIDEO=off` to use your installed Chrome without videos. |
+| Web tests time out on a button or field | The page changed and the page object didn't (that's SHOP-107's point). Open `test-results/<test>/error-context.md`: it shows what was on the page. |
 | Jira returns 401/403 | Check the email and token pair. The project key must be `SHOP`, or set `JIRA_PROJECT`. |
 
 ## Costs

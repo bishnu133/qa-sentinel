@@ -1,0 +1,59 @@
+import fs from "node:fs";
+import { test as base, expect } from "@playwright/test";
+import { Ui } from "../web/ui";
+import { cdpPort, healingOn } from "../web/healing";
+{{#if isScratch}}
+import { ApiClient } from "../api/client";
+import { DataFactory } from "../data/builders";
+{{/if}}
+
+interface WebFixtures {
+  /** Page-object actions with intents (and optional healing). */
+  ui: Ui;
+{{#if isScratch}}
+  /** API client for test data (policy: data is created through the API, never through UI steps). */
+  api: ApiClient;
+  data: DataFactory;
+{{/if}}
+}
+
+// With healing on, each worker's browser opens a remote-debugging port so Bubblegum can attach to it.
+const browserBase = healingOn()
+  ? base.extend<{}, {}>({
+      browser: [
+        async ({ playwright, browserName, launchOptions }: any, use: (b: any) => Promise<void>, workerInfo: { parallelIndex: number }) => {
+          const browser = await playwright[browserName].launch({ ...launchOptions, args: [...(launchOptions.args ?? []), `--remote-debugging-port=${cdpPort(workerInfo.parallelIndex)}`] });
+          await use(browser);
+          await browser.close();
+        },
+        { scope: "worker" },
+      ],
+    } as any)
+  : base;
+
+/** Import `test` and `expect` from here in every web spec. */
+export const test = browserBase.extend<WebFixtures>({
+  ui: async ({ page }, use, testInfo) => {
+    await use(new Ui(page, testInfo));
+  },
+{{#if isScratch}}
+  api: async ({ playwright }, use, testInfo) => {
+    // The web project's baseURL is the site; API calls go to the API base URL.
+    const request = await playwright.request.newContext({ baseURL: process.env.{{baseUrlEnv}}, extraHTTPHeaders: { Accept: "application/json" } });
+    const api = new ApiClient(request);
+    await use(api);
+    // Setup calls are evidence too (showcase): what data the test started from.
+    if (api.calls.length && process.env.QA_API_LOG !== "off") {
+      const file = testInfo.outputPath("api-log.json");
+      fs.writeFileSync(file, JSON.stringify({ test: testInfo.title, status: testInfo.status, calls: api.calls }, null, 2));
+      await testInfo.attach("api-log", { path: file, contentType: "application/json" });
+    }
+    await request.dispose();
+  },
+  data: async ({}, use, testInfo) => {
+    await use(new DataFactory(`${testInfo.workerIndex}-${Date.now()}`));
+  },
+{{/if}}
+});
+
+export { expect };

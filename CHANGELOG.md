@@ -1,5 +1,31 @@
 # Changelog
 
+## 0.5.0 — Web tests, workflow planner, video evidence, optional Bubblegum healing
+
+### Web (Playwright UI)
+- New test layer `tests.web` (dir, pagesDir, runCommand, baseUrlEnv) and service `kind: web` with `routes`. `init --web` scaffolds it for new projects, `add-web` adds it to existing ones (and prints the Playwright project to add).
+- Scaffold: `src/web/ui.ts` (page-object actions with intents), `src/pages/base-page.ts` (routes with `:params`, relative to the base URL), `src/fixtures/web.ts` (`ui`, plus `api` and `data` for test data through the API), example spec. Playwright `web` project records video and screenshots; `QA_BROWSER_CHANNEL=chrome` / `QA_BROWSER_PATH` when Playwright's browser can't be downloaded, `QA_VIDEO=off` without ffmpeg.
+- Plans: change type `ui-change` with `page`, risk factors `user-journey` (high) and `ui-visible` (medium). Scenarios carry `layer` and `page`.
+- Before authoring, qa-sentinel opens the affected pages (routes with params via links on known pages) and saves each page's accessibility tree and a screenshot to `page-snapshots/` for the agent (`tests.web.explore`).
+- New `write-web-test` skill: page objects before specs, locator rules, `@page` tags, data through the API. The plan, generation, analyzer and mapper prompts know about web.
+- Verification runs each layer's changed specs with its own command, base URL and preflight (`tests (web)` in the MR). Test index reads `@page` tags; `test-map.yaml` `screens` are checked; regression selection adds `changed-page`; selected tests run as one Playwright invocation across projects.
+- `feature --run`, doctor (base URL, page objects, browser, Bubblegum), guardrails (web host allowed), env forwarding (`QA_WEB_URL`, browser and healing switches) all cover the web layer.
+
+### Workflow planner
+- Scenario `setup` is a dependency graph of steps (`id`, `via`: api · test-data-service · db-helper · ui, `helper`, `dependsOn`, `why`). Validated in code: unknown or cyclic dependencies are errors; UI setup only in web tests and only with a reason; DB helpers only with a reason. Plain strings still work (ordered API steps). The gap report prints the flow per scenario.
+
+### Optional runtime healing (Bubblegum)
+- `tests.web.healing: bubblegum`: with `QA_HEALING=bubblegum`, a failed page-object action is performed by `@bubblegum-ai/node` `recover()` from its intent, attached over CDP to the same browser (one port per worker). Each healed step is attached to the test and annotated.
+- Healing is always off when qa-sentinel verifies agent-written tests; `feature --run` and scheduled CI runs may use it.
+- New `qa-sentinel healed`: lists healed steps per page-object call site (`qa-healed.md`), keeps them for the next generation run (`qa-healed.json`), exits 1 with `failOnHeal`.
+- GitLab template: the suite job runs API and web together with `QA_HEALING`, installs the browser, and an optional `qa-healed` job. Jenkins: same suite command.
+
+### Sandbox
+- New `storefront` service (web front end on :8081, no dependencies) with page objects and 4 baseline web tests; `qa-env` starts it. Scenarios SHOP-107 (renamed button breaks two web tests; planted total bug → AC-3 conflict) and SHOP-108 (clean; Showcase with a video per AC). `setup` installs Chromium or explains the Chrome fallback.
+
+### Also
+- Verification JUnit files are now per layer: `.qa-sentinel/runs/<run>/junit-<layer>.xml` (CI templates updated).
+
 ## 0.4.0 — Simple Jira comments, lower-environment runs, Showcase, feature manifests
 
 ### Jira comments in plain language

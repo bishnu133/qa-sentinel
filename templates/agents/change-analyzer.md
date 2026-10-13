@@ -27,6 +27,7 @@ For every change, produce one entry with a `type`:
 - `business-rule` – logic that changes outcomes (calculations, limits, state transitions, permissions)
 - `error-handling` – new or changed error responses
 - `removed` – endpoint or field removed or deprecated
+- `ui-change` – in a front end: a page element, label, flow or navigation the user sees or uses changed. Set `"page"` to the route (`/orders/:id`). If the UI now enforces a rule, use `business-rule` or `validation-change` with `page` instead.
 - `internal` – refactor, logging or performance, with no observable behaviour change (list these; they need no new tests)
 
 When the service has an OpenAPI spec (see `qa-sentinel.config.yaml`), compare spec and code. A code change without a matching spec change is a `specDrift` finding.
@@ -47,7 +48,7 @@ For each change, set `oracleStatus`:
 - `missing` – no requirement or contract covers it
 
 ### Risk factors (qa-sentinel computes the level)
-Name every factor that applies, with evidence. You do **not** set a risk level: qa-sentinel derives it from the factors (critical: auth, money, personal-data; high: business-rule, breaking-contract, write-path-error-handling, cross-service, conflicting-oracle; medium: new-endpoint, validation, non-breaking-contract; otherwise low). It also adds `breaking-contract` from the computed contract diff and `conflicting-oracle` from your oracle status.
+Name every factor that applies, with evidence. You do **not** set a risk level: qa-sentinel derives it from the factors (critical: auth, money, personal-data; high: business-rule, breaking-contract, write-path-error-handling, cross-service, conflicting-oracle; medium: new-endpoint, validation, non-breaking-contract, ui-visible; high also: user-journey (sign-in, checkout, payment, forms that write data); otherwise low). It also adds `breaking-contract` from the computed contract diff and `conflicting-oracle` from your oracle status.
 
 Use `auth`, `money` and `personal-data` only when the change really touches authentication or authorisation, monetary amounts, or personal data.
 - Sensitive factors, defined:

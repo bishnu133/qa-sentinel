@@ -3,11 +3,12 @@ import path from "node:path";
 import YAML from "yaml";
 import { KB_README } from "../kb.js";
 import { confirm, input, select } from "@inquirer/prompts";
-import { CONFIG_FILE, type Config, ConfigSchema, configPath, writeConfig } from "../config.js";
+import { CONFIG_FILE, type Config, ConfigSchema, configPath, loadConfig, writeConfig } from "../config.js";
 import { defaultRunCommand, detectProject, discoverServices, type Detection } from "../detect.js";
 import { ensureDir, readJson, writeFileSafe } from "../fsutil.js";
 import { listTemplateDir, readTemplate, render, type TemplateVars } from "../templates.js";
 import { log } from "../log.js";
+import { suiteRunCommand } from "../layers.js";
 
 export interface InitOptions {
   cwd: string;
@@ -17,6 +18,8 @@ export interface InitOptions {
   ci?: "gitlab" | "jenkins";
   apiFramework?: Config["tests"]["api"]["framework"];
   name?: string;
+  /** Also set up the web (Playwright UI) layer: config, page objects, ui helper, fixtures, example spec. */
+  web?: boolean;
   yes?: boolean;
   force?: boolean;
 }
@@ -130,6 +133,7 @@ export async function initCommand(opts: InitOptions): Promise<Config> {
         baseUrlEnv: "QA_BASE_URL",
         extraWritePaths: mode === "scratch" ? ["src/fixtures/**", "src/data/**", "src/schemas/**"] : guessExtraWritePaths(cwd),
       },
+      web: { enabled: Boolean(opts.web), extraWritePaths: opts.web ? ["src/web/**", "src/fixtures/web.ts"] : [] },
     },
     ci: { platform: ci },
   });
@@ -148,7 +152,7 @@ export async function initCommand(opts: InitOptions): Promise<Config> {
 
   writeKbReadme(cwd, config);
   ensureGitignore(cwd);
-  if (mode === "scratch") mergePackageJson(cwd);
+  if (mode === "scratch") mergePackageJson(cwd, config.tests.web.enabled);
 
   printNextSteps(config);
   return config;
@@ -195,6 +199,18 @@ export function templateVars(c: Config): TemplateVars {
     isJenkins: c.ci.platform === "jenkins",
     targetBranch: c.ci.targetBranch,
     maxFixAttempts: c.agent.maxFixAttempts,
+    webEnabled: c.tests.web.enabled,
+    webDir: c.tests.web.dir,
+    pagesDir: c.tests.web.pagesDir,
+    pagesDirRe: c.tests.web.pagesDir.split("/").map((p) => p.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("[\\\\/]"),
+    webRunCommand: c.tests.web.runCommand,
+    webBaseUrlEnv: c.tests.web.baseUrlEnv,
+    healing: c.tests.web.healing,
+    healingBubblegum: c.tests.web.enabled && c.tests.web.healing === "bubblegum",
+    healingVar: c.tests.web.healing === "bubblegum" ? "bubblegum" : "off",
+    suiteRunCommand: suiteRunCommand(c),
+    cdpPort: c.tests.web.bubblegum.cdpPort,
+    bubblegumPackage: c.tests.web.bubblegum.package,
     serviceList: c.workspace.services.map((s) => `- **${s.name}** – \`${s.path}\`${s.openapi ? ` (OpenAPI: \`${s.openapi}\`)` : ""}`).join("\n") || "- _(none yet – add them to qa-sentinel.config.yaml)_",
   };
 }
@@ -207,7 +223,10 @@ export function writeTemplates(cwd: string, c: Config, vars: TemplateVars, force
   };
 
   for (const f of listTemplateDir("agents")) put(`.claude/agents/${f}`, render(readTemplate(`agents/${f}`), vars));
-  for (const f of listTemplateDir("skills")) put(`.claude/skills/${f}`, render(readTemplate(`skills/${f}`), vars));
+  for (const f of listTemplateDir("skills")) {
+    if (f.startsWith("write-web-test/") && !c.tests.web.enabled) continue;
+    put(`.claude/skills/${f}`, render(readTemplate(`skills/${f}`), vars));
+  }
 
   // Project context: our own file, imported from CLAUDE.md so we never clobber the team's.
   put(".claude/qa-sentinel.md", render(readTemplate("claude/qa-sentinel.md"), vars), true);
@@ -231,6 +250,27 @@ export function writeTemplates(cwd: string, c: Config, vars: TemplateVars, force
       if (f === "package.fragment.json") continue;
       put(f.replace(/\.tmpl$/, ""), render(readTemplate(`scaffold/playwright-api/${f}`), vars), false);
     }
+  }
+  if (c.tests.web.enabled) results.push(...writeWebScaffold(cwd, c, vars));
+  return results;
+}
+
+/**
+ * Web layer files: ui helper (with the optional Bubblegum hook), page objects base, fixtures, example spec.
+ * Never overwrites; paths follow tests.web (dir, pagesDir).
+ */
+export function writeWebScaffold(cwd: string, c: Config, vars: TemplateVars): [string, string][] {
+  const results: [string, string][] = [];
+  const target = (f: string) =>
+    f
+      .replace(/\.tmpl$/, "")
+      .replace(/^src\/pages\//, `${c.tests.web.pagesDir}/`)
+      .replace(/^tests\/web\//, `${c.tests.web.dir}/`);
+  for (const f of listTemplateDir("scaffold/playwright-web")) {
+    const rel = target(f);
+    // Relative imports in the templates assume the default layout (src/pages, tests/web/<area>/).
+    const content = render(readTemplate(`scaffold/playwright-web/${f}`), vars);
+    results.push([rel, writeFileSafe(path.join(cwd, rel), content, false)]);
   }
   return results;
 }
@@ -275,11 +315,12 @@ function ensureGitignore(cwd: string) {
   if (missing.length) fs.writeFileSync(file, current + (current && !current.endsWith("\n") ? "\n" : "") + missing.join("\n") + "\n");
 }
 
-function mergePackageJson(cwd: string) {
+function mergePackageJson(cwd: string, web = false) {
   const file = path.join(cwd, "package.json");
   const fragment = JSON.parse(readTemplate("scaffold/playwright-api/package.fragment.json"));
   const pkg = readJson<any>(file) ?? { name: path.basename(cwd), version: "0.1.0", private: true };
   pkg.scripts = { ...fragment.scripts, ...(pkg.scripts ?? {}) };
+  if (web) pkg.scripts["test:web"] ??= "playwright test --project=web";
   pkg.devDependencies = { ...fragment.devDependencies, ...(pkg.devDependencies ?? {}) };
   ensureDir(cwd);
   fs.writeFileSync(file, JSON.stringify(pkg, null, 2) + "\n");
@@ -295,6 +336,7 @@ function printNextSteps(c: Config) {
   );
   const steps = [
     c.mode === "scratch" ? "npm install && npx playwright install --with-deps chromium" : undefined,
+    c.tests.web.enabled ? `Set ${c.tests.web.baseUrlEnv} to your front end (no browser download? QA_BROWSER_CHANNEL=chrome uses installed Chrome)` : undefined,
     "Review qa-sentinel.config.yaml (services, run command, GitLab project)",
     c.mode === "existing"
       ? "qa-sentinel learn   # agent drafts your conventions + test-map.yaml; review the diff"
@@ -305,4 +347,46 @@ function printNextSteps(c: Config) {
       : "Create Jenkins jobs from ci/qa-sentinel/Jenkinsfile.* (see ci/qa-sentinel/README.md)",
   ].filter(Boolean) as string[];
   steps.forEach((s, i) => log.info(`  ${i + 1}. ${s}`));
+}
+
+/**
+ * Add the web layer to a project that already runs qa-sentinel: turns tests.web on (keeping the rest of the
+ * config and its comments), writes the web scaffold and the write-web-test skill, and prints the Playwright
+ * project to add (playwright.config.* is a human-owned file).
+ */
+export function addWebCommand(o: { cwd: string; healing?: "none" | "bubblegum" }): Config {
+  const cwd = path.resolve(o.cwd);
+  const file = configPath(cwd);
+  const doc = YAML.parseDocument(fs.readFileSync(file, "utf8"));
+  doc.setIn(["tests", "web", "enabled"], true);
+  if (o.healing) doc.setIn(["tests", "web", "healing"], o.healing);
+  if (!doc.getIn(["tests", "web", "extraWritePaths"])) doc.setIn(["tests", "web", "extraWritePaths"], ["src/web/**", "src/fixtures/web.ts"]);
+  fs.writeFileSync(file, doc.toString());
+  const c = loadConfig(cwd);
+  const vars = templateVars(c);
+  const results = writeWebScaffold(cwd, c, vars);
+  for (const f of listTemplateDir("skills")) {
+    if (f.startsWith("write-web-test/")) results.push([`.claude/skills/${f}`, writeFileSafe(path.join(cwd, ".claude/skills", f), render(readTemplate(`skills/${f}`), vars), false)]);
+  }
+  for (const [f, status] of results) log.dim(`  ${status === "skipped" ? "kept    " : status.padEnd(8)} ${f}`);
+  log.ok("web layer enabled in qa-sentinel.config.yaml");
+  log.title("Add this project to playwright.config.ts");
+  log.info(
+    [
+      "    {",
+      '      name: "web",',
+      `      testDir: "./${c.tests.web.dir}",`,
+      "      use: {",
+      `        baseURL: process.env.${c.tests.web.baseUrlEnv}?.replace(/\/?$/, "/"),`,
+      '        video: "on",          // evidence for the showcase stage',
+      '        screenshot: "on",',
+      '        trace: "retain-on-failure",',
+      "        launchOptions: process.env.QA_BROWSER_CHANNEL ? { channel: process.env.QA_BROWSER_CHANNEL } : {},",
+      "      },",
+      "    },",
+    ].join("\n"),
+  );
+  log.info(`Then: npx playwright install chromium (or QA_BROWSER_CHANNEL=chrome), set ${c.tests.web.baseUrlEnv}, and run qa-sentinel doctor.`);
+  if (c.tests.web.healing === "bubblegum") log.info(`Healing: npm i -D ${c.tests.web.bubblegum.package} && pip install "bubblegum-ai[web]".`);
+  return c;
 }

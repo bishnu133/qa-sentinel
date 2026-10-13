@@ -234,6 +234,74 @@ app.get("/orders/:id", (req, res) => {`,
       ],
     },
   },
+  {
+    id: "SHOP-107",
+    service: "storefront",
+    branch: "feature/SHOP-107-checkout-payment-status",
+    title: "SHOP-107: Show the payment status after checkout",
+    story: `As a customer I see that my order is paid, and what it cost, right after checkout.
+
+## Acceptance criteria
+1. The order form's button says "Checkout" (it said "Place order"); after checkout the customer lands on the order page.
+2. The order page shows the payment status: "Payment: authorised" with the payment reference (pay_…) for a paid order.
+3. The order page shows the order total with its currency and two decimals, e.g. "SGD 25.00" for 2 books at 12.50.`,
+    expect:
+      "Web. Renamed button breaks the existing new-order web tests (page object locator → update the page object first). Payment status is new → web test with the order created through the API. Planted bug: the total shows the unit price (SGD 12.50 for 2 books), so AC-3 conflicts with the code → review, fixme test written to the AC.",
+    edits: {
+      "src/pages.js": [
+        ['<div><button type="submit">Place order</button></div>', '<div><button type="submit">Checkout</button></div>'],
+        [
+          "  const o = await res.json();",
+          `  const o = await res.json();
+  const pay = o.paymentId ? await fetch("/api/payments/" + encodeURIComponent(o.paymentId)).then((r) => r.json()).catch(() => null) : null;
+  const payment = pay && pay.status === "authorized" ? "Payment: authorised (" + pay.id + ")" : "Payment: pending";`,
+        ],
+        [
+          `'<dt>Total</dt><dd id="total">' + money(o.total, o.currency) + '</dd>' +`,
+          `'<dt>Total</dt><dd id="total">' + money(o.unitPrice, o.currency) + '</dd>' +
+    '<dt>Payment</dt><dd id="payment">' + payment + '</dd>' +`,
+        ],
+      ],
+    },
+  },
+  {
+    id: "SHOP-108",
+    service: "storefront",
+    branch: "feature/SHOP-108-price-preview",
+    title: "SHOP-108: Show the price before ordering",
+    story: `As a customer I see what my order will cost before I place it.
+
+## Acceptance criteria
+1. After choosing an item, the order form shows its unit price, e.g. "SGD 12.50 each" for a book.
+2. The form shows the total for the chosen quantity, e.g. "Total: SGD 25.00" for 2 books, and updates when the item or quantity changes.
+3. The price and total use the chosen currency code, e.g. "Total: EUR 3.00" for 1 pen in EUR.`,
+    expect:
+      "Web, no planted bug. New form elements → create web tests through the NewOrderPage page object (add the price and total locators there). Every AC passes, so the Showcase stage collects the evidence with videos (--showcase).",
+    edits: {
+      "src/pages.js": [
+        [
+          '  <select id="currency" name="currency"><option>SGD</option><option>EUR</option></select>',
+          `  <select id="currency" name="currency"><option>SGD</option><option>EUR</option></select>
+  <p id="unit-price" aria-live="polite"></p>
+  <p id="total-preview" aria-live="polite"></p>`,
+        ],
+        [
+          'document.getElementById("order-form").addEventListener("submit", async (e) => {',
+          `// Price preview: unit price and total for the chosen item, quantity and currency.
+function preview() {
+  const item = catalog.find((i) => i.id === document.getElementById("item").value);
+  const qty = Number(document.getElementById("qty").value) || 0;
+  const currency = document.getElementById("currency").value;
+  document.getElementById("unit-price").textContent = money(item.unitPrice, currency) + " each";
+  document.getElementById("total-preview").textContent = "Total: " + money(item.unitPrice * qty, currency);
+}
+for (const id of ["item", "qty", "currency"]) document.getElementById(id).addEventListener("input", preview);
+preview();
+document.getElementById("order-form").addEventListener("submit", async (e) => {`,
+        ],
+      ],
+    },
+  },
 ];
 
 // Part 2 of a story shares the story (and its acceptance criteria) with part 1.

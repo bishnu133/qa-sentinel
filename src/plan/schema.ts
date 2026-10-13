@@ -29,6 +29,8 @@ export const CHANGE_TYPES = [
   "business-rule",
   "error-handling",
   "removed",
+  /** A front-end change the user can see or do: a new or changed page element, label, flow or navigation. */
+  "ui-change",
   "internal",
   "suspicious-instruction",
 ] as const;
@@ -50,6 +52,10 @@ export const RISK_FACTORS = [
   "non-breaking-contract",
   "read-only",
   "internal",
+  /** A core journey through the UI changed (sign-in, checkout, payment, submitting a form that writes data). */
+  "user-journey",
+  /** A visible UI change outside the core journeys (labels, layout, read-only pages). */
+  "ui-visible",
 ] as const;
 
 export const ChangeSchema = z
@@ -57,6 +63,8 @@ export const ChangeSchema = z
     id: z.string().regex(/^c\d+$/, "change ids are c1, c2, …"),
     type: z.enum(CHANGE_TYPES),
     endpoint: opt(z.string()),
+    /** Front-end route the change is on, e.g. /orders/new or /orders/:id. */
+    page: opt(z.string()),
     summary: z.string().min(1),
     observable: z.boolean(),
     requirementIds: z.array(z.string()).default([]),
@@ -70,11 +78,37 @@ export const ChangeSchema = z
 export const COVERAGE = ["covered", "partial", "missing", "outdated", "unknown"] as const;
 export const DECISIONS = ["reuse", "update", "create", "review", "skip"] as const;
 
+export const LAYERS = ["api", "web"] as const;
+/** How a setup step creates its data. The policy: API or a test-data service first; UI only when no safe programmatic route exists. */
+export const SETUP_VIA = ["api", "test-data-service", "db-helper", "ui"] as const;
+
+/**
+ * One precondition of a scenario, as a node in a small dependency graph (the workflow planner): e.g.
+ * s1 "create an order" (api) → s2 "authorise its payment" (api, dependsOn s1) → the web test opens the order page.
+ */
+export const SetupStepSchema = z
+  .object({
+    id: z.string().regex(/^s\d+$/, "setup step ids are s1, s2, …"),
+    via: z.enum(SETUP_VIA),
+    action: z.string().min(1),
+    /** Existing helper or builder to use (e.g. api.createOrder), or "new: <name>" when one must be added. */
+    helper: opt(z.string()),
+    dependsOn: z.array(z.string()).default([]),
+    /** Required for ui and db-helper steps: why the API route is not possible. */
+    why: opt(z.string()),
+  })
+  .strict();
+
 export const ScenarioSchema = z
   .object({
     title: z.string().min(1),
     requirementIds: z.array(z.string()).default([]),
-    setup: z.array(z.string()).default([]),
+    /** Which layer proves this scenario. Default: the service's layer (web for front ends, api otherwise). */
+    layer: opt(z.enum(LAYERS)),
+    /** Web scenarios: the page the test opens. */
+    page: opt(z.string()),
+    /** Preconditions. Plain strings are accepted and read as API steps in order. */
+    setup: z.array(z.union([z.string().min(1), SetupStepSchema])).default([]),
     assertions: z.array(z.string()).min(1, "a scenario must name at least one assertion"),
   })
   .strict();
@@ -121,6 +155,8 @@ export const TestPlanSchema = z
   .strict();
 
 export type Evidence = z.infer<typeof EvidenceSchema>;
+export type SetupStep = z.infer<typeof SetupStepSchema>;
+export type Scenario = z.infer<typeof ScenarioSchema>;
 export type Change = z.infer<typeof ChangeSchema>;
 export type Decision = z.infer<typeof DecisionSchema>;
 export type TestPlan = z.infer<typeof TestPlanSchema>;

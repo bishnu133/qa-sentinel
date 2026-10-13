@@ -1,8 +1,10 @@
 import fs from "node:fs";
+import os from "node:os";
+import { spawnSync } from "node:child_process";
 import path from "node:path";
 import YAML from "yaml";
-import { buildTestIndex, checkTestMap, readTestMap } from "../analysis/testIndex.js";
-import { CONFIG_FILE, configPath, loadConfig } from "../config.js";
+import { indexTests, checkTestMap, readTestMap } from "../analysis/testIndex.js";
+import { CONFIG_FILE, type Config, configPath, loadConfig } from "../config.js";
 import { claudeAvailable } from "../claude.js";
 import { isGitRepo } from "../git.js";
 import { log } from "../log.js";
@@ -56,6 +58,7 @@ export function runChecks(cwd: string, env: NodeJS.ProcessEnv = process.env): Ch
     const dir = path.resolve(cwd, s.path);
     if (!fs.existsSync(dir)) add("fail", `service ${s.name}: ${s.path} exists`, "check the path or clone the repo into the workspace");
     else if (!isGitRepo(dir)) add("fail", `service ${s.name}: is a git repo`);
+    else if (s.kind === "web") add(c.tests.web.enabled ? "ok" : "warn", `service ${s.name} (web front end${s.routes.length ? `, ${s.routes.length} routes` : ""})`, c.tests.web.enabled ? undefined : "enable tests.web (`qa-sentinel add-web`) to test it through the UI");
     else if (!s.openapi) add("warn", `service ${s.name}: OpenAPI spec`, "add one (or `openapi:` path) for much better API tests");
     else if (!fs.existsSync(path.join(dir, s.openapi))) add("warn", `service ${s.name}: ${s.openapi} found`);
     else add("ok", `service ${s.name} (OpenAPI: ${s.openapi})`);
@@ -66,20 +69,22 @@ export function runChecks(cwd: string, env: NodeJS.ProcessEnv = process.env): Ch
   else {
     const map = YAML.parse(fs.readFileSync(mapFile, "utf8")) ?? {};
     const services = Object.values<any>(map.services ?? {});
-    const mapped = services.filter((s) => Object.keys(s?.endpoints ?? {}).length > 0).length;
+    const mapped = services.filter((s) => Object.keys(s?.endpoints ?? {}).length > 0 || Object.keys(s?.screens ?? {}).length > 0).length;
     const level: Level = services.length && mapped === services.length ? "ok" : "warn";
-    add(level, `test-map: ${mapped}/${services.length} services have endpoints mapped`, level === "warn" ? "run `qa-sentinel learn`" : undefined);
+    add(level, `test-map: ${mapped}/${services.length} services have endpoints or screens mapped`, level === "warn" ? "run `qa-sentinel learn`" : undefined);
   }
-  const index = buildTestIndex(cwd, c.tests.api.dir);
+  const index = indexTests(cwd, c);
   if (index.length) {
-    const tagged = index.filter((t) => t.endpoints.length).length;
-    add(tagged === index.length ? "ok" : "warn", `test tags: ${tagged}/${index.length} tests have @endpoint`, tagged === index.length ? undefined : "tag tests so impact analysis and traceability can find them (`qa-sentinel trace`)");
+    const tagged = index.filter((t) => t.endpoints.length || t.pages.length).length;
+    add(tagged === index.length ? "ok" : "warn", `test tags: ${tagged}/${index.length} tests have @endpoint or @page`, tagged === index.length ? undefined : "tag tests so impact analysis and traceability can find them (`qa-sentinel trace`)");
     const mismatches = checkTestMap(index, readTestMap(cwd), cwd).filter((f) => f.level === "warning").length;
     if (mismatches) add("warn", `test-map.yaml agrees with test tags`, `${mismatches} mismatch(es); run \`qa-sentinel trace\``);
   }
 
   if (env[c.tests.api.baseUrlEnv]) add("ok", `${c.tests.api.baseUrlEnv} set`);
   else add("warn", `${c.tests.api.baseUrlEnv} set`, "needed for the agent to run tests against your QA environment");
+
+  if (c.tests.web.enabled) checks.push(...webChecks(cwd, c, env));
 
   if (c.ci.scm === "gitlab") {
     if (env.QA_SENTINEL_GITLAB_TOKEN || env.GITLAB_TOKEN) add("ok", "GitLab token set");
@@ -103,6 +108,34 @@ export function runChecks(cwd: string, env: NodeJS.ProcessEnv = process.env): Ch
     add("warn", "services have gitlabProject set", "needed after merge to fetch the MR's acceptance criteria (or set QA_SERVICE_PROJECT in CI)");
   }
   return checks;
+}
+
+/** Web layer: base URL, page objects, a browser to run in, and (when healing is on) Bubblegum's two halves. */
+export function webChecks(cwd: string, c: Config, env: NodeJS.ProcessEnv): Check[] {
+  const out: Check[] = [];
+  const add = (level: Level, label: string, hint?: string) => out.push({ level, label, hint });
+  const w = c.tests.web;
+  env[w.baseUrlEnv] ? add("ok", `${w.baseUrlEnv} set (web)`) : add("warn", `${w.baseUrlEnv} set`, "the front end the web tests open");
+  fs.existsSync(path.join(cwd, w.pagesDir)) ? add("ok", `page objects in ${w.pagesDir}`) : add("warn", `page objects folder ${w.pagesDir}`, "run `qa-sentinel add-web` for the scaffold");
+  fs.existsSync(path.join(cwd, ".claude/skills/write-web-test/SKILL.md")) ? add("ok", ".claude/skills/write-web-test/SKILL.md") : add("fail", ".claude/skills/write-web-test/SKILL.md", "run `qa-sentinel add-web`");
+  const pw = path.join(cwd, "playwright.config.ts");
+  if (fs.existsSync(pw) && !/name:\s*["']web["']/.test(fs.readFileSync(pw, "utf8"))) add("warn", "playwright.config.ts has a web project", "`qa-sentinel add-web` prints the project to add");
+  if (env.QA_BROWSER_PATH) add(fs.existsSync(env.QA_BROWSER_PATH) ? "ok" : "fail", `browser: ${env.QA_BROWSER_PATH}`);
+  else if (env.QA_BROWSER_CHANNEL) add("ok", `browser: installed ${env.QA_BROWSER_CHANNEL} (QA_BROWSER_CHANNEL)`);
+  else {
+    const cache = env.PLAYWRIGHT_BROWSERS_PATH ?? path.join(os.homedir(), process.platform === "darwin" ? "Library/Caches/ms-playwright" : ".cache/ms-playwright");
+    const found = fs.existsSync(cache) && fs.readdirSync(cache).some((d) => d.startsWith("chromium"));
+    found ? add("ok", "Playwright Chromium installed") : add("warn", "Playwright Chromium installed", "npx playwright install chromium; no download allowed? set QA_BROWSER_CHANNEL=chrome to use the installed Google Chrome");
+  }
+  if (w.healing === "bubblegum") {
+    const pkg = w.bubblegum.package;
+    const hasPkg = fs.existsSync(path.join(cwd, "node_modules", ...pkg.split("/"), "package.json"));
+    hasPkg ? add("ok", `healing: ${pkg} installed`) : add("fail", `healing: ${pkg} installed`, `npm i -D ${pkg}`);
+    const py = spawnSync("python3", ["-c", "import bubblegum"], { encoding: "utf8" });
+    py.status === 0 ? add("ok", "healing: Bubblegum engine importable (python3 -c 'import bubblegum')") : add("fail", "healing: Bubblegum engine installed", 'pip install "bubblegum-ai[web]" on the machine running the tests');
+    add("ok", "healing runs only when QA_HEALING=bubblegum (scheduled/post-deploy jobs, feature --run); never while verifying agent-written tests");
+  }
+  return out;
 }
 
 /** Calls GitLab to prove the token can reach the projects, rather than only checking a variable exists. */

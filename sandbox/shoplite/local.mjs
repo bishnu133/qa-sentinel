@@ -6,6 +6,7 @@
 //   node sandbox/shoplite/local.mjs run SHOP-101 [--generate]     # make the dev change, gap report (+ generate tests)
 //   node sandbox/shoplite/local.mjs run SHOP-101 --regression     # also run the existing tests qa-sentinel selected, against the change
 //   node sandbox/shoplite/local.mjs run SHOP-105 --generate --showcase   # then run the suite and attach evidence if every AC passed
+//   node sandbox/shoplite/local.mjs run SHOP-108 --generate --showcase   # web: storefront change, page objects + web tests, video evidence
 //   node sandbox/shoplite/local.mjs run SHOP-106 --change-only    # just make the developer change (no agent, no cost)
 //   node sandbox/shoplite/local.mjs merge SHOP-106                 # merge a scenario's branch into main (like merging the MR)
 //   node sandbox/shoplite/local.mjs feature SHOP-106 [--run]       # one story across services: merged? deployed? AC tests? (then run them)
@@ -18,6 +19,8 @@ import { CLI, HERE, SERVICES, TEST_REPO, buildServices, buildTests, die, flags, 
 import { SCENARIOS } from "./scenarios.mjs";
 
 const f = flags(process.argv.slice(2));
+// Where the QA environment answers: the API gateway and the storefront (qa-env/start.sh).
+const QA_URLS = { QA_BASE_URL: "http://127.0.0.1:8080", QA_WEB_URL: "http://127.0.0.1:8081/" };
 const [cmd, arg] = f._;
 const work = path.resolve(typeof f.work === "string" ? f.work : "shoplite-local");
 const tests = path.join(work, TEST_REPO);
@@ -44,6 +47,7 @@ switch (cmd) {
     buildTests(work, { level: f.level === "maintenance" ? "maintenance" : "intelligence" });
     fs.mkdirSync(path.join(work, "stories"), { recursive: true });
     for (const s of SCENARIOS) fs.writeFileSync(path.join(work, "stories", `${s.id}.md`), `# ${s.title}\n\n${s.story}\n`);
+    installBrowser();
     log(`ShopLite ready in ${work}`);
     log(`next: node sandbox/shoplite/local.mjs run SHOP-101`);
     break;
@@ -56,7 +60,7 @@ switch (cmd) {
     break;
   case "reset":
     envStop(true);
-    for (const svc of SERVICES) git(path.join(work, svc), "checkout", "-q", "-f", "main");
+    for (const svc of SERVICES) if (fs.existsSync(path.join(work, svc))) git(path.join(work, svc), "checkout", "-q", "-f", "main");
     git(tests, "checkout", "-q", "-f", "main");
     log("all repos back on main; environment stopped");
     break;
@@ -73,12 +77,12 @@ switch (cmd) {
     // Story across services: deploy main of every service locally, then ask qa-sentinel where the feature stands.
     const key = String(arg ?? "").toUpperCase();
     if (!key) die("usage: local.mjs feature SHOP-106 [--run]");
-    for (const svc of SERVICES) git(path.join(work, svc), "checkout", "-q", "-f", "main");
+    for (const svc of SERVICES) if (fs.existsSync(path.join(work, svc))) git(path.join(work, svc), "checkout", "-q", "-f", "main");
     envStart();
     const storyFile = path.join(work, "stories", `${key}.md`);
     const code = run("node", [CLI, "feature", key, "--env", "local", ...(fs.existsSync(storyFile) ? ["--story-file", storyFile] : []), ...(f.run ? ["--run"] : [])], {
       cwd: tests,
-      env: { ...process.env, QA_BASE_URL: "http://127.0.0.1:8080" },
+      env: { ...process.env, ...QA_URLS },
     });
     envStop(true);
     log(`feature summary: ${path.join(tests, `qa-feature-${key}.md`)}`);
@@ -89,7 +93,7 @@ switch (cmd) {
     if (!fs.existsSync(tests)) die(`no sandbox in ${work}; run: node sandbox/shoplite/local.mjs setup`);
     const s = scenario(arg);
     const svcDir = path.join(work, s.service);
-    for (const svc of SERVICES) git(path.join(work, svc), "checkout", "-q", "-f", "main");
+    for (const svc of SERVICES) if (fs.existsSync(path.join(work, svc))) git(path.join(work, svc), "checkout", "-q", "-f", "main");
     const prev = git(tests, "branch", "--show-current");
     if (prev.startsWith("qa-sentinel/")) log(`generated tests stay on branch ${prev} (review: git -C ${tests} diff main ${prev})`);
     git(tests, "checkout", "-q", "-f", "main");
@@ -109,14 +113,14 @@ switch (cmd) {
       const selected = fs.existsSync(path.join(work, "qa-regression.txt")) ? fs.readFileSync(path.join(work, "qa-regression.txt"), "utf8").split("\n").filter(Boolean) : [];
       envStart();
       log(`running ${selected.length || "all"} selected existing test(s) against ${s.service} with the change`);
-      run("npx", ["playwright", "test", "--project=api", "--reporter=list", ...selected], { cwd: tests, env: { ...process.env, QA_BASE_URL: "http://127.0.0.1:8080" } });
+      run("npx", ["playwright", "test", ...(selected.length ? [] : ["--project=api", "--project=web"]), "--reporter=list", ...selected], { cwd: tests, env: { ...process.env, ...QA_URLS } });
       envStop(true);
     }
     if (f.generate) {
       envStart();
       const code = run("node", [CLI, "generate", "-s", s.service, "--base", "main", "--head", "HEAD", "--story-file", story], {
         cwd: tests,
-        env: { ...process.env, QA_BASE_URL: "http://127.0.0.1:8080" },
+        env: { ...process.env, ...QA_URLS },
       });
       envStop(true);
       if (code === 3) noClaude();
@@ -125,7 +129,7 @@ switch (cmd) {
         // Showcase: run the whole suite on the generated branch (json reporter keeps evidence), then attach evidence
         // for the story if every acceptance criterion passed. Without JIRA_* it only assesses (--dry-run).
         envStart();
-        run("npx", ["playwright", "test", "--project=api"], { cwd: tests, env: { ...process.env, QA_BASE_URL: "http://127.0.0.1:8080" } });
+        run("npx", ["playwright", "test", "--project=api", "--project=web"], { cwd: tests, env: { ...process.env, ...QA_URLS } });
         envStop(true);
         const jira = process.env.JIRA_BASE_URL && process.env.JIRA_API_TOKEN;
         run("node", [CLI, "showcase", "--story", s.id, "--story-file", story, ...(jira ? [] : ["--dry-run"]), "-o", `../${s.id}-showcase.md`], { cwd: tests });
@@ -139,6 +143,24 @@ switch (cmd) {
   }
   default:
     console.log(fs.readFileSync(new URL(import.meta.url), "utf8").split("\n").slice(1, 14).join("\n").replace(/^\/\/ ?/gm, ""));
+}
+
+/**
+ * Web tests need a browser (and ffmpeg for the showcase videos). Playwright downloads both from its CDN; on a
+ * locked-down laptop that may be blocked, so fall back to the installed Google Chrome without video.
+ */
+function installBrowser() {
+  if (process.env.QA_BROWSER_CHANNEL || process.env.QA_BROWSER_PATH || process.env.PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD) {
+    log(`browser: ${process.env.QA_BROWSER_CHANNEL ?? process.env.QA_BROWSER_PATH ?? "PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD set"} (no download)`);
+    return;
+  }
+  log("qa-tests: npx playwright install chromium (browser + ffmpeg for videos)");
+  if (run("npx", ["playwright", "install", "chromium"], { cwd: tests }) === 0) return;
+  console.log(`
+! Could not download Playwright's Chromium (a proxy or company policy may block cdn.playwright.dev).
+  Web tests can use your installed Google Chrome instead; videos need Playwright's ffmpeg, so turn them off:
+    export QA_BROWSER_CHANNEL=chrome QA_VIDEO=off
+  The API tests are not affected.`);
 }
 
 /** qa-sentinel exits 3 when Claude can't be used at all; nothing after that step would mean anything. */

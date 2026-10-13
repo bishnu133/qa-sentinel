@@ -1,4 +1,4 @@
-# Traceability map: service → endpoint → test files. Agents read and update this file.
+# Traceability map: service → endpoint (API) or screen (web page) → test files. Agents read and update this file.
 version: 1
 services:
   orders-service:
@@ -22,4 +22,11 @@ services:
       POST /notifications: [tests/api/notifications/notifications.spec.ts]
       GET /notifications: [tests/api/notifications/notifications.spec.ts]
     screens: {}
+  storefront:
+    path: ../storefront
+    openapi: null
+    endpoints: {}
+    screens:
+      /orders/new: [tests/web/orders/new-order.spec.ts]
+      /orders/:id: [tests/web/orders/order-page.spec.ts]
 unmapped: []

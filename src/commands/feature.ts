@@ -3,11 +3,12 @@ import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { loadConfig } from "../config.js";
 import { assembleFeature, featureMarkdown } from "../feature/manifest.js";
-import { buildTestIndex, traceMarkdown, traceStory } from "../analysis/testIndex.js";
+import { indexTests, traceMarkdown, traceStory } from "../analysis/testIndex.js";
 import { parseAcceptanceCriteria } from "../requirements.js";
 import { gitlabContext } from "../scm/gitlab.js";
 import { fetchIssue, jiraContext, markdownToJiraWiki, upsertIssueComment } from "../scm/jira.js";
 import { testEnv, useEnvironment } from "../run.js";
+import { runCommandsFor } from "../layers.js";
 import { log } from "../log.js";
 
 export interface FeatureOptions {
@@ -41,7 +42,7 @@ export async function featureCommand(o: FeatureOptions): Promise<number> {
     : jira
       ? await fetchIssue(jira, story, c.requirements.jira.acceptanceCriteriaField).then((i) => parseAcceptanceCriteria([i.description, i.acceptanceCriteria ?? ""].join("\n\n"))).catch(() => [])
       : [];
-  const index = buildTestIndex(cwd, c.tests.api.dir);
+  const index = indexTests(cwd, c);
   const tests = index.filter((t) => t.stories.includes(story));
   const active = tests.filter((t) => t.status === "active");
   const extra = ["", `**Feature tests:** ${active.length} tagged @story:${story}${tests.length > active.length ? ` (+${tests.length - active.length} waiting for a product fix)` : ""}, across ${new Set(tests.flatMap((t) => t.services)).size} service(s).`];
@@ -72,8 +73,13 @@ export async function featureCommand(o: FeatureOptions): Promise<number> {
       return 2;
     }
     log.step(`running ${active.length} feature test(s)${environment ? ` on ${environment}` : ""}`);
-    const r = spawnSync(`${c.tests.api.runCommand} ${active.map((t) => `${t.file}:${t.line}`).join(" ")}`, { cwd, shell: true, stdio: "inherit", env: testEnv(c) });
-    return r.status ?? 1;
+    // API and web tests in one run where possible; healing is allowed here: these are existing, reviewed tests.
+    let status = 0;
+    for (const cmd of runCommandsFor(c, active.map((t) => `${t.file}:${t.line}`))) {
+      const r = spawnSync(cmd, { cwd, shell: true, stdio: "inherit", env: testEnv(c, process.env, { healing: true }) });
+      if ((r.status ?? 1) !== 0) status = r.status ?? 1;
+    }
+    return status;
   }
   return 0;
 }

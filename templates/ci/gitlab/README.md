@@ -27,4 +27,6 @@ Two files, two repos:
 - [ ] (optional) Lower environment: add it under `environments:` in `qa-sentinel.config.yaml` and set `QA_ENVIRONMENT` (e.g. `sit`) in this repo's variables. Generation then runs the tests there before opening the MR; with `verification.requireVerifiedToPush: true` it pushes only when they pass.
 - [ ] (optional) Feature manifests: a version endpoint per service (`services[].version: { path, field }`) that returns the deployed git SHA
 - [ ] (optional) Showcase: `QA_SHOWCASE: "true"` in this repo's variables, Jira configured, and `reporting.targets` including `jira`. The job attaches evidence to the story once all ACs pass.
+- [ ] (web) `{{webBaseUrlEnv}}` in this repo's variables (or exported by `QA_ENV_START`): the front end the web tests open. The suite job installs Chromium; videos are recorded for the showcase.
+- [ ] (web, optional) Runtime healing: `tests.web.healing: bubblegum` in the config, `npm i -D @bubblegum-ai/node` in this repo. The suite job installs the Python engine and runs with `QA_HEALING=bubblegum`; `qa-healed` lists what was healed. Never used for agent MRs.
 - [ ] Run `qa-sentinel doctor --online` locally first

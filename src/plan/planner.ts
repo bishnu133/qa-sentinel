@@ -12,6 +12,7 @@ import { type PlanValidation, validatePlan } from "./validate.js";
 import { type RiskedChange, applyRisk } from "./risk.js";
 import type { RiskLevel, TestPlan } from "./schema.js";
 import { log } from "../log.js";
+import { layers, primaryLayer } from "../layers.js";
 
 export interface PlanOutcome {
   status: "valid" | "invalid" | "agent-failed" | "dry-run";
@@ -71,6 +72,10 @@ export async function planChange(i: PlanInput): Promise<PlanOutcome> {
         head: i.cs.head,
         changedFiles: i.relevant,
         oracle,
+        // Test layers in this repo and the one this service is tested on first (web for front ends).
+        testLayers: layers(c).map((l) => ({ layer: l.layer, dir: l.dir, helpersDir: l.helpersDir, runCommand: l.runCommand })),
+        serviceLayer: primaryLayer(c, i.service),
+        ...(i.service.routes.length ? { serviceRoutes: i.service.routes } : {}),
         acceptanceCriteriaIds: i.req.acceptanceCriteria.map((a) => a.id),
         contractDiff: `${run.rel}/contract-diff.md`,
         ...(knowledge ? { knowledge } : {}),
@@ -115,6 +120,8 @@ export async function planChange(i: PlanInput): Promise<PlanOutcome> {
     requirementsMissing: i.req.source === "none",
     testRepo: i.cwd,
     serviceRepo: i.repo,
+    layers: layers(c).map((l) => l.layer),
+    defaultLayer: primaryLayer(c, i.service),
   };
   const read = () => {
     try {

@@ -57,7 +57,7 @@ describe("test index", () => {
   it("flags new tests without an endpoint or with unknown ACs", () => {
     const extra = indexSource("tests/api/n.spec.ts", `test("no tags @story:SHOP-102 @ac:AC-9", async () => {});`);
     const f = checkNewTests([...idx, ...extra], ["tests/api/n.spec.ts"], "SHOP-102", ["AC-1", "AC-2"]);
-    expect(f.map((x) => x.message)).toEqual([expect.stringContaining("no @endpoint tag"), expect.stringContaining("AC-9, which is not in SHOP-102")]);
+    expect(f.map((x) => x.message)).toEqual([expect.stringContaining("no @endpoint (API) or @page (web) tag"), expect.stringContaining("AC-9, which is not in SHOP-102")]);
   });
 });
 

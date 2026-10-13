@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { loadConfig } from "../config.js";
-import { buildTestIndex } from "../analysis/testIndex.js";
+import { indexTests } from "../analysis/testIndex.js";
 import { readRunResults } from "../showcase/results.js";
 import { assessStory, collectEvidence, showcaseComment, SHOWCASE_PROPERTY, type ShowcaseRecord, type StoryReadiness } from "../showcase/showcase.js";
 import {
@@ -42,7 +42,7 @@ export async function showcaseCommand(o: ShowcaseOptions): Promise<number> {
   const resultsFile = path.resolve(cwd, o.results ?? (fs.existsSync(path.join(cwd, "test-results/results.json")) ? "test-results/results.json" : "test-results/junit.xml"));
   if (!fs.existsSync(resultsFile)) throw new Error(`No test results at ${path.relative(cwd, resultsFile)}. Run the suite first (Playwright: add the json reporter, see the scaffold's playwright.config.ts).`);
   const results = readRunResults(resultsFile);
-  const index = buildTestIndex(cwd, c.tests.api.dir);
+  const index = indexTests(cwd, c);
   const ctx = jiraContext(c.requirements.jira.baseUrl);
   const stories = o.story?.length ? o.story : [...new Set(index.flatMap((t) => t.stories))].sort();
   log.step(`showcase: ${results.length} results, ${stories.length} stor${stories.length === 1 ? "y" : "ies"} tagged in the tests${environment ? `, environment ${environment}` : ""}`);

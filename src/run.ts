@@ -6,9 +6,10 @@ import { CONFIG_FILE, type Config, type ServiceConfig } from "./config.js";
 import { ensureDir } from "./fsutil.js";
 import { resolveSha } from "./git.js";
 import { scrubbedEnv } from "./env.js";
+import { layerEnvNames, layers } from "./layers.js";
 import type { RequirementSnapshot } from "./requirements.js";
 
-export const VERSION = "0.4.0";
+export const VERSION = "0.5.0";
 
 export interface RunDir {
   id: string;
@@ -32,26 +33,36 @@ export function findService(c: Config, nameOrPath: string, cwd: string, override
   if (overridePath) {
     const known = c.workspace.services.map((s) => s.name);
     if (known.length) log.warn(`service "${nameOrPath}" is not in workspace.services (${known.join(", ")}); its openapi, dependsOn and gitlabProject settings are not used`);
-    return { name: nameOrPath, path: overridePath, dependsOn: [] };
+    return { name: nameOrPath, path: overridePath, dependsOn: [], kind: "api", routes: [] };
   }
   const abs = path.resolve(cwd, nameOrPath);
   const byPath = c.workspace.services.find((s) => path.resolve(cwd, s.path) === abs);
   if (byPath) return byPath;
-  if (fs.existsSync(abs)) return { name: path.basename(abs), path: path.relative(cwd, abs) || ".", dependsOn: [] };
+  if (fs.existsSync(abs)) return { name: path.basename(abs), path: path.relative(cwd, abs) || ".", dependsOn: [], kind: "api", routes: [] };
   throw new Error(`Unknown service "${nameOrPath}". Add it to workspace.services or pass a valid path.`);
 }
 
 /** Environment for the agent process and for test runs: allowlisted, never carrying publisher credentials. */
 export function agentEnv(c: Config, env: NodeJS.ProcessEnv = process.env) {
-  return scrubbedEnv({ baseUrlEnv: c.tests.api.baseUrlEnv, passEnv: c.guardrails.passEnv, forAgent: true }, env);
+  return scrubbedEnv({ baseUrlEnv: c.tests.api.baseUrlEnv, passEnv: [...c.guardrails.passEnv, ...layerEnvNames(c)], forAgent: true }, env);
 }
-export function testEnv(c: Config, env: NodeJS.ProcessEnv = process.env) {
-  return scrubbedEnv({ baseUrlEnv: c.tests.api.baseUrlEnv, passEnv: c.guardrails.passEnv, forAgent: false }, env);
+/**
+ * Test runs started by qa-sentinel (verification, feature runs). Healing is off unless the caller allows it:
+ * tests the agent just wrote must pass on their own locators.
+ */
+export function testEnv(c: Config, env: NodeJS.ProcessEnv = process.env, o: { healing?: boolean } = {}) {
+  const out = scrubbedEnv({ baseUrlEnv: c.tests.api.baseUrlEnv, passEnv: [...c.guardrails.passEnv, ...layerEnvNames(c)], forAgent: false }, env);
+  if (c.tests.web.enabled) out.QA_HEALING = o.healing && c.tests.web.healing !== "none" ? c.tests.web.healing : "off";
+  return out;
 }
 
-/** The test command as a Bash permission rule, e.g. `npx playwright test --project=api *`. */
+/** The test commands as Bash permission rules, e.g. `npx playwright test --project=api *` (one per layer). */
+export function bashRulesForTests(c: Config): string[] {
+  return layers(c).map((l) => `${l.runCommand.trim()} *`);
+}
+/** @deprecated single-layer form, kept for callers outside generate. */
 export function bashRuleForTests(c: Config): string {
-  return `${c.tests.api.runCommand.trim()} *`;
+  return bashRulesForTests(c)[0];
 }
 
 /** Files the generate command must never commit. */
@@ -64,6 +75,9 @@ export const ARTIFACT_GLOBS = [
   "qa-showcase.md",
   "qa-showcase/**",
   "qa-verify.md",
+  "qa-healed.md",
+  "qa-healed.json",
+  ".qa-sentinel-snapshots/**",
   "test-results/**",
   "playwright-report/**",
   "blob-report/**",
@@ -154,5 +168,6 @@ export function useEnvironment(c: Config, name: string | undefined, env: NodeJS.
   const e = c.environments[chosen];
   if (!e) throw new Error(`Unknown environment "${chosen}". Configured: ${Object.keys(c.environments).join(", ") || "none (add environments: in qa-sentinel.config.yaml)"}`);
   env[c.tests.api.baseUrlEnv] = e.baseUrl;
+  if (e.webUrl && c.tests.web.enabled) env[c.tests.web.baseUrlEnv] = e.webUrl;
   return chosen;
 }

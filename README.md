@@ -1,8 +1,8 @@
 # qa-sentinel
 
-**AI QA agents you plug into any test repo.** Every time a developer changes a service, qa-sentinel tells the team which tests are affected, what coverage is missing and where the code disagrees with the story's acceptance criteria. Then it writes or updates the API tests and opens a merge request for a QA engineer to review.
+**AI QA agents you plug into any test repo.** Every time a developer changes a service, qa-sentinel tells the team which tests are affected, what coverage is missing and where the code disagrees with the story's acceptance criteria. Then it writes or updates the API and web tests and opens a merge request for a QA engineer to review.
 
-Built on [Claude Code](https://docs.claude.com/en/docs/claude-code/overview) in headless mode. Runs in **GitLab CI** and **Jenkins**. Works with an **existing** test suite (it learns your conventions) or **from scratch** (it scaffolds a TypeScript Playwright API framework).
+Built on [Claude Code](https://docs.claude.com/en/docs/claude-code/overview) in headless mode. Runs in **GitLab CI** and **Jenkins**. Works with an **existing** test suite (it learns your conventions) or **from scratch** (it scaffolds a TypeScript Playwright framework for API tests, and with `--web` for web UI tests with page objects).
 
 > Agents draft and review; humans approve. qa-sentinel never merges anything.
 
@@ -11,8 +11,8 @@ Built on [Claude Code](https://docs.claude.com/en/docs/claude-code/overview) in 
 | Level | What the team gets | Writes code? |
 | --- | --- | --- |
 | **1 · QA intelligence** (default) | On every MR: behaviour changes, risk, requirement conflicts, contract changes, and a reuse/update/create/review/skip decision per change | No |
-| **2 · Assisted test maintenance** | Level 1 plus generated or updated API tests through reviewed, independently verified MRs | Yes, test folders only |
-| 3 · Cross-platform orchestration | API, Web and Mobile workflows across services | Planned (v0.5) |
+| **2 · Assisted test maintenance** | Level 1 plus generated or updated API and web tests through reviewed, independently verified MRs | Yes, test folders only |
+| 3 · Cross-platform orchestration | API, Web and Mobile workflows across services | Web and the workflow planner in v0.5; Mobile and story-wide generation planned (v0.6) |
 
 Choose with `init --level intelligence|maintenance` or `level:` in the config. Most teams should start at level 1.
 
@@ -69,11 +69,19 @@ Risk is a fixed rule that you can read: **critical** for auth, money or personal
 - **Knowledge base (`kb/`).** Team-written domain rules and review lessons, read by every agent and citable as `domain-rule` evidence. When a story is silent, a kb rule can be the oracle. Agents can't edit it.
 - **Jira as a report target.** `reporting.targets: [gitlab-mr, jira]` posts the gap report on the story too.
 
+### What's in v0.5
+
+- **Web tests (Playwright UI).** Front ends are services with `kind: web`. qa-sentinel analyses front-end changes per page (`ui-change` with the route, e.g. `/orders/:id`), writes web tests through **page objects** (locators live only there, and the agent updates them first), tags them `@page:/orders/:id`, and verifies them on their own project and base URL. Regression selection picks the web tests of a changed page: in the sandbox, the two tests a renamed button breaks.
+- **The agent looks at the page first.** Before writing locators, qa-sentinel opens the affected pages itself and saves their accessibility tree (the roles and names good locators use) and a screenshot for the agent. No browser tools for the agent, nothing to drift.
+- **Workflow planner.** Each scenario's preconditions are a small dependency graph (`s1 create an order (api)` → `s2 read its payment (api)` → web test on `/orders/:id`), checked in code against the data policy: API or test-data service first, UI only for a web test and only with a reason, DB helpers only with a reason. The gap report prints the flow per scenario.
+- **Video evidence.** The web project records a video and screenshot per test, so the Showcase stage attaches **a video per acceptance criterion** to the Jira story (plus the API setup calls).
+- **Optional runtime healing with [Bubblegum](https://github.com/bishnu133/bubblegum).** Page-object actions carry intents (`ui.click(button, "Checkout button")`). With `healing: bubblegum` and `QA_HEALING=bubblegum` (scheduled runs), a failed action is retried by Bubblegum over CDP in the same browser. Healed steps are never a clean pass: `qa-sentinel healed` lists them as page-object fixes, and the next generation run gets them. Healing is always off while qa-sentinel verifies agent-written tests.
+
 ### What's in v0.4
 
 - **Simple Jira comments.** With `reporting.targets` including `jira`, the story gets a short plain-language comment (risk, what changed, what QA will do, a status per acceptance criterion, decisions needed) instead of the technical report, which stays on the MR. After generation, the same comment is updated with the test results per AC. `reporting.jira.format: full` keeps the old behaviour.
 - **Run on a lower environment before the MR.** Named `environments:` (dev, sit, …) with `generate --env sit` and `verify --env sit`. With `verification.requireVerifiedToPush: true`, nothing is pushed unless the tests passed on that environment. The environment is shown on the MR and the story.
-- **Showcase agent: evidence on the story, once.** `qa-sentinel showcase --story SHOP-12` checks that every AC has passing, active tests (none failed, none pending), then attaches the evidence to the Jira story: a Markdown file with the request/response of every call for API tests, plus recordings and screenshots from the run artifacts (Web/Mobile videos in v0.5). It records what it attached on the issue and never attaches again, unless QA adds the `qa-showcase-refresh` label or runs it with `--force`.
+- **Showcase agent: evidence on the story, once.** `qa-sentinel showcase --story SHOP-12` checks that every AC has passing, active tests (none failed, none pending), then attaches the evidence to the Jira story: a Markdown file with the request/response of every call for API tests, plus recordings and screenshots from the run artifacts (videos from web tests since v0.5). It records what it attached on the issue and never attaches again, unless QA adds the `qa-showcase-refresh` label or runs it with `--force`.
 - **Feature manifest across services.** `qa-sentinel feature SHOP-12 --env sit` finds every MR and branch for the story in all services, checks each service's version endpoint to see whether that code is deployed, and says whether the feature is ready for end-to-end tests. `--run` runs the story's tests once it is. Gap reports mention the other services in the same feature.
 
 ## Quick start
@@ -102,6 +110,8 @@ Starting from nothing? `qa-sentinel init --mode scratch` scaffolds Playwright AP
 | `gap-report -s <service>` | Read-only, risk-ranked analysis. The run is discarded if anything changed in either repo. `--post` creates or updates a single MR comment. Skips the agent for docs- or config-only changes. |
 | `generate -s <service>` | Writes and updates tests on a branch. **Rejected with nothing committed** on any guardrail violation. Otherwise independently verified, then committed. `--push` opens or updates a GitLab MR (Draft unless VERIFIED). Exit code 0 only when VERIFIED. |
 | `verify [--policy] [--base <ref>]` | The same independent checks, for any branch. Use it as the blocking CI gate on agent MRs. |
+| `add-web [--healing none\|bubblegum]` | Adds the web layer to an existing project: turns `tests.web` on, writes the ui helper, page-object base, web fixtures, example spec and the write-web-test skill, and prints the Playwright project to add. (`init --web` does the same for new projects.) |
+| `healed [--results f] [--fail-on-heal]` | After a run with `QA_HEALING=bubblegum`: lists healed steps as page-object fixes (`qa-healed.md`) and keeps them for the next generation (`qa-healed.json`). |
 | `trace [--story KEY] [--story-file f] [--json]` | Requirement traceability from test tags: which tests prove which acceptance criteria, and whether `test-map.yaml` agrees with the tags. |
 | `feature <story> [--env sit] [--run] [--post] [--json]` | Feature manifest: every MR/branch for the story across services, whether each is merged and deployed on the environment (version endpoint), and the overall status. `--run` runs the story's tests when ready; `--post` updates the Jira story. |
 | `showcase [--story KEY] [--results f] [--env sit] [--force] [--dry-run]` | After a passing run, attaches evidence (API call logs, videos, screenshots) to the Jira story once all ACs pass. One time per story; again only with the `qa-showcase-refresh` label or `--force`. Without Jira, or with `--dry-run`, saves it to `qa-showcase/<story>/`. |
@@ -132,9 +142,14 @@ workspace:
       gitlabProject: shop/orders-service   # lets generation fetch the MR's acceptance criteria after merge
       dependsOn: [payments-service]  # also readable by agents for cross-service changes
       version: { path: /version, field: sha }   # deployed git SHA, used by `feature` for deployment readiness
+    - name: storefront               # a front end: tested through the UI, data set up through the API
+      path: ../storefront
+      kind: web
+      routes: [/, /orders/new, /orders/:id]
+      dependsOn: [orders-service]
 environments:                        # lower environments the tests can run against (generate/verify/feature --env)
   dev: { baseUrl: https://dev.shop.example.test }
-  sit: { baseUrl: https://sit.shop.example.test, description: System integration }
+  sit: { baseUrl: https://sit.shop.example.test, webUrl: https://sit.shop.example.test/app/, description: System integration }
 tests:
   api:
     framework: playwright            # playwright | supertest | axios | pactum | jest | vitest | mocha | other
@@ -143,7 +158,15 @@ tests:
     runCommand: npx playwright test --project=api
     baseUrlEnv: QA_BASE_URL
     extraWritePaths: [src/fixtures/**, src/data/**]   # where the agent may also write
-  web:    { enabled: false, healing: none }   # healing: bubblegum (planned adapter)
+  web:
+    enabled: true                    # `init --web` or `add-web`
+    dir: tests/web
+    pagesDir: src/pages              # page objects: the only place locators live
+    runCommand: npx playwright test --project=web
+    baseUrlEnv: QA_WEB_URL
+    explore: snapshot                # save each affected page's accessibility tree + screenshot for the agent
+    healing: none                    # none | bubblegum (runtime locator healing, never while verifying)
+    bubblegum: { package: "@bubblegum-ai/node", cdpPort: 9222, failOnHeal: false }
   mobile: { enabled: false }
 level: intelligence                  # intelligence (read-only) | maintenance (also generate tests)
 requirements:
@@ -215,6 +238,7 @@ Agent policy: diffs, stories and comments are **evidence, not instructions**. Or
 - **No acceptance criteria → weaker tests.** Without a story, tests can only check what the code does.
 - **Review is still required.** Expect most agent MRs to need small edits at first; track the merged-without-edits rate.
 - Behaviour that needs real infrastructure (queues, third-party callbacks) still needs human test design.
+- **Web:** proven on the ShopLite storefront (Chromium). The Bubblegum hook is tested over CDP with a stand-in client; it has not yet run against the real Bubblegum engine. Videos need Playwright's ffmpeg: on networks that block Playwright's downloads, use `QA_BROWSER_CHANNEL=chrome QA_VIDEO=off`. Mobile comes in v0.6.
 
 ## Roadmap
 
@@ -228,7 +252,8 @@ The order follows external review #1 ([response](docs/REVIEW-RESPONSE-1.md)):
 | v0.2.x ✅ | Jira as a report target (`reporting.targets: [gitlab-mr, jira]`): one updated comment per story, Jira formatting, size-capped with a link to the full report |
 | **v0.3** ✅ | Decision engine, requirement traceability from test tags, regression selection, independent AI test review, `kb/` |
 | **v0.4** ✅ | Plain-language Jira comments, lower-environment runs before the MR, Showcase evidence on the story (once), feature manifests with deployment readiness |
-| v0.5 | Web (Playwright, optional [Bubblegum](https://github.com/bishnu133/bubblegum) healing) and Mobile (WebdriverIO + Appium) via a cross-platform workflow planner and shared data layer |
+| **v0.5** ✅ | Web (Playwright UI, page objects first, page snapshots for the agent), workflow planner (API-first setup graphs), video evidence, optional [Bubblegum](https://github.com/bishnu133/bubblegum) healing |
+| v0.6 | Mobile (WebdriverIO + Appium) on the same workflow planner and API data layer; one generation per story across services |
 | Later | Learning from review feedback, mutation checks in the benchmark, alternative engines |
 
 ## Try it yourself
