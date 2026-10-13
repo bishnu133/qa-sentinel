@@ -200,28 +200,49 @@ Review that MR the way you would a teammate's. That review is the real test of t
 
 ## Part C: Jira (requirements from real stories)
 
-1. Create a free Jira Cloud site at atlassian.com (up to 10 users).
-2. Create a **Scrum** project with the key **`SHOP`**.
-3. Create an API token at id.atlassian.com › Security › API tokens.
-4. Seed the stories and switch the sandbox to Jira:
+Works in local mode (Part A) and with GitLab (Part B). You need a free Jira Cloud site:
+
+1. At atlassian.com, sign up for **Jira** (Free plan) and pick a site name, e.g. `yourname` → `https://yourname.atlassian.net`.
+2. Create a project: **Projects › Create project › Scrum**, team-managed. Name `ShopLite`, key **`SHOP`** (edit the key if Jira suggests another).
+3. Create an API token at **id.atlassian.com › Security › API tokens › Create API token** (the plain one, *not* "with scopes"). Copy it once; Jira won't show it again.
+4. In the terminal, from the qa-sentinel folder:
 
 ```bash
-export JIRA_BASE_URL=https://yourname.atlassian.net
-export JIRA_EMAIL=you@example.com
-export JIRA_API_TOKEN=...
+export JIRA_BASE_URL=https://yourname.atlassian.net     # no trailing slash
+export JIRA_EMAIL=you@example.com                        # your Atlassian login email
+read -s JIRA_API_TOKEN && export JIRA_API_TOKEN          # paste the token, Enter (nothing is shown)
 export JIRA_PROJECT=SHOP
-
-node sandbox/shoplite/jira-seed.mjs                  # creates 6 stories, moves them to "In Progress"
-node sandbox/shoplite/setup-gitlab.mjs --force --package github:bishnu133/qa-sentinel#sandbox
 ```
 
-> `--force` re-pushes all four projects (it rewrites their `main`). Close any open sandbox MRs first.
+**Local mode:**
 
-From now on `dev.mjs open` uses the real Jira keys in MR titles and doesn't copy the story into the MR description, so the acceptance criteria can only come from Jira. The gap report's "Requirements" line should say `jira` with the issue's status.
+```bash
+node sandbox/shoplite/jira-seed.mjs --work shoplite-local          # creates the 8 stories, moves them to In Progress
+node sandbox/shoplite/local.mjs setup --level maintenance --force  # switches the config to Jira
+node sandbox/shoplite/local.mjs run SHOP-108 --generate --showcase
+node sandbox/shoplite/local.mjs run SHOP-107 --regression --generate
+```
 
-Because Jira is connected, the setup also sets `reporting.targets: [gitlab-mr, jira]`: the gap report appears as an MR comment **and** as a comment on the Jira story (one per service, updated on every push).
+With the `JIRA_*` variables set, `local.mjs`:
+- uses the real Jira keys (SHOP-108 might be **SHOP-8** in Jira; the mapping is in `shoplite-local/.jira-keys.json`) in the developer's commit messages, which is how qa-sentinel finds the story;
+- reads the acceptance criteria from Jira (the run log says `requirements: SHOP-8 (3 AC, jira, approved)`) instead of the local story files;
+- posts the plain-language gap summary as a comment on the story;
+- with `--showcase`, attaches the evidence to the story once all ACs pass (run it again: "already attached").
 
-Try this: move a story back to **To Do** and push again. The requirement should show as **not approved**, and the plan should treat its acceptance criteria accordingly.
+Keep the variables set in the terminal for every `local.mjs` command; without them it goes back to local story files.
+
+**GitLab:** seed with the default work folder and re-run the setup:
+
+```bash
+node sandbox/shoplite/jira-seed.mjs
+node sandbox/shoplite/setup-gitlab.mjs --force --package github:bishnu133/qa-sentinel#v0.5
+```
+
+> `--force` re-pushes all projects (it rewrites their `main`). Close any open sandbox MRs first.
+
+From now on `dev.mjs open` uses the real Jira keys in MR titles and doesn't copy the story into the MR description, so the acceptance criteria can only come from Jira. The setup also sets `reporting.targets: [gitlab-mr, jira]`: the gap report appears as an MR comment **and** as a comment on the Jira story (one per service, updated on every push).
+
+Try this: move a story back to **To Do** and run again. The requirement should show as **not approved**, and the plan should treat its acceptance criteria accordingly.
 
 ---
 
@@ -292,7 +313,9 @@ Cost and time are in each run's `manifest.json` (`.qa-sentinel/runs/<id>/` local
 | Local `run` hangs | Something is holding port 3001–3003, 8080 or 8081. Run `node sandbox/shoplite/local.mjs env stop`. |
 | Web tests: "Executable doesn't exist at …/chromium" or "…/ffmpeg" | Playwright's browser (or ffmpeg, for videos) isn't downloaded. Run `npx playwright install chromium` in `shoplite-local/qa-tests`; if the download is blocked, `export QA_BROWSER_CHANNEL=chrome QA_VIDEO=off` to use your installed Chrome without videos. |
 | Web tests time out on a button or field | The page changed and the page object didn't (that's SHOP-107's point). Open `test-results/<test>/error-context.md`: it shows what was on the page. |
-| Jira returns 401/403 | Check the email and token pair. The project key must be `SHOP`, or set `JIRA_PROJECT`. |
+| Jira returns 401/403 | Check the email and token pair (a token "with scopes" doesn't work with the site URL; create a plain API token). The project key must be `SHOP`, or set `JIRA_PROJECT`. |
+| `jira-seed.mjs`: "fetch failed … CERT" | Same as GitLab on a network that inspects HTTPS: prefix with `NODE_OPTIONS=--use-system-ca`. |
+| "Jira is configured but the stories aren't in Jira yet" | Run `jira-seed.mjs --work shoplite-local` (same `--work` as `local.mjs`). |
 
 ## Costs
 

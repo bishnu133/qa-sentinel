@@ -5,7 +5,7 @@
 //   export JIRA_EMAIL=you@example.com
 //   export JIRA_API_TOKEN=…                  # https://id.atlassian.com/manage-profile/security/api-tokens
 //   export JIRA_PROJECT=SHOP                 # a Scrum or Kanban project you created in the Jira UI
-//   node sandbox/shoplite/jira-seed.mjs [--work ./shoplite-gitlab] [--dry-run]
+//   node sandbox/shoplite/jira-seed.mjs [--work ./shoplite-gitlab | ./shoplite-local] [--dry-run]
 //
 // Writes <work>/.jira-keys.json (SHOP-101 → the real Jira key), used by dev.mjs and setup-gitlab.mjs.
 import fs from "node:fs";
@@ -66,7 +66,7 @@ async function main() {
   }
   fs.mkdirSync(work, { recursive: true });
   fs.writeFileSync(path.join(work, ".jira-keys.json"), JSON.stringify(keys, null, 2));
-  log(`saved ${path.join(work, ".jira-keys.json")}. Re-run setup-gitlab.mjs with the JIRA_* variables set to switch qa-sentinel to Jira.`);
+  log(`saved ${path.join(work, ".jira-keys.json")}. With the JIRA_* variables set, run local.mjs setup (local mode) or setup-gitlab.mjs (GitLab) to switch qa-sentinel to Jira.`);
 }
 
 main().catch((e) => die(e.message));

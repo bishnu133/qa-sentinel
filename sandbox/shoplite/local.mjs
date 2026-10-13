@@ -29,6 +29,24 @@ const run = (cmdline, args, opts = {}) => {
   return r.status ?? 1;
 };
 
+// Jira mode: with JIRA_BASE_URL, JIRA_EMAIL and JIRA_API_TOKEN set, stories come from Jira (seeded by jira-seed.mjs),
+// gap reports are posted on the story and the showcase attaches evidence there. Otherwise stories are local files.
+const JIRA = process.env.JIRA_BASE_URL && process.env.JIRA_EMAIL && process.env.JIRA_API_TOKEN ? { baseUrl: process.env.JIRA_BASE_URL, project: process.env.JIRA_PROJECT || "SHOP" } : undefined;
+function jiraKeys() {
+  const file = path.join(work, ".jira-keys.json");
+  if (!fs.existsSync(file)) die(`Jira is configured but the stories aren't in Jira yet. Run: node sandbox/shoplite/jira-seed.mjs --work ${path.relative(process.cwd(), work) || "."}`);
+  return JSON.parse(fs.readFileSync(file, "utf8"));
+}
+/** The story key qa-sentinel sees: the real Jira key in Jira mode, else the scenario id (SHOP-106b → SHOP-106). */
+function storyKeyOf(id) {
+  if (!JIRA) return id;
+  const key = jiraKeys()[id];
+  if (!key) die(`${id} has no Jira issue in .jira-keys.json; run jira-seed.mjs again (new scenarios are added, existing ones kept)`);
+  return key;
+}
+/** Requirements: from Jira in Jira mode, else the local story file. */
+const storyArgs = (file) => (JIRA ? [] : ["--story-file", file]);
+
 function envStart() {
   envStop(true);
   const code = run("bash", ["-c", `source "${path.join(tests, "qa-env/start.sh")}"`], {
@@ -44,7 +62,8 @@ switch (cmd) {
   case "setup": {
     fs.mkdirSync(work, { recursive: true });
     buildServices(work);
-    buildTests(work, { level: f.level === "maintenance" ? "maintenance" : "intelligence" });
+    buildTests(work, { level: f.level === "maintenance" ? "maintenance" : "intelligence", jira: JIRA });
+    if (JIRA) log(`Jira mode: stories from ${JIRA.baseUrl} (project ${JIRA.project}); seed them with jira-seed.mjs --work ${path.relative(process.cwd(), work) || "."}`);
     fs.mkdirSync(path.join(work, "stories"), { recursive: true });
     for (const s of SCENARIOS) fs.writeFileSync(path.join(work, "stories", `${s.id}.md`), `# ${s.title}\n\n${s.story}\n`);
     installBrowser();
@@ -75,12 +94,13 @@ switch (cmd) {
   }
   case "feature": {
     // Story across services: deploy main of every service locally, then ask qa-sentinel where the feature stands.
-    const key = String(arg ?? "").toUpperCase();
-    if (!key) die("usage: local.mjs feature SHOP-106 [--run]");
+    const id = String(arg ?? "").toUpperCase();
+    if (!id) die("usage: local.mjs feature SHOP-106 [--run]");
+    const key = storyKeyOf(id);
     for (const svc of SERVICES) if (fs.existsSync(path.join(work, svc))) git(path.join(work, svc), "checkout", "-q", "-f", "main");
     envStart();
-    const storyFile = path.join(work, "stories", `${key}.md`);
-    const code = run("node", [CLI, "feature", key, "--env", "local", ...(fs.existsSync(storyFile) ? ["--story-file", storyFile] : []), ...(f.run ? ["--run"] : [])], {
+    const storyFile = path.join(work, "stories", `${id}.md`);
+    const code = run("node", [CLI, "feature", key, "--env", "local", ...(fs.existsSync(storyFile) ? storyArgs(storyFile) : []), ...(f.run ? ["--run"] : []), ...(JIRA && f.post ? ["--post"] : [])], {
       cwd: tests,
       env: { ...process.env, ...QA_URLS },
     });
@@ -97,15 +117,18 @@ switch (cmd) {
     const prev = git(tests, "branch", "--show-current");
     if (prev.startsWith("qa-sentinel/")) log(`generated tests stay on branch ${prev} (review: git -C ${tests} diff main ${prev})`);
     git(tests, "checkout", "-q", "-f", "main");
-    log(`${s.id}: developer change on ${s.service} (${s.branch})`);
-    makeChange(svcDir, s);
+    const key = storyKeyOf(s.storyKey ?? s.id);
+    log(`${s.id}${key !== s.id ? ` (Jira ${key})` : ""}: developer change on ${s.service} (${s.branch})`);
+    // The commit message carries the story key, as a developer's would: that's how qa-sentinel finds the story.
+    makeChange(svcDir, s, { storyKey: key });
     console.log(`  expect: ${s.expect}\n`);
     if (f["change-only"]) {
       log(`change committed on ${s.service} branch ${s.branch}; no qa-sentinel run (--change-only)`);
       break;
     }
     const story = path.join(work, "stories", `${s.id}.md`);
-    const gap = run("node", [CLI, "gap-report", "-s", s.service, "--base", "main", "--head", "HEAD", "--story-file", story, "-o", `../${s.id}-gap-report.md`], { cwd: tests });
+    // Jira mode: the plain-language summary is posted on the story (--post); the full report stays in the file.
+    const gap = run("node", [CLI, "gap-report", "-s", s.service, "--base", "main", "--head", "HEAD", ...storyArgs(story), ...(JIRA ? ["--post"] : []), "-o", `../${s.id}-gap-report.md`], { cwd: tests });
     if (gap === 3) noClaude();
     log(`gap report: ${path.join(work, `${s.id}-gap-report.md`)}`);
     if (f.regression) {
@@ -118,7 +141,7 @@ switch (cmd) {
     }
     if (f.generate) {
       envStart();
-      const code = run("node", [CLI, "generate", "-s", s.service, "--base", "main", "--head", "HEAD", "--story-file", story], {
+      const code = run("node", [CLI, "generate", "-s", s.service, "--base", "main", "--head", "HEAD", ...storyArgs(story)], {
         cwd: tests,
         env: { ...process.env, ...QA_URLS },
       });
@@ -131,8 +154,7 @@ switch (cmd) {
         envStart();
         run("npx", ["playwright", "test", "--project=api", "--project=web"], { cwd: tests, env: { ...process.env, ...QA_URLS } });
         envStop(true);
-        const jira = process.env.JIRA_BASE_URL && process.env.JIRA_API_TOKEN;
-        run("node", [CLI, "showcase", "--story", s.id, "--story-file", story, ...(jira ? [] : ["--dry-run"]), "-o", `../${s.id}-showcase.md`], { cwd: tests });
+        run("node", [CLI, "showcase", "--story", key, ...storyArgs(story), ...(JIRA ? [] : ["--dry-run"]), "-o", `../${s.id}-showcase.md`], { cwd: tests });
         log(`showcase summary: ${path.join(work, `${s.id}-showcase.md`)}`);
       }
       log(`generation exit ${code}; MR description: ${path.join(tests, "qa-sentinel-summary.md")}; branch: ${branch}`);
