@@ -141,6 +141,8 @@ api-tests:
     QA_HEALING: "{{healingVar}}"
 {{/if}}
   rules:
+    - if: $QA_STORY_REVIEW_KEY   # a story-review pipeline runs only that job
+      when: never
     - if: $CI_PIPELINE_SOURCE == "schedule"
     - if: $CI_PIPELINE_SOURCE == "trigger" || $CI_PIPELINE_SOURCE == "api"
     - if: $CI_COMMIT_BRANCH == "{{targetBranch}}"
@@ -167,6 +169,8 @@ qa-healed:
   stage: test
   needs: [api-tests]
   rules:
+    - if: $QA_STORY_REVIEW_KEY   # a story-review pipeline runs only that job
+      when: never
     # Also (especially) when tests failed: a step Bubblegum could not heal is listed too.
     - if: $CI_PIPELINE_SOURCE == "schedule" || $CI_PIPELINE_SOURCE == "trigger" || $CI_PIPELINE_SOURCE == "api" || $CI_COMMIT_BRANCH == "{{targetBranch}}"
       when: always
@@ -187,6 +191,8 @@ qa-showcase:
   stage: test
   needs: [api-tests]
   rules:
+    - if: $QA_STORY_REVIEW_KEY   # a story-review pipeline runs only that job
+      when: never
     - if: $QA_SHOWCASE == "true" && ($CI_PIPELINE_SOURCE == "schedule" || $CI_PIPELINE_SOURCE == "trigger" || $CI_PIPELINE_SOURCE == "api" || $CI_COMMIT_BRANCH == "{{targetBranch}}")
   script:
     - !reference [.qa-sentinel-install, script]
