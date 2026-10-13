@@ -16,17 +16,21 @@ export type TemplateVars = Record<string, string | number | boolean | undefined>
 /**
  * Minimal renderer:
  *  - {{name}} substitutes a variable (unknown variables are left visible as {{name}} so mistakes show up)
- *  - {{#if name}} ... {{/if}} keeps the block when the variable is truthy
+ *  - {{#if name}} ... {{/if}} keeps the block when the variable is truthy (blocks may nest)
  *  - {{#unless name}} ... {{/unless}} keeps the block when it is falsy
  */
 export function render(template: string, vars: TemplateVars): string {
-  let out = template.replace(
-    /\{\{#(if|unless) (\w+)\}\}([\s\S]*?)\{\{\/\1\}\}\n?/g,
-    (_m, kind: string, name: string, body: string) => {
+  // Innermost blocks first (a block body may not contain another opening tag), repeated until none are left,
+  // so {{#if}} blocks can nest.
+  const block = /\{\{#(if|unless) (\w+)\}\}((?:(?!\{\{#(?:if|unless) )[\s\S])*?)\{\{\/\1\}\}\n?/g;
+  let out = template;
+  for (let prev = ""; prev !== out; ) {
+    prev = out;
+    out = out.replace(block, (_m, kind: string, name: string, body: string) => {
       const truthy = Boolean(vars[name]);
       return (kind === "if" ? truthy : !truthy) ? body : "";
-    },
-  );
+    });
+  }
   out = out.replace(/\{\{(\w+)\}\}/g, (m, name: string) => {
     const v = vars[name];
     return v === undefined ? m : String(v);

@@ -8,7 +8,10 @@ import { SNAPSHOT_SCRIPT, pagesToExplore, slug } from "../src/web/explore.js";
 import { spawnSync } from "node:child_process";
 import { groupBySite, healedFromResults, healedMarkdown, readHealed } from "../src/web/healed.js";
 import { healedCommand } from "../src/commands/healed.js";
-import { initCommand } from "../src/commands/init.js";
+import { addWebCommand, initCommand } from "../src/commands/init.js";
+import { render } from "../src/templates.js";
+import { agentEnv } from "../src/run.js";
+import { generatePolicy, checkPaths } from "../src/guardrails.js";
 import { verifyChanges } from "../src/verification.js";
 import { loadConfig } from "../src/config.js";
 import { renderGapReport } from "../src/plan/render.js";
@@ -171,5 +174,37 @@ describe("gap report", () => {
     expect(md).toContain("page /orders/:id – payment status");
     expect(md).toContain("🖥️ shows payment (AC-2) – create");
     expect(md).toContain("flow: create an order _(api: api.post('/orders'))_ → **web** `/orders/:id`");
+  });
+});
+
+describe("add-web and healing safety", () => {
+  it("renders nested blocks", () => {
+    expect(render("{{#if a}}A{{#if b}}B{{/if}}C{{/if}}", { a: true, b: false })).toBe("AC");
+    expect(render("{{#if a}}A{{#unless b}}B{{/unless}}C{{/if}}", { a: true, b: false })).toBe("ABC");
+  });
+
+  it("adds the web layer to an API-only project, with healing wired into CI", async () => {
+    const repo = tmp();
+    await initCommand({ cwd: repo, yes: true, mode: "scratch", ci: "gitlab", level: "maintenance", name: "a" });
+    const c = addWebCommand({ cwd: repo, healing: "bubblegum" });
+    expect(c.tests.web.enabled).toBe(true);
+    expect(c.tests.web.healing).toBe("bubblegum");
+    expect(fs.existsSync(path.join(repo, "src/web/ui.ts"))).toBe(true);
+    const ci = fs.readFileSync(path.join(repo, "ci/qa-sentinel/tests.gitlab-ci.yml"), "utf8");
+    expect(ci).toContain("qa-healed:");
+    expect(ci).toContain("jobs/artifacts/main/raw/qa-healed.json?job=qa-healed");
+    expect(ci).toContain('QA_HEALING: "bubblegum"');
+    expect(ci).toContain("qa-generate:");
+    expect(ci).not.toMatch(/\{\{/);
+    expect(fs.readFileSync(path.join(repo, ".claude/qa-sentinel.md"), "utf8")).toContain("page objects in `src/pages`");
+  });
+
+  it("never lets the agent heal or change the healing switch", async () => {
+    const repo = tmp();
+    const c = await initCommand({ cwd: repo, yes: true, mode: "scratch", web: true, ci: "gitlab", level: "maintenance", name: "w" });
+    const h = { ...c, tests: { ...c.tests, web: { ...c.tests.web, healing: "bubblegum" as const } } };
+    expect(agentEnv(h, { PATH: "/bin", QA_HEALING: "bubblegum" }).QA_HEALING).toBe("off");
+    const findings = checkPaths([{ status: "M", path: "src/web/healing.ts" }, { status: "M", path: "src/fixtures/web.ts" }, { status: "M", path: "src/pages/order-page.ts" }], generatePolicy(h));
+    expect(findings.map((f) => [f.file, f.rule])).toEqual([["src/web/healing.ts", "blocked-path"], ["src/fixtures/web.ts", "blocked-path"]]);
   });
 });

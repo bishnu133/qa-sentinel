@@ -3,6 +3,7 @@ import path from "node:path";
 import type { Config } from "../config.js";
 import type { TestPlan } from "../plan/schema.js";
 import { runProcess } from "../proc.js";
+import { normPage } from "../analysis/testIndex.js";
 
 /**
  * Before the agent writes web tests, qa-sentinel opens the affected pages itself and saves what is on them:
@@ -27,9 +28,9 @@ export function pagesToExplore(plan: TestPlan, fallback: string[], max = 8): str
   const out = new Set<string>();
   for (const d of plan.decisions) {
     if (!["create", "update", "review"].includes(d.decision)) continue;
-    for (const s of d.proposedScenarios) if (s.layer === "web" && s.page) out.add(s.page);
+    for (const s of d.proposedScenarios) if (s.layer === "web" && s.page) out.add(normPage(s.page));
     const ch = plan.changes.find((c) => c.id === d.changeId);
-    if (ch?.page && d.proposedScenarios.some((s) => s.layer === "web")) out.add(ch.page);
+    if (ch?.page && d.proposedScenarios.some((s) => s.layer === "web")) out.add(normPage(ch.page));
   }
   if (!out.size) for (const r of fallback) out.add(r);
   return [...out].slice(0, max);

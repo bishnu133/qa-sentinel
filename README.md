@@ -184,7 +184,7 @@ showcase:
   refreshLabel: qa-showcase-refresh  # QA adds this label to attach evidence again
   replaceOnRefresh: true             # delete the previous evidence when refreshing
   kinds: [video, screenshot, api-log]   # also: trace
-  maxFiles: 10
+  maxFiles: 20                       # videos first, then screenshots
   maxFileMb: 10
   requireNoPending: true             # a fixme/skip test on an AC blocks the showcase
 ci: { platform: gitlab, testRepoProject: my-group/qa-tests, targetBranch: main }

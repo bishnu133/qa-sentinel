@@ -153,7 +153,7 @@ export async function generateCommand(o: GenerateOptions): Promise<number> {
     const snaps = await snapshotPages({ cwd, c, runDir: run.dir, routes, sources: service.routes, env: testEnv(c) });
     const ok = snaps.filter((x) => !x.error).length;
     log[ok ? "ok" : "warn"](`page snapshots: ${ok}/${snaps.length}${snaps.find((x) => x.error) ? ` (${snaps.find((x) => x.error)!.route}: ${snaps.find((x) => x.error)!.error})` : ""}`);
-    snapshots = `${run.rel}/page-snapshots/README.md`;
+    if (fs.existsSync(path.join(run.dir, "page-snapshots", "README.md"))) snapshots = `${run.rel}/page-snapshots/README.md`;
   }
   // Locators healed in recent scheduled runs (qa-sentinel healed): page-object fixes to make while we're here.
   const healed = readHealed(cwd);

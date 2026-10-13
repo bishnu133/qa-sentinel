@@ -133,7 +133,7 @@ export async function initCommand(opts: InitOptions): Promise<Config> {
         baseUrlEnv: "QA_BASE_URL",
         extraWritePaths: mode === "scratch" ? ["src/fixtures/**", "src/data/**", "src/schemas/**"] : guessExtraWritePaths(cwd),
       },
-      web: { enabled: Boolean(opts.web), extraWritePaths: opts.web ? ["src/web/**", "src/fixtures/web.ts"] : [] },
+      web: { enabled: Boolean(opts.web) },
     },
     ci: { platform: ci },
   });
@@ -360,13 +360,19 @@ export function addWebCommand(o: { cwd: string; healing?: "none" | "bubblegum" }
   const doc = YAML.parseDocument(fs.readFileSync(file, "utf8"));
   doc.setIn(["tests", "web", "enabled"], true);
   if (o.healing) doc.setIn(["tests", "web", "healing"], o.healing);
-  if (!doc.getIn(["tests", "web", "extraWritePaths"])) doc.setIn(["tests", "web", "extraWritePaths"], ["src/web/**", "src/fixtures/web.ts"]);
   fs.writeFileSync(file, doc.toString());
   const c = loadConfig(cwd);
   const vars = templateVars(c);
   const results = writeWebScaffold(cwd, c, vars);
   for (const f of listTemplateDir("skills")) {
     if (f.startsWith("write-web-test/")) results.push([`.claude/skills/${f}`, writeFileSafe(path.join(cwd, ".claude/skills", f), render(readTemplate(`skills/${f}`), vars), false)]);
+  }
+  // qa-sentinel-owned files that depend on the layers: project context and the CI templates.
+  results.push([".claude/qa-sentinel.md", writeFileSafe(path.join(cwd, ".claude/qa-sentinel.md"), render(readTemplate("claude/qa-sentinel.md"), vars), true)]);
+  const ciDir = `ci/${c.ci.platform}`;
+  for (const f of listTemplateDir(ciDir)) {
+    if (c.level === "intelligence" && f === "Jenkinsfile.generate") continue;
+    results.push([`ci/qa-sentinel/${f}`, writeFileSafe(path.join(cwd, "ci/qa-sentinel", f), render(readTemplate(`${ciDir}/${f}`), vars), true)]);
   }
   for (const [f, status] of results) log.dim(`  ${status === "skipped" ? "kept    " : status.padEnd(8)} ${f}`);
   log.ok("web layer enabled in qa-sentinel.config.yaml");
@@ -377,7 +383,7 @@ export function addWebCommand(o: { cwd: string; healing?: "none" | "bubblegum" }
       '      name: "web",',
       `      testDir: "./${c.tests.web.dir}",`,
       "      use: {",
-      `        baseURL: process.env.${c.tests.web.baseUrlEnv}?.replace(/\/?$/, "/"),`,
+      `        baseURL: process.env.${c.tests.web.baseUrlEnv}?.replace(/\\/?$/, "/"),`,
       '        video: "on",          // evidence for the showcase stage',
       '        screenshot: "on",',
       '        trace: "retain-on-failure",',

@@ -1,5 +1,6 @@
 // Server-rendered shells; the browser script fills them from the ShopLite APIs (through /api on this server).
 const catalog = require("./catalog");
+const esc = (s) => String(s).replace(/[&<>"']/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[ch]);
 
 const layout = (title, body, script = "") => `<!doctype html>
 <html lang="en">
@@ -73,12 +74,12 @@ document.getElementById("order-form").addEventListener("submit", async (e) => {
 
 exports.order = (id) =>
   layout(
-    `Order ${id}`,
-    `<h1>Order ${id}</h1>
+    `Order ${esc(id)}`,
+    `<h1>Order ${esc(id)}</h1>
 <div id="order"><p>Loading…</p></div>`,
     `(async () => {
   const el = document.getElementById("order");
-  const res = await fetch("/api/orders/${encodeURIComponent(id)}");
+  const res = await fetch("/api/orders/" + ${JSON.stringify(encodeURIComponent(id)).replace(/</g, "\\u003c")});
   if (res.status === 404) { el.innerHTML = '<p role="alert">Order not found</p>'; return; }
   const o = await res.json();
   el.innerHTML =

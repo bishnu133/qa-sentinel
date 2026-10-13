@@ -17,6 +17,7 @@
 ### Optional runtime healing (Bubblegum)
 - `tests.web.healing: bubblegum`: with `QA_HEALING=bubblegum`, a failed page-object action is performed by `@bubblegum-ai/node` `recover()` from its intent, attached over CDP to the same browser (one port per worker). Each healed step is attached to the test and annotated.
 - Healing is always off when qa-sentinel verifies agent-written tests; `feature --run` and scheduled CI runs may use it.
+- Showcase `maxFiles` default raised to 20 (a web test brings a video and a screenshot; videos are kept first).
 - New `qa-sentinel healed`: lists healed steps per page-object call site (`qa-healed.md`), keeps them for the next generation run (`qa-healed.json`), exits 1 with `failOnHeal`.
 - GitLab template: the suite job runs API and web together with `QA_HEALING`, installs the browser, and an optional `qa-healed` job. Jenkins: same suite command.
 
@@ -24,7 +25,10 @@
 - New `storefront` service (web front end on :8081, no dependencies) with page objects and 4 baseline web tests; `qa-env` starts it. Scenarios SHOP-107 (renamed button breaks two web tests; planted total bug → AC-3 conflict) and SHOP-108 (clean; Showcase with a video per AC). `setup` installs Chromium or explains the Chrome fallback.
 
 ### Also
-- Verification JUnit files are now per layer: `.qa-sentinel/runs/<run>/junit-<layer>.xml` (CI templates updated).
+- Verification JUnit: API results stay in `.qa-sentinel/runs/<run>/junit.xml`, web results go to `junit-web.xml` (CI templates collect `junit*.xml`).
+- The web scaffold files that decide healing (`src/web/healing.ts`, `src/web/ui.ts`, `src/fixtures/web.ts`) are blocked for agent writes, and the agent's own test runs always use `QA_HEALING=off`.
+- `add-web` also refreshes `.claude/qa-sentinel.md` and the CI templates in `ci/qa-sentinel/`.
+- The template renderer supports nested `{{#if}}` blocks.
 
 ## 0.4.0 — Simple Jira comments, lower-environment runs, Showcase, feature manifests
 

@@ -139,7 +139,7 @@ export const ConfigSchema = z.object({
       replaceOnRefresh: z.boolean().default(true),
       /** Evidence kinds to attach, in order of preference. api-log is folded into the evidence summary file. */
       kinds: z.array(z.enum(["video", "screenshot", "trace", "api-log"])).default(["video", "screenshot", "api-log"]),
-      maxFiles: z.number().int().min(1).max(50).default(10),
+      maxFiles: z.number().int().min(1).max(50).default(20),
       maxFileMb: z.number().positive().max(100).default(10),
       /** A story with a fixme/skip test (known product discrepancy) is not showcased. */
       requireNoPending: z.boolean().default(true),

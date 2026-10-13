@@ -21,3 +21,8 @@
 - Agent MRs: run `Jenkinsfile.tests` with `CHANGED_ONLY=true`. It runs `qa-sentinel verify --policy`, which blocks unless VERIFIED.
 - Run these jobs on agents whose network reaches only GitLab, the Anthropic API, your registry and the QA environment.
 - Run `qa-sentinel doctor --online` locally first.
+
+## Web tests (when `tests.web` is enabled)
+- The `Install` stage downloads Chromium; the suite stage runs API and web tests together (videos for the showcase are in `test-results/`).
+- Runtime healing (`tests.web.healing: bubblegum`): the suite stage installs the Bubblegum engine and runs with `QA_HEALING=bubblegum`. To list healed steps, run `qa-sentinel healed` after the tests and archive `qa-healed.md` and `qa-healed.json`. For the next generation to fix those page objects, copy `qa-healed.json` into the `qa-sentinel-generate` workspace (Copy Artifact plugin). GitLab does this automatically.
+

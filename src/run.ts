@@ -44,7 +44,10 @@ export function findService(c: Config, nameOrPath: string, cwd: string, override
 
 /** Environment for the agent process and for test runs: allowlisted, never carrying publisher credentials. */
 export function agentEnv(c: Config, env: NodeJS.ProcessEnv = process.env) {
-  return scrubbedEnv({ baseUrlEnv: c.tests.api.baseUrlEnv, passEnv: [...c.guardrails.passEnv, ...layerEnvNames(c)], forAgent: true }, env);
+  const out = scrubbedEnv({ baseUrlEnv: c.tests.api.baseUrlEnv, passEnv: [...c.guardrails.passEnv, ...layerEnvNames(c)], forAgent: true }, env);
+  // The agent's own test runs must not heal either (and an explicit value beats a .env file's QA_HEALING).
+  if (c.tests.web.enabled) out.QA_HEALING = "off";
+  return out;
 }
 /**
  * Test runs started by qa-sentinel (verification, feature runs). Healing is off unless the caller allows it:

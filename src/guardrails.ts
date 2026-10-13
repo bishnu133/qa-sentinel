@@ -21,11 +21,17 @@ export interface WritePolicy {
 export const TEST_FILE = /\.(spec|test)\.(ts|tsx|js|mjs|cjs)$/;
 
 /** Globs the agent may change in `generate`. */
+/**
+ * Web scaffold files that decide whether healing runs and how page-object actions fail. Verification relies on
+ * them (QA_HEALING=off must mean "no healing"), so the agent may never change them.
+ */
+export const PROTECTED_WEB_FILES = ["src/web/healing.ts", "src/web/ui.ts", "src/fixtures/web.ts"];
+
 export function generatePolicy(c: Config): WritePolicy {
   const derived = [...layers(c).flatMap((t) => [`${t.dir}/**`, `${t.helpersDir}/**`, ...t.extraWritePaths]), "test-map.yaml"];
   return {
     allowed: c.guardrails.allowedWritePaths.length ? c.guardrails.allowedWritePaths : derived,
-    blocked: c.guardrails.blockedWritePaths,
+    blocked: [...c.guardrails.blockedWritePaths, ...(c.tests.web.enabled ? PROTECTED_WEB_FILES : [])],
   };
 }
 

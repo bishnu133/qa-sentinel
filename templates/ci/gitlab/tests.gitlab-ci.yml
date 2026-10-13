@@ -4,7 +4,7 @@
 #   include:
 #     - local: "ci/qa-sentinel/tests.gitlab-ci.yml"
 #
-# CI/CD variables: ANTHROPIC_API_KEY, QA_SENTINEL_GITLAB_TOKEN (api + write_repository), {{baseUrlEnv}}{{#if webEnabled}}, {{webBaseUrlEnv}}{{/if}}
+# CI/CD variables: ANTHROPIC_API_KEY, QA_SENTINEL_GITLAB_TOKEN (api + write_repository), {{baseUrlEnv}}{{#if webEnabled}}, {{webBaseUrlEnv}}{{/if}} (web)
 # Allow this project's CI_JOB_TOKEN to read the service repos (Settings › CI/CD › Job token permissions).
 #
 # Security notes:
@@ -70,6 +70,10 @@ qa-generate:
     # .gitlab-ci.yml variables, e.g. "source qa-env/start.sh"; it may export {{baseUrlEnv}}.
     - if [ -n "$QA_ENV_START" ]; then eval "$QA_ENV_START"; fi
     - git remote set-url origin "${CI_SERVER_URL}/${CI_PROJECT_PATH}.git"   # strip the job token GitLab put in .git/config
+{{#if healingBubblegum}}
+    # Locators healed in the latest scheduled run (qa-healed job): the agent fixes the page objects it touches.
+    - 'curl -sfL --header "JOB-TOKEN: $CI_JOB_TOKEN" -o qa-healed.json "$CI_API_V4_URL/projects/$CI_PROJECT_ID/jobs/artifacts/{{targetBranch}}/raw/qa-healed.json?job=qa-healed" || rm -f qa-healed.json'
+{{/if}}
     # A manually started upstream pipeline has no "before" commit (all zeros): compare with the parent instead.
     - |
       QA_BASE="$QA_SERVICE_BEFORE_SHA"
@@ -106,7 +110,7 @@ qa-agent-mr-checks:
   artifacts:
     when: always
     reports:
-      junit: .qa-sentinel/runs/*/junit-*.xml
+      junit: .qa-sentinel/runs/*/junit*.xml
     paths: [qa-verify.md, .qa-sentinel/runs/, playwright-report/]
     expire_in: 2 weeks
 
@@ -147,7 +151,9 @@ qa-healed:
   stage: test
   needs: [api-tests]
   rules:
+    # Also (especially) when tests failed: a step Bubblegum could not heal is listed too.
     - if: $CI_PIPELINE_SOURCE == "schedule" || $CI_PIPELINE_SOURCE == "trigger" || $CI_PIPELINE_SOURCE == "api" || $CI_COMMIT_BRANCH == "{{targetBranch}}"
+      when: always
   script:
     - !reference [.qa-sentinel-install, script]
     - qa-sentinel healed

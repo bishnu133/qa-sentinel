@@ -147,7 +147,8 @@ export async function verifyChanges(o: VerifyOptions): Promise<VerificationRepor
       checks.push({ name: "tests", layer: l.layer, status: "not-run", detail: "skipped because the environment is unreachable" });
       continue;
     }
-    const junit = l.isPlaywright ? path.join(o.runDir, `junit-${l.layer}.xml`) : c.verification.junitPath ? path.resolve(cwd, c.verification.junitPath) : undefined;
+    // API keeps junit.xml (what pipelines built for v0.4 collect); other layers get junit-<layer>.xml.
+    const junit = l.isPlaywright ? path.join(o.runDir, l.layer === "api" ? "junit.xml" : `junit-${l.layer}.xml`) : c.verification.junitPath ? path.resolve(cwd, c.verification.junitPath) : undefined;
     if (junit && fs.existsSync(junit)) fs.rmSync(junit);
     const env = { ...o.env, ...(l.isPlaywright && junit ? { PLAYWRIGHT_JUNIT_OUTPUT_NAME: junit } : {}) };
     const cmd = `${l.runCommand} ${layerSpecs.map(shq).join(" ")}${l.isPlaywright ? " --reporter=line,junit" : ""}`;
