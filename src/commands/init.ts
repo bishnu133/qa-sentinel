@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import YAML from "yaml";
 import { KB_README } from "../kb.js";
-import { confirm, input, select } from "@inquirer/prompts";
+import { checkbox, confirm, input, select } from "@inquirer/prompts";
 import { CONFIG_FILE, type Config, ConfigSchema, configPath, loadConfig, writeConfig } from "../config.js";
 import { defaultRunCommand, detectProject, discoverServices, type Detection } from "../detect.js";
 import { ensureDir, readJson, writeFileSafe } from "../fsutil.js";
@@ -22,6 +22,16 @@ export interface InitOptions {
   web?: boolean;
   /** Also set up the mobile (WebdriverIO + Appium) layer: config, screen objects, ui helper, evidence hooks, example spec. */
   mobile?: boolean;
+  /** Where stories come from: jira | mr-description | none. */
+  requirements?: "jira" | "mr-description" | "none";
+  /** Jira site, e.g. https://yourco.atlassian.net (or a Server/DC URL). */
+  jiraUrl?: string;
+  /** Jira project keys whose stories this test repo covers, e.g. ["PAY", "CARD"]. */
+  jiraProjects?: string[];
+  /** GitLab URL (self-hosted or gitlab.com). */
+  gitlabUrl?: string;
+  /** This test repo's GitLab project path, e.g. group/qa-tests. */
+  testRepoProject?: string;
   yes?: boolean;
   force?: boolean;
 }
@@ -109,6 +119,54 @@ export async function initCommand(opts: InitOptions): Promise<Config> {
         ? "jenkins"
         : "gitlab");
 
+  // 5. Test layers (API is always on).
+  let web = Boolean(opts.web);
+  let mobile = Boolean(opts.mobile);
+  if (interactive && opts.web === undefined && opts.mobile === undefined) {
+    const picked = await checkbox({
+      message: "Test layers besides API",
+      choices: [
+        { name: "Web UI (Playwright, page objects)", value: "web", checked: web },
+        { name: "Mobile app (WebdriverIO + Appium, screen objects)", value: "mobile", checked: mobile },
+      ],
+    });
+    web = picked.includes("web");
+    mobile = picked.includes("mobile");
+  }
+
+  // 6. Where stories (acceptance criteria) come from, and where the code lives.
+  const reqSource =
+    opts.requirements ??
+    (opts.jiraUrl
+      ? "jira"
+      : interactive
+        ? await select({
+            message: "Where are your stories and acceptance criteria?",
+            default: "jira" as const,
+            choices: [
+              { name: "Jira", value: "jira" as const },
+              { name: "In the merge request description", value: "mr-description" as const },
+              { name: "Nowhere yet (tests are checked against the API contract and code only)", value: "none" as const },
+            ],
+          })
+        : "mr-description");
+  let jiraUrl = opts.jiraUrl;
+  let jiraProjects = opts.jiraProjects ?? [];
+  if (reqSource === "jira" && interactive) {
+    jiraUrl ??= (await input({ message: "Jira URL (e.g. https://yourco.atlassian.net)", validate: (v) => /^https?:\/\/\S+$/.test(v.trim()) || "a URL starting with https://" })).trim();
+    if (!jiraProjects.length)
+      jiraProjects = (await input({ message: "Jira project keys this test repo covers (comma-separated, e.g. PAY,CARD)" }))
+        .split(/[\s,]+/)
+        .map((k) => k.trim().toUpperCase())
+        .filter(Boolean);
+  }
+  let gitlabUrl = opts.gitlabUrl;
+  let testRepoProject = opts.testRepoProject;
+  if (ci === "gitlab" && interactive) {
+    gitlabUrl ??= (await input({ message: "GitLab URL", default: "https://gitlab.com" })).trim();
+    testRepoProject ??= (await input({ message: "This test repo's GitLab project path (e.g. group/qa-tests; empty to fill in later)" })).trim() || undefined;
+  }
+
   const projectName =
     opts.name ??
     (interactive
@@ -135,10 +193,15 @@ export async function initCommand(opts: InitOptions): Promise<Config> {
         baseUrlEnv: "QA_BASE_URL",
         extraWritePaths: mode === "scratch" ? ["src/fixtures/**", "src/data/**", "src/schemas/**"] : guessExtraWritePaths(cwd),
       },
-      web: { enabled: Boolean(opts.web) },
-      mobile: { enabled: Boolean(opts.mobile) },
+      web: { enabled: web },
+      mobile: { enabled: mobile },
     },
-    ci: { platform: ci },
+    requirements: {
+      source: reqSource,
+      ...(jiraProjects.length ? { storyKeyPattern: `(?:${jiraProjects.join("|")})-\\d+` } : {}),
+      jira: { ...(jiraUrl ? { baseUrl: jiraUrl.replace(/\/+$/, "") } : {}), projectKeys: jiraProjects },
+    },
+    ci: { platform: ci, ...(gitlabUrl ? { gitlabUrl: gitlabUrl.replace(/\/+$/, "") } : {}), ...(testRepoProject ? { testRepoProject } : {}) },
   });
 
   writeConfig(cwd, config);
@@ -360,7 +423,7 @@ function writeKbReadme(cwd: string, c: Config) {
 
 function ensureGitignore(cwd: string) {
   const file = path.join(cwd, ".gitignore");
-  const wanted = [".qa-sentinel/runs/", "qa-sentinel-summary.md", "qa-gap-report.md", "qa-regression.txt", "qa-feature-*", "qa-showcase.md", "qa-showcase/", "qa-verify.md", "qa-healed.md", "qa-healed.json", "qa-story-review.md", "test-results/", "playwright-report/", "node_modules/", ".env"];
+  const wanted = [".qa-sentinel/runs/", "qa-sentinel-summary.md", "qa-gap-report.md", "qa-regression.txt", "qa-feature-*", "qa-showcase.md", "qa-showcase/", "qa-verify.md", "qa-healed.md", "qa-healed.json", "qa-story-review.md", "qa-story-check.md", "qa-metrics.md", "test-results/", "playwright-report/", "node_modules/", ".env"];
   const current = fs.existsSync(file) ? fs.readFileSync(file, "utf8") : "";
   const have = new Set(current.split(/\r?\n/).map((l) => l.trim()));
   const missing = wanted.filter((l) => !have.has(l));
@@ -427,7 +490,10 @@ function printNextSteps(c: Config) {
     c.mode === "scratch" ? "npm install && npx playwright install --with-deps chromium" : undefined,
     c.tests.web.enabled ? `Set ${c.tests.web.baseUrlEnv} to your front end (no browser download? QA_BROWSER_CHANNEL=chrome uses installed Chrome)` : undefined,
     c.tests.mobile.enabled ? `Mobile: start Appium (npx appium, with the uiautomator2/xcuitest driver) and a device, then set QA_APP (or QA_APP_PACKAGE/QA_BUNDLE_ID) and QA_MOBILE_PLATFORM` : undefined,
-    "Review qa-sentinel.config.yaml (services, run command, GitLab project)",
+    "Review qa-sentinel.config.yaml (services and their kind: api | web | mobile, run commands, GitLab project)",
+    c.requirements.source === "jira"
+      ? "qa-sentinel story-check --story <KEY> --fields   # how your stories are read; set the AC field and story template (docs/ONBOARDING.md)"
+      : undefined,
     c.mode === "existing"
       ? "qa-sentinel learn   # agent drafts your conventions + test-map.yaml; review the diff"
       : "qa-sentinel learn   # agent fills test-map.yaml from your service specs",

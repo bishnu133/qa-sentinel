@@ -78,5 +78,6 @@ describe("showcase mention", () => {
     expect(attachedWhat(["S-1-showcase.mp4", "S-1-showcase.pdf"])).toBe("the showcase video and the evidence PDF are");
     expect(attachedWhat(["S-1-showcase.pdf", "a.webm", "b.png"])).toBe("2 test recording(s) and screenshot(s) and the evidence PDF are");
     expect(attachedWhat(["S-1-test-evidence.md"])).toBe("the test evidence is");
+    expect(attachedWhat(["S-1-showcase.pdf"])).toBe("the evidence PDF is");
   });
 });

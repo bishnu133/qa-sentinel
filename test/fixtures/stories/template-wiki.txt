@@ -1,0 +1,61 @@
+h2. Client Requirement
+As a support agent with the care role
+
+I want to see a member's reward challenge details
+
+So that I can answer their questions
+
+h2. In-scope
+* For weekly challenges with base and stretch goals, the reward description is: [challenge name] ([goal value]), [start date] - [end date]
+** The goal value follows what the member achieved
+* Map statuses shown in the console:
+** Active
+** Pending acceptance
+** Declined
+* Add a new 'Decision date' column for the member's accept or decline date
+
+h2. Out of scope
+* Changing how points are calculated
+* The mobile app
+
+h2. Questions
+
+h2. Assumptions
+* Error handling follows the existing behaviour
+
+h2. UI Reference (Figma / Screenshots)
+N/A
+
+h2. Acceptance Criteria
+||#||Given||When||Then||
+|1|a support agent with the care role|they open the profile of a member who is eligible|they see a challenge entry for every assigned challenge
+AND
+the values follow the status mapping above|
+|2|a member who joined a weekly challenge with a 40 min base goal|they meet the base goal in week one|they receive the points for that goal
+AND
+the earned transaction reads "Walk More (40 mins), 01 Jul 2030 - 07 Jul 2030"|
+
+h2. Tech notes
+h3. Implementation
+rewards-service
+-> Send the right reward reason for challenges with base and stretch goals
+
+console-bff
+-> Include the decision date in GET challenges/registrations
+-> Sort by status, then createdAt
+
+console-web
+-> Add the Decision date column
+
+Note: keep changes behind a toggle
+
+h2. Showcase approach
+Seed a member with an accepted challenge, open the console profile, show the status and the decision date.
+
+h2. Feature Toggle / Environment Variables
+||project||key||remarks||
+|console-bff|CHALLENGE_DECISION_DATE|on in sit|
+
+h2. Checklist
+||Item||Status||
+|Estimation|done|

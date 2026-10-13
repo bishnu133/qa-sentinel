@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import YAML from "yaml";
 import { z } from "zod";
+import { DEFAULT_TEMPLATE, SECTION_ROLES } from "./storyTemplate.js";
 
 export const CONFIG_FILE = "qa-sentinel.config.yaml";
 
@@ -119,19 +120,28 @@ export const ConfigSchema = z.object({
       required: z.boolean().default(false),
       storyKeyPattern: z.string().default("[A-Z][A-Z0-9]+-\\d+"),
       /**
-       * Scope items: what the story expects beyond its ACs (tech scope, expected results). Each list item under one
-       * of these headings becomes an item (TS-1, ER-1, …) that is checked for implementation and traced like an AC,
-       * but marked as not agreed as acceptance criteria.
+       * How your team writes stories: which headings hold the acceptance criteria, what is in scope (items IS-1, TS-1,
+       * ER-1 … checked for "is it built?" and traced like ACs), what is out of scope (never planned or raised as bugs),
+       * context for the agents, the showcase approach, and what to ignore. Headings match ignoring case, punctuation
+       * and markup. Check how your real stories are read with `qa-sentinel story-check --story KEY`.
        */
+      template: z
+        .array(
+          z
+            .object({
+              role: z.enum(SECTION_ROLES),
+              name: z.string(),
+              headings: z.array(z.string()).min(1),
+              prefix: z.string().regex(/^[A-Z]{1,4}$/).optional(),
+            })
+            .refine((s) => s.role !== "scope" || s.prefix, { message: "scope sections need a prefix (e.g. IS)" }),
+        )
+        .default(DEFAULT_TEMPLATE),
+      /** Turn scope items off (only ACs are traced). `sections` is the v0.6.0 form of scope sections; prefer `template`. */
       scope: z
         .object({
           enabled: z.boolean().default(true),
-          sections: z
-            .array(z.object({ prefix: z.string().regex(/^[A-Z]{1,4}$/), name: z.string(), headings: z.array(z.string()).min(1) }))
-            .default([
-              { prefix: "TS", name: "Tech scope", headings: ["tech scope", "technical scope", "technical details", "tech details", "scope"] },
-              { prefix: "ER", name: "Expected result", headings: ["expected result", "expected results", "expected behaviour", "expected behavior", "expected outcome"] },
-            ]),
+          sections: z.array(z.object({ prefix: z.string().regex(/^[A-Z]{1,4}$/), name: z.string(), headings: z.array(z.string()).min(1) })).default([]),
         })
         .default({}),
       jira: z

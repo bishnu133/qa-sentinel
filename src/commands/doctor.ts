@@ -85,6 +85,11 @@ export function runChecks(cwd: string, env: NodeJS.ProcessEnv = process.env): Ch
   if (env[c.tests.api.baseUrlEnv]) add("ok", `${c.tests.api.baseUrlEnv} set`);
   else add("warn", `${c.tests.api.baseUrlEnv} set`, "needed for the agent to run tests against your QA environment");
 
+  // The story template: without an acceptance-criteria section (or a Jira AC field) no AC can be found.
+  const tpl = c.requirements.template;
+  if (!tpl.some((s) => s.role === "acceptance-criteria") && !c.requirements.jira.acceptanceCriteriaField)
+    add("fail", "story template has an acceptance-criteria section", "add one to requirements.template, or set requirements.jira.acceptanceCriteriaField");
+  else add("ok", `story template: ${tpl.length} section(s)${c.requirements.jira.acceptanceCriteriaField ? `, ACs from ${c.requirements.jira.acceptanceCriteriaField}` : ""}; check real stories with \`qa-sentinel story-check --story <KEY>\``);
   if (c.tests.web.enabled) checks.push(...webChecks(cwd, c, env));
   if (c.tests.mobile.enabled) checks.push(...mobileChecks(cwd, c, env));
 
@@ -100,6 +105,8 @@ export function runChecks(cwd: string, env: NodeJS.ProcessEnv = process.env): Ch
     else if (!(env.JIRA_PAT || (env.JIRA_EMAIL && env.JIRA_API_TOKEN))) add("warn", "Jira credentials set", "JIRA_EMAIL + JIRA_API_TOKEN (Cloud) or JIRA_PAT (Server/DC); without them, MR text is used");
     else add("ok", `Jira configured (${c.requirements.jira.baseUrl})`);
     if (!c.requirements.jira.projectKeys.length) add("warn", "requirements.jira.projectKeys set", "limits story-key matching to your projects (avoids false keys like UTF-8)");
+    else if (c.requirements.jira.projectKeys.some((k) => !new RegExp(`^(?:${c.requirements.storyKeyPattern})$`).test(`${k}-1`)))
+      add("warn", "requirements.storyKeyPattern matches every project key", `${c.requirements.storyKeyPattern} doesn't match ${c.requirements.jira.projectKeys.filter((k) => !new RegExp(`^(?:${c.requirements.storyKeyPattern})$`).test(`${k}-1`)).join(", ")}`);
   }
   add("ok", `operating level: ${c.level}${c.level === "intelligence" ? " (read-only; set level: maintenance to enable generation)" : ""}`);
 

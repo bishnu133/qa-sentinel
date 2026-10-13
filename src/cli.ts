@@ -7,6 +7,7 @@ import { reviewStoryCommand } from "./commands/reviewStoryCmd.js";
 import { bugsCommand } from "./commands/bugs.js";
 import { tagCommand } from "./commands/tag.js";
 import { metricsCommand } from "./commands/metrics.js";
+import { storyCheckCommand } from "./commands/storyCheck.js";
 import { learnCommand } from "./commands/learn.js";
 import { doctorCommand } from "./commands/doctor.js";
 import { gapReportCommand } from "./commands/gapReport.js";
@@ -56,6 +57,11 @@ program
   .option("--name <name>", "project name")
   .option("--web", "also set up web (Playwright UI) tests: page objects, ui helper, fixtures")
   .option("--mobile", "also set up mobile (WebdriverIO + Appium) tests: screen objects, ui helper, evidence hooks")
+  .addOption(new Option("--requirements <source>", "where stories come from").choices(["jira", "mr-description", "none"]))
+  .option("--jira-url <url>", "Jira site, e.g. https://yourco.atlassian.net")
+  .option("--jira-projects <keys>", "Jira project keys this repo covers, comma-separated (PAY,CARD)", (v) => v.split(/[\s,]+/).map((k) => k.trim().toUpperCase()).filter(Boolean))
+  .option("--gitlab-url <url>", "GitLab URL (self-hosted or https://gitlab.com)")
+  .option("--test-repo-project <path>", "this test repo's GitLab project path, e.g. group/qa-tests")
   .option("-y, --yes", "accept detected defaults, no prompts")
   .option("--force", "overwrite generated files")
   .action(
@@ -107,6 +113,16 @@ program
   .option("--limit <n>", "at most this many tests", (v) => Number(v))
   .option("--dry-run", "list the untagged tests")
   .action(wrap(async (o) => tagCommand({ cwd: cwd(), push: o.push, limit: o.limit, dryRun: o.dryRun })));
+
+program
+  .command("story-check")
+  .description("onboarding: how qa-sentinel reads one of your stories (ACs, scope, out of scope, context) and what to configure")
+  .option("--story <key>", "Jira story key")
+  .option("--story-file <path>", "story as a markdown or text file")
+  .option("--fields", "also list the Jira issue's fields with their ids (to find the AC / tech-scope custom fields)")
+  .option("--json", "print the parsed story as JSON")
+  .option("-o, --out <file>", "markdown output", "qa-story-check.md")
+  .action(wrap(async (o) => storyCheckCommand({ cwd: cwd(), story: o.story, storyFile: o.storyFile, fields: o.fields, json: o.json, out: o.out })));
 
 program
   .command("metrics")

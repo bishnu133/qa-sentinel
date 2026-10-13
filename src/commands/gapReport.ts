@@ -155,10 +155,12 @@ export async function gapReportCommand(o: GapReportOptions): Promise<{ report: s
       }) + `\n\n${footer}`;
     // The same story in other services (one feature, many services): say so, so nobody tests half a feature.
     let featureLine = "";
+    const featureServices: string[] = [];
     if (req.storyKey && !o.story) {
       try {
         const m = await assembleFeature({ c, cwd, story: req.storyKey, gitlab: c.workspace.services.some((x) => x.gitlabProject) ? gitlabContext(c.ci.gitlabUrl) : undefined });
         const others = m.parts.filter((p) => p.service !== service.name);
+        featureServices.push(...others.map((p) => p.service));
         if (others.length) {
           featureLine = `**Feature ${req.storyKey} also changes:** ${others.map((p) => `${p.service} (${p.mr ? `[!${p.mr.iid}](${p.mr.url}), ` : ""}${p.merged ? "merged" : "not merged yet"})`).join(", ")}. Acceptance criteria that need several services are checked with \`qa-sentinel feature ${req.storyKey}\` once every part is deployed.`;
           report = report.replace(footer, `${featureLine}\n\n${footer}`);
@@ -177,6 +179,14 @@ export async function gapReportCommand(o: GapReportOptions): Promise<{ report: s
       regressionTests: selection.runFullSuite ? undefined : selection.tests.length,
     });
     if (featureLine) jiraSummary += `\n\n${featureLine}`;
+    // The story names services (tech notes) that have no change for it: not started, or commits without the key.
+    const changedServices = parts ? parts.map((p) => p.service.name) : [service.name, ...featureServices];
+    const silent = (req.servicesNamed ?? []).filter((n) => !changedServices.includes(n));
+    if (silent.length) {
+      const line = `**The story names ${silent.join(", ")}${o.story ? "" : " too"}, but no change for ${req.storyKey ?? "it"} was found there** (not started yet, or its commits and branch don't carry the story key).`;
+      report = report.replace(footer, `${line}\n\n${footer}`);
+      jiraSummary += `\n\n${line}`;
+    }
     fs.writeFileSync(path.join(run.dir, "jira-summary.md"), jiraSummary);
     manifest.outcome = "reported";
     log.ok(`plan valid · ${outcome.risked.overall} risk · ${outcome.plan.decisions.length} decision(s)`);

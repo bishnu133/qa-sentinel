@@ -5,7 +5,7 @@ import { indexTests } from "../analysis/testIndex.js";
 import { matchResult, readRunResults } from "../showcase/results.js";
 import { bugsFromResults, fileBugs, noteFixedBugs } from "../bugs/bugs.js";
 import { fetchIssue, jiraContext } from "../scm/jira.js";
-import { jiraIssueText, parseAcceptanceCriteria, parseScopeItems } from "../requirements.js";
+import { jiraIssueText, parseStoryFor } from "../requirements.js";
 import { runCommandsFor } from "../layers.js";
 import { useEnvironment } from "../run.js";
 import { log } from "../log.js";
@@ -44,7 +44,8 @@ export async function bugsCommand(o: BugsOptions): Promise<number> {
     try {
       const issue = ctx ? await fetchIssue(ctx, story, c.requirements.jira.acceptanceCriteriaField, c.requirements.jira.scopeFields.map((f) => f.field)) : undefined;
       const text = issue ? jiraIssueText(c, issue) : "";
-      const items = [...parseAcceptanceCriteria(text), ...(c.requirements.scope.enabled ? parseScopeItems(text, c.requirements.scope.sections) : [])];
+      const parsed = parseStoryFor(c, text);
+      const items = [...parsed.acceptanceCriteria, ...parsed.scopeItems];
       const candidates = bugsFromResults(c, story, items, index, results, { environment, runCommand: (t) => runCommandsFor(c, [`${t.file}:${t.line}`])[0] });
       if (o.dryRun || !ctx) {
         candidates.forEach((b) => log.info(`  ${story} ${b.item}: would raise "${b.title}" (actual: ${b.actual})`));

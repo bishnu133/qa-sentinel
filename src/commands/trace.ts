@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { loadConfig } from "../config.js";
 import { indexTests, checkTestMap, readTestMap, traceMarkdown, traceStory } from "../analysis/testIndex.js";
-import { parseAcceptanceCriteria } from "../requirements.js";
+import { parseStoryFor } from "../requirements.js";
 import { log } from "../log.js";
 
 export interface TraceOptions {
@@ -21,7 +21,7 @@ export async function traceCommand(o: TraceOptions): Promise<number> {
   const c = loadConfig(cwd);
   const index = indexTests(cwd, c);
   const mapFindings = checkTestMap(index, readTestMap(cwd), cwd);
-  const acs = o.storyFile ? parseAcceptanceCriteria(fs.readFileSync(path.resolve(cwd, o.storyFile), "utf8")) : [];
+  const acs = o.storyFile ? parseStoryFor(c, fs.readFileSync(path.resolve(cwd, o.storyFile), "utf8")).acceptanceCriteria : [];
   const story = o.story ?? (o.storyFile ? fs.readFileSync(path.resolve(cwd, o.storyFile), "utf8").match(new RegExp(c.requirements.storyKeyPattern))?.[0] : undefined);
   // Without a story file, list the ACs the tests themselves claim for this story.
   const acList = acs.length ? acs : [...new Set(index.filter((t) => story && t.stories.includes(story)).flatMap((t) => t.acs))].sort().map((id) => ({ id, text: "" }));

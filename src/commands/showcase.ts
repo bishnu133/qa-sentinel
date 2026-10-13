@@ -16,7 +16,7 @@ import {
   setIssueProperty,
   upsertIssueComment,
 } from "../scm/jira.js";
-import { parseAcceptanceCriteria } from "../requirements.js";
+import { jiraIssueText, parseStoryFor } from "../requirements.js";
 import { testEnv, useEnvironment } from "../run.js";
 import { buildShowcasePack } from "../showcase/pack.js";
 import type { EvidenceFile } from "../showcase/showcase.js";
@@ -70,9 +70,10 @@ export async function showcaseCommand(o: ShowcaseOptions): Promise<number> {
       const src = o.storyFile
         ? storyFromFile(fs.readFileSync(path.resolve(cwd, o.storyFile), "utf8"))
         : ctx
-          ? await issueText(ctx, story, c.requirements.jira.acceptanceCriteriaField)
+          ? await issueText(ctx, c, story)
           : { text: "", title: undefined };
-      const acs = parseAcceptanceCriteria(src.text);
+      const parsed = parseStoryFor(c, src.text);
+      const acs = parsed.acceptanceCriteria;
       const r = assessStory(c, index, results, story, acs);
       report.push(...readinessMarkdown(r), "");
       if (!r.ready) {
@@ -81,7 +82,7 @@ export async function showcaseCommand(o: ShowcaseOptions): Promise<number> {
       }
       if (!ctx || o.dryRun) {
         // Nothing goes to Jira: keep what would be attached in a local folder so it can be checked first.
-        const { files, skipped } = await evidence(cwd, c, r, { title: src.title, environment, commit, runUrl: process.env.CI_PIPELINE_URL, at });
+        const { files, skipped } = await evidence(cwd, c, r, { title: src.title, environment, commit, runUrl: process.env.CI_PIPELINE_URL, at, approach: parsed.showcase });
         const dir = path.join(path.dirname(path.resolve(cwd, o.out ?? "qa-showcase.md")), "qa-showcase", story);
         fs.rmSync(dir, { recursive: true, force: true });
         fs.mkdirSync(dir, { recursive: true });
@@ -98,7 +99,7 @@ export async function showcaseCommand(o: ShowcaseOptions): Promise<number> {
         report.push(`_Already showcased on ${previous.attachedAt}; skipped._`, "");
         continue;
       }
-      const { files, skipped } = await evidence(cwd, c, r, { title: src.title, environment, commit, runUrl: process.env.CI_PIPELINE_URL, at });
+      const { files, skipped } = await evidence(cwd, c, r, { title: src.title, environment, commit, runUrl: process.env.CI_PIPELINE_URL, at, approach: parsed.showcase });
       skipped.forEach((s) => log.warn(`  ${story}: ${s}`));
       if (previous && c.showcase.replaceOnRefresh) {
         for (const a of previous.attachments) await deleteAttachment(ctx, a.id).catch((e) => log.warn(`  could not delete old attachment ${a.filename}: ${(e as Error).message}`));
@@ -123,9 +124,9 @@ export async function showcaseCommand(o: ShowcaseOptions): Promise<number> {
   return 0;
 }
 
-async function issueText(ctx: NonNullable<ReturnType<typeof jiraContext>>, key: string, acField?: string): Promise<{ text: string; title?: string }> {
-  const issue = await fetchIssue(ctx, key, acField);
-  return { title: issue.summary, text: [issue.description, issue.acceptanceCriteria ? `## Acceptance criteria\n${issue.acceptanceCriteria}` : ""].join("\n\n") };
+async function issueText(ctx: NonNullable<ReturnType<typeof jiraContext>>, c: Config, key: string): Promise<{ text: string; title?: string }> {
+  const issue = await fetchIssue(ctx, key, c.requirements.jira.acceptanceCriteriaField, c.requirements.jira.scopeFields.map((f) => f.field));
+  return { title: issue.summary, text: jiraIssueText(c, issue) };
 }
 
 function storyFromFile(text: string): { text: string; title?: string } {
@@ -137,13 +138,16 @@ function storyFromFile(text: string): { text: string; title?: string } {
  * What goes to the story. pack: one video of the whole story + one PDF (falls back to the run's own videos when
  * the video can't be built). files: the run's own evidence, one attachment each.
  */
-async function evidence(cwd: string, c: Config, r: StoryReadiness, meta: { title?: string; environment?: string; commit?: string; runUrl?: string; at: string }): Promise<{ files: EvidenceFile[]; skipped: string[] }> {
+async function evidence(cwd: string, c: Config, r: StoryReadiness, meta: { title?: string; environment?: string; commit?: string; runUrl?: string; at: string; approach?: string }): Promise<{ files: EvidenceFile[]; skipped: string[] }> {
   if (c.showcase.format === "files") return collectEvidence(c, r, meta);
   log.step(`  ${r.story}: building the showcase pack (video + PDF)`);
   const pack = await buildShowcasePack({ cwd, c, r, meta, workDir: path.join(cwd, ".qa-sentinel", "showcase", r.story), env: testEnv(c) });
   const notes = [...pack.notes];
   let files = pack.files;
-  if (!pack.video || !files.some((f) => f.contentType === "application/pdf")) {
+  // A story proven only by API tests (a backend change): the PDF with the requests and responses is the showcase.
+  if (pack.noUi && files.some((f) => f.contentType === "application/pdf")) {
+    /* no video to fall back to */
+  } else if (!pack.video || !files.some((f) => f.contentType === "application/pdf")) {
     // Fallback: the run's own evidence (videos/screenshots), plus the markdown summary when the PDF is missing.
     const fallback = collectEvidence(c, r, meta);
     const hasPdf = files.some((f) => f.contentType === "application/pdf");
@@ -173,5 +177,6 @@ export function attachedWhat(names: string[]): string {
   const pdf = names.some((n) => /\.pdf$/i.test(n));
   const media = names.filter((n) => /\.(webm|mp4|png|jpe?g)$/i.test(n) && !/-showcase\.mp4$/.test(n)).length;
   const parts = [video ? "the showcase video" : media ? `${media} test recording(s) and screenshot(s)` : undefined, pdf ? "the evidence PDF" : names.some((n) => n.endsWith(".md")) ? "the test evidence" : undefined].filter(Boolean);
-  return parts.length ? `${parts.join(" and ")} ${parts.length > 1 || video || pdf ? "are" : "is"}` : "the test results are";
+  const plural = parts.length > 1 || (!video && media > 0 && parts[0] === `${media} test recording(s) and screenshot(s)`);
+  return parts.length ? `${parts.join(" and ")} ${plural ? "are" : "is"}` : "the test results are";
 }

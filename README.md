@@ -76,7 +76,8 @@ Risk is a fixed rule that you can read: **critical** for auth, money or personal
 
 - **One showcase video per story.** When every acceptance criterion passed on the agreed environment (`showcase.environments`), qa-sentinel re-records the chosen test for each AC in showcase mode (slowed down, the element being used outlined, a pause on the result) and joins them with title cards into **one `<STORY>-showcase.mp4`**, plus **one evidence PDF** (results per AC, a screenshot per UI test, the API requests and responses, with secrets redacted). Attached once, only after all ACs passed; the people in `showcase.notify` are tagged. This replaces the manual "Biz showcase" session.
 - **Mobile tests (WebdriverIO + Appium).** Apps are services with `kind: mobile`. `init --mobile` / `add-mobile` scaffold screen objects, a ui helper with intents, evidence hooks (screen recording, screenshot, API setup calls per test) and a `write-mobile-test` skill. Mobile specs are verified against an Appium server (`QA_APPIUM_URL`, checked first; device-farm URLs with credentials work), selected for regression by `@screen` tag, and their recordings go into the showcase video.
-- **Is the story built?** Besides ACs, qa-sentinel reads the story's tech scope and expected results (description headings or Jira fields: `requirements.scope`, `requirements.jira.scopeFields`) as items TS-n / ER-n. Every plan says, with evidence, whether each AC and scope item is implemented, partial, not found or built differently. Scope items no AC covers are listed for the PO.
+- **Your story template, configurable.** `requirements.template` says which headings hold the ACs (numbered lists, Gherkin, or Given/When/Then tables, multi-line cells included), what is in scope, out of scope, tech notes per service, context, the showcase approach and what to ignore. `story-check` shows how a real story is read and what to change; `init` asks for the team's Jira, GitLab and layers. See [onboarding](docs/ONBOARDING.md).
+- **Is the story built?** Besides ACs, qa-sentinel reads the story's in-scope items, tech notes and expected results (headings or Jira fields) as items IS-n / TS-n / ER-n. Every plan says, with evidence, whether each AC and scope item is implemented, partial, not found or built differently. Scope items no AC covers are listed for the PO.
 - **Story review before development.** `review-story` finds ambiguous ACs, missing negative and edge cases and scope without an AC, and can post them on the story.
 - **Story-wide runs.** `gap-report --story SHOP-12` and `generate --story SHOP-12` analyse everything a story changed across services (only the story's own commits, not other work merged meanwhile) and write one test MR for it.
 - **Bug cards.** `bugs.mode: suggest | create`: a failing test written to an AC, a fixme the agent wrote because the product disagrees, or (story-wide) an AC nothing builds becomes a Jira bug with expected vs actual, the test and command to reproduce, where to look in the code, the evidence and a machine-readable block for coding agents. Never raised twice; "now passes" is noted on the bug.
@@ -111,19 +112,22 @@ qa-sentinel gap-report --service orders-service --base origin/main
 qa-sentinel generate   --service orders-service --base HEAD~1   # commits to a branch; add --push for an MR
 ```
 
+Onboarding a team's project? Follow **[docs/ONBOARDING.md](docs/ONBOARDING.md)**: services, how your stories are written (`story-check`), CI variables, and a staged rollout.
+
 Starting from nothing? `qa-sentinel init --mode scratch` scaffolds Playwright API tests (typed client, fixtures, data builders, zod schema checks, example spec, HTML and JUnit reports).
 
 ## Commands
 
 | Command | What it does |
 | --- | --- |
-| `init [--mode existing\|scratch] [--ci gitlab\|jenkins] [--workspace ..] [-y]` | Writes `qa-sentinel.config.yaml`, agents, skills, `.claude/qa-sentinel.md` (imported from your `CLAUDE.md`, never overwriting it), CI templates in `ci/qa-sentinel/`, and `test-map.yaml`. In scratch mode it also adds the framework. |
+| `init [--mode existing\|scratch] [--ci gitlab\|jenkins] [--web] [--mobile] [--jira-url u --jira-projects A,B] [--gitlab-url u --test-repo-project g/p] [-y]` | Writes `qa-sentinel.config.yaml`, agents, skills, `.claude/qa-sentinel.md` (imported from your `CLAUDE.md`, never overwriting it), CI templates in `ci/qa-sentinel/`, and `test-map.yaml`. In scratch mode it also adds the framework. |
 | `learn` | Agent pass: fills the conventions section of the `write-api-test` skill, drafts `test-map.yaml`, lists readiness gaps. Review before committing. |
 | `doctor [--online]` | Readiness checks with fixes: CLI, keys, git, service paths, OpenAPI specs, test-map coverage, base URL, guardrail settings. `--online` calls GitLab to prove the token can reach the test and service projects. |
 | `gap-report -s <service>` | Read-only, risk-ranked analysis. The run is discarded if anything changed in either repo. `--post` creates or updates a single MR comment. Skips the agent for docs- or config-only changes. |
 | `generate -s <service>` | Writes and updates tests on a branch. **Rejected with nothing committed** on any guardrail violation. Otherwise independently verified, then committed. `--push` opens or updates a GitLab MR (Draft unless VERIFIED). Exit code 0 only when VERIFIED. |
 | `verify [--policy] [--base <ref>]` | The same independent checks, for any branch. Use it as the blocking CI gate on agent MRs. |
 | `gap-report --story KEY` / `generate --story KEY` | Story mode: the story's changes in every service (from MRs, branches and commits naming the key) as one analysis and one test MR on `qa-sentinel/story-KEY`. |
+| `story-check --story KEY [--fields]` | Onboarding: how qa-sentinel reads one of your stories (each heading's role, ACs from lists, Gherkin or Given/When/Then tables, scope items, out of scope, services named) and what to change in `requirements.template`. `--fields` lists the issue's Jira fields with their ids. No AI call. |
 | `review-story --story KEY [--post]` | Before development: reviews the story's ACs and scope (ambiguity, missing negative/edge cases, scope without an AC). `--post` comments on the story. |
 | `add-mobile [--platform android\|ios]` | Adds the mobile layer (WebdriverIO + Appium): turns `tests.mobile` on, writes `wdio.conf.ts`, screen objects, ui helper, evidence hooks, example spec, the write-mobile-test skill and the WebdriverIO packages. (`init --mobile` for new projects.) |
 | `bugs [--story KEY] [--results f] [--env sit] [--dry-run]` | After a run: raises (or proposes, per `bugs.mode`) a bug card for each AC whose tests failed, and notes "now passes" on earlier bugs. |
@@ -208,7 +212,14 @@ requirements:
     acceptanceCriteriaField: customfield_10045   # optional; else AC are read from the description
     scopeFields: [{ field: customfield_10050, name: Tech scope, prefix: TS }]   # optional: scope kept in Jira fields
     approvedStatuses: [Ready for Dev, In Progress, Done]   # these statuses make AC "approved"
-  scope: { enabled: true }           # "Tech scope" / "Expected results" headings become items TS-n / ER-n
+  template:                          # how your team writes stories (`story-check` shows how a story is read)
+    - { role: acceptance-criteria, name: Acceptance criteria, headings: [acceptance criteria, acs] }
+    - { role: scope, name: In scope, prefix: IS, headings: [in scope, scope] }
+    - { role: scope, name: Tech scope, prefix: TS, headings: [tech scope, tech notes, implementation] }
+    - { role: out-of-scope, name: Out of scope, headings: [out of scope, not in scope] }
+    - { role: context, name: Context, headings: [assumptions, questions, feature toggles] }
+    - { role: showcase, name: Showcase approach, headings: [showcase approach] }
+    - { role: ignore, name: Checklist, headings: [checklist, definition of ready] }
 reporting:
   targets: [gitlab-mr]               # where `gap-report --post` publishes: gitlab-mr, jira, or both
   jira: { format: summary, maxChars: 30000 }   # summary (plain language, default) | full; optional visibility: { type: role, value: Developers }

@@ -96,12 +96,14 @@ For a single-line or trivial diff you may do steps 2 and 3 yourself, but the rul
 Plain strings in `setup` are still accepted and read as API steps in order.
 
 ### Is the story built? (`requirementStatus`)
-`story.md` lists the acceptance criteria (AC-1, …) and, when the story has them, **scope items** written outside the ACs: tech scope (TS-1, …) and expected results (ER-1, …). Give **every** AC and scope item exactly one entry:
+`story.md` lists the acceptance criteria (AC-1, …) and, when the story has them, **scope items** written outside the ACs (the prefixes come from the team's story template, e.g. IS-1 in scope, TS-1 tech notes, ER-1 expected results; a tech note may name its service). Give **every** AC and scope item exactly one entry:
 - `implemented` / `partial` / `conflict`: with evidence (the code that does it) and `where` (file:line). `conflict` also needs an `acMismatches` entry.
 - `not-found`: nothing in this change does it. Say what is missing in `note`.
 - `elsewhere`: it belongs to another service or repo of the story; name it in `where`.
 - `not-applicable`: no code is needed (e.g. wording, process).
 - Scope items only: `coveredByAcs` lists the ACs that already express it; `[]` means no AC covers it (the report asks the PO to add one).
+- What `story.md` lists as **OUT OF SCOPE** is not a requirement: no scenarios for it, no `not-found` for it. If the change does it anyway, say so in `openQuestions`.
+- The story's context sections (assumptions, questions, feature toggles) are evidence: e.g. a feature toggle the tests need on goes into the scenario's `setup`.
 Scope items can be cited in `requirementIds` like ACs. They are weaker oracles than ACs: when an item contradicts an AC, the AC wins and you add an open question.
 
 ### Shapes of the list entries

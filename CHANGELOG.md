@@ -21,6 +21,14 @@
 - Every plan has `requirementStatus`: implemented · partial · not-found · conflict · elsewhere · not-applicable per AC and scope item, with evidence and the ACs that cover it. The gap report has an "Is the story built?" table and lists scope items no AC covers; the Jira summary shows "⛔ Not built".
 - `review-story`: before development, a read-only review of the story (ambiguous ACs, missing negative and edge cases, scope without an AC, open questions), optionally posted on the story.
 
+### Onboarding and story templates
+- `requirements.template`: each team describes how its stories are written as sections with a role (acceptance-criteria, scope with an id prefix, out-of-scope, context, showcase, ignore) and the headings that start them. Defaults cover common names (In-scope, Tech notes / Implementation, Expected results, Out of scope, Assumptions, Questions, Feature toggles, Showcase approach, Checklist). `requirements.scope.sections` from earlier 0.6 builds still works.
+- Acceptance criteria from numbered/bulleted lists, `AC-n` lines, Gherkin scenarios, and Given / When / Then **tables** (any column order, a number or scenario column, multi-line cells, `—` for empty steps); the story's own AC numbers are kept when present.
+- Nested bullets stay with their parent item; a short label before a list (a service name, "Data model") groups its items; a tech note is tied to the service it names. Jira wiki (`**` depth, `||` tables) and ADF (nested lists, tables) both convert faithfully.
+- Out-of-scope items are given to the agents as exclusions; context sections (assumptions, questions, feature toggles) as evidence; the showcase approach goes into the showcase PDF. A story proven only by API tests gets the PDF without a video.
+- Story-mode and single-service gap reports say when the story names a service that has no change for it.
+- `story-check --story KEY [--fields]` (no AI call): how a story is read, what to change in the template, and the issue's Jira field ids. `init` asks for the requirements source, Jira URL and project keys, GitLab URL and test repo project, and the test layers (also as flags). `doctor` checks the story key pattern and the template. New guide: `docs/ONBOARDING.md`.
+
 ### Story-wide runs
 - `gap-report --story KEY` and `generate --story KEY`: everything the story changed across services as one plan and one test MR (`qa-sentinel/story-KEY`). For merged parts only the story's own change is taken (the merge's or squash's net change), never other work merged meanwhile. Regression selections are merged across parts.
 
