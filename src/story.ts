@@ -20,15 +20,42 @@ export interface StoryPart {
 
 const keyRe = (key: string) => new RegExp(`(^|[^A-Za-z0-9])${key.replace(/[-]/g, "\\-")}(?![0-9])`, "i");
 
-/** From the parent of the oldest commit mentioning the story (reachable from tip) to the tip. */
-export function storyRange(repo: string, story: string, tip: string): { base: string; head: string } | undefined {
+const tryGit = (repo: string, args: string[]) => {
+  try {
+    return git(repo, args);
+  } catch {
+    return "";
+  }
+};
+
+/**
+ * The story's change in one repo, without unrelated work from the main branch:
+ * - merged (tip on the main line): walk back along the main line over the story's own commits — commits whose
+ *   message names the story, and merge commits whose merged side does — and take that run's net change
+ *   (a merge commit's M^1..M, a squash commit's S^..S, fast-forwarded commits in a row);
+ * - not merged (a branch): from the parent of the oldest commit naming the story to the tip.
+ */
+export function storyRange(repo: string, story: string, tip: string, merged = false): { base: string; head: string } | undefined {
   const re = keyRe(story);
-  const commits = git(repo, ["log", tip, "--format=%H%x09%P%x09%s %b%x1e"])
+  const msg = (sha: string) => tryGit(repo, ["log", "-1", "--format=%s %b", sha]);
+  if (merged) {
+    const line = tryGit(repo, ["rev-list", "--first-parent", "--parents", tip]).split("\n").filter(Boolean);
+    let base: string | undefined;
+    for (const row of line) {
+      const [sha, ...parents] = row.split(" ");
+      const own = re.test(msg(sha));
+      const mergedSide = parents.length > 1 && tryGit(repo, ["log", `${parents[0]}..${parents[1]}`, "--format=%s %b%x1e"]).split("\x1e").some((m) => re.test(m));
+      if (!own && !mergedSide) break;
+      base = parents[0] ?? sha;
+    }
+    if (base) return { base, head: tip };
+  }
+  const commits = tryGit(repo, ["log", tip, "--format=%H%x09%P%x09%s %b%x1e"])
     .split("\x1e")
     .map((l) => l.trim())
     .filter(Boolean)
     .map((l) => l.split("\t"))
-    .filter(([, , msg]) => re.test(msg ?? ""));
+    .filter(([, , m]) => re.test(m ?? ""));
   if (!commits.length) return undefined;
   const oldest = commits[commits.length - 1];
   const parent = (oldest[1] ?? "").split(" ")[0];
@@ -47,7 +74,7 @@ export async function storyParts(i: { c: Config; cwd: string; story: string; git
       notes.push(`${p.service}: no commit found for ${i.story}`);
       continue;
     }
-    const range = storyRange(repo, i.story, p.sha);
+    const range = storyRange(repo, i.story, p.sha, p.merged);
     if (!range) {
       notes.push(`${p.service}: no commit message mentions ${i.story}; skipped`);
       continue;
@@ -65,7 +92,8 @@ export function combinedChange(story: string, parts: StoryPart[]): { cs: ChangeS
   const service: ServiceConfig = {
     name: `story-${story}`,
     path: parts[0]?.service.path ?? ".",
-    kind: parts.some((p) => p.service.kind === "web") ? "web" : "api",
+    // The story is tested through the UI its parts have: web first, then the app, else the API.
+    kind: parts.some((p) => p.service.kind === "web") ? "web" : parts.some((p) => p.service.kind === "mobile") ? "mobile" : "api",
     routes: [...new Set(parts.flatMap((p) => p.service.routes))],
     dependsOn: [...new Set(parts.flatMap((p) => p.service.dependsOn))],
   };

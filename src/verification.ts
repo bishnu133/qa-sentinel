@@ -119,14 +119,26 @@ export async function verifyChanges(o: VerifyOptions): Promise<VerificationRepor
         continue;
       }
       const t0 = Date.now();
+      // Device farms put credentials in the URL (https://user:key@hub…): send them as a header, never print them.
+      let target: URL;
+      try {
+        target = new URL(baseUrl);
+      } catch {
+        checks.push({ name: "preflight", layer: l.layer, status: "blocked", detail: `${l.baseUrlEnv} is not a valid URL` });
+        continue;
+      }
+      const auth = target.username || target.password ? `Basic ${Buffer.from(`${decodeURIComponent(target.username)}:${decodeURIComponent(target.password)}`).toString("base64")}` : undefined;
+      target.username = "";
+      target.password = "";
+      const shown = `${target.origin}${target.pathname}`;
       try {
         const ctrl = new AbortController();
         const timer = setTimeout(() => ctrl.abort(), 10_000);
-        const res = await fetch(baseUrl, { method: "GET", signal: ctrl.signal, redirect: "manual" });
+        const res = await fetch(target, { method: "GET", signal: ctrl.signal, redirect: "manual", headers: auth ? { Authorization: auth } : {} });
         clearTimeout(timer);
-        checks.push({ name: "preflight", layer: l.layer, status: "passed", detail: `${new URL(baseUrl).host} answered ${res.status}`, durationMs: Date.now() - t0 });
+        checks.push({ name: "preflight", layer: l.layer, status: "passed", detail: `${target.host} answered ${res.status}`, durationMs: Date.now() - t0 });
       } catch (e) {
-        checks.push({ name: "preflight", layer: l.layer, status: "blocked", detail: `${baseUrl} unreachable: ${(e as Error).message}`, durationMs: Date.now() - t0 });
+        checks.push({ name: "preflight", layer: l.layer, status: "blocked", detail: `${shown} unreachable: ${(e as Error).message}`, durationMs: Date.now() - t0 });
       }
     }
   }
@@ -190,10 +202,14 @@ export async function verifyChanges(o: VerifyOptions): Promise<VerificationRepor
         fs.rmSync(junit, { recursive: true, force: true });
         const r2 = await runProcess(runArgs(retrySpecs), [], { cwd, env, timeoutMs, shell: true });
         const again = readJUnitAt(junit);
-        const healedNames = firstFailed.filter((f) => again.some((a) => a.name === f.name && a.status === "passed")).map((f) => f.name);
-        if (healedNames.length) {
-          flaky.push(...healedNames);
-          mine = mine.map((x) => (healedNames.includes(x.name) ? { ...x, status: "passed" as const, message: "passed on retry (flaky)" } : x));
+        // Same test = same file and name: two specs may hold tests with the same title.
+        const key = (x: TestCase) => `${x.file ?? ""}::${x.name}`;
+        const passedAgain = new Set(again.filter((a) => a.status === "passed").map(key));
+        const healed = firstFailed.filter((f) => passedAgain.has(key(f)));
+        if (healed.length) {
+          flaky.push(...healed.map((f) => f.name));
+          const healedKeys = new Set(healed.map(key));
+          mine = mine.map((x) => (x.status === "failed" && healedKeys.has(key(x)) ? { ...x, status: "passed" as const, message: "passed on retry (flaky)" } : x));
           if (mine.every((x) => x.status !== "failed")) r = { ...r2, code: 0 };
         }
       }

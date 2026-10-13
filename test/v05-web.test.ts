@@ -233,4 +233,20 @@ describe("flaky retry", () => {
     expect(r.flaky).toEqual(["t"]);
     expect(r.checks.find((x) => x.name === "tests")!.detail).toContain("1 only on retry (flaky)");
   });
+
+  it("does not let a flaky test excuse a real failure with the same title in another spec", async () => {
+    const repo = repoDir();
+    await initCommand({ cwd: repo, yes: true, mode: "scratch", ci: "gitlab", level: "maintenance", name: "f2" });
+    // a.spec "t" fails once then passes; b.spec "t" always fails.
+    const runner = `node -e "const fs=require('fs');const n='${repo}/count';const k=fs.existsSync(n)?+fs.readFileSync(n,'utf8'):0;fs.writeFileSync(n,String(k+1));const a=k>0?'':'<failure message=\\"boom\\"/>';fs.writeFileSync(process.env.PLAYWRIGHT_JUNIT_OUTPUT_NAME,'<testsuite><testcase name=\\"t\\" file=\\"tests/api/a.spec.ts\\">'+a+'</testcase><testcase name=\\"t\\" file=\\"tests/api/b.spec.ts\\"><failure message=\\"real\\"/></testcase></testsuite>');process.exit(1)"`;
+    const cfg = path.join(repo, "qa-sentinel.config.yaml");
+    fs.writeFileSync(cfg, fs.readFileSync(cfg, "utf8").replace(/runCommand: npx playwright test --project=api/, `runCommand: ${JSON.stringify(runner)}`));
+    const c = loadConfig(repo);
+    fs.writeFileSync(path.join(repo, "tests/api/a.spec.ts"), "x");
+    fs.writeFileSync(path.join(repo, "tests/api/b.spec.ts"), "x");
+    const r = await verifyChanges({ cwd: repo, c: { ...c, verification: { ...c.verification, preflight: false, typecheck: "never" } }, changes: [{ status: "A", path: "tests/api/a.spec.ts" }, { status: "A", path: "tests/api/b.spec.ts" }], runDir: tmp(), env: { PATH: process.env.PATH } });
+    expect(r.status).toBe("FAILED");
+    expect(r.flaky).toEqual(["t"]);
+    expect(r.cases.filter((x) => x.status === "failed").map((x) => x.file)).toEqual(["tests/api/b.spec.ts"]);
+  });
 });

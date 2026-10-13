@@ -156,6 +156,7 @@ export async function initCommand(opts: InitOptions): Promise<Config> {
   writeKbReadme(cwd, config);
   ensureGitignore(cwd);
   if (mode === "scratch") mergePackageJson(cwd, config.tests.web.enabled, config.tests.mobile.enabled);
+  else addLayerDependencies(cwd, config);
 
   printNextSteps(config);
   return config;
@@ -266,6 +267,20 @@ export function writeTemplates(cwd: string, c: Config, vars: TemplateVars, force
   return results;
 }
 
+/**
+ * Relative imports between scaffold files, rewritten for where the files actually go: each import is resolved
+ * at the template's default location, moved with the same mapping as the files, and made relative again.
+ */
+export function rebaseImports(content: string, defaultFile: string, actualFile: string, move: (f: string) => string): string {
+  return content.replace(/(from\s+["'])(\.{1,2}\/[^"']+)(["'])/g, (_m, pre: string, spec: string, post: string) => {
+    const defaultTarget = path.posix.normalize(path.posix.join(path.posix.dirname(defaultFile), spec));
+    const actualTarget = move(`${defaultTarget}.ts`).replace(/\.ts$/, "");
+    let rel = path.posix.relative(path.posix.dirname(actualFile), actualTarget);
+    if (!rel.startsWith(".")) rel = `./${rel}`;
+    return `${pre}${rel}${post}`;
+  });
+}
+
 /** Layer skills are only installed when their layer is on. */
 function skillWanted(c: Config, f: string): boolean {
   if (f.startsWith("write-web-test/")) return c.tests.web.enabled;
@@ -286,7 +301,7 @@ export function writeMobileScaffold(cwd: string, c: Config, vars: TemplateVars):
       .replace(/^tests\/mobile\//, `${c.tests.mobile.dir}/`);
   for (const f of listTemplateDir("scaffold/wdio-mobile")) {
     const rel = target(f);
-    const content = render(readTemplate(`scaffold/wdio-mobile/${f}`), vars);
+    const content = rebaseImports(render(readTemplate(`scaffold/wdio-mobile/${f}`), vars), f.replace(/\.tmpl$/, ""), rel, target);
     results.push([rel, writeFileSafe(path.join(cwd, rel), content, false)]);
   }
   return results;
@@ -305,8 +320,8 @@ export function writeWebScaffold(cwd: string, c: Config, vars: TemplateVars): [s
       .replace(/^tests\/web\//, `${c.tests.web.dir}/`);
   for (const f of listTemplateDir("scaffold/playwright-web")) {
     const rel = target(f);
-    // Relative imports in the templates assume the default layout (src/pages, tests/web/<area>/).
-    const content = render(readTemplate(`scaffold/playwright-web/${f}`), vars);
+    // The templates import each other assuming the default layout; follow pagesDir / dir when they differ.
+    const content = rebaseImports(render(readTemplate(`scaffold/playwright-web/${f}`), vars), f.replace(/\.tmpl$/, ""), rel, target);
     results.push([rel, writeFileSafe(path.join(cwd, rel), content, false)]);
   }
   return results;
@@ -362,6 +377,25 @@ export const MOBILE_DEV_DEPENDENCIES: Record<string, string> = {
   webdriverio: "^9.5.0",
   "@types/mocha": "^10.0.10",
 };
+
+/** Existing projects: add only the packages the web/mobile scaffold imports (never touching versions already there). */
+export function addLayerDependencies(cwd: string, c: Config): string[] {
+  const file = path.join(cwd, "package.json");
+  if (!fs.existsSync(file)) return [];
+  const pkg = readJson<any>(file);
+  if (!pkg) return [];
+  pkg.devDependencies ??= {};
+  const want: Record<string, string> = {
+    ...(c.tests.web.enabled && c.tests.web.accessibility !== "off" ? { "@axe-core/playwright": "^4.10.0" } : {}),
+    ...(c.tests.mobile.enabled ? MOBILE_DEV_DEPENDENCIES : {}),
+  };
+  const added = Object.keys(want).filter((k) => !pkg.devDependencies[k] && !pkg.dependencies?.[k]);
+  if (!added.length) return [];
+  for (const k of added) pkg.devDependencies[k] = want[k];
+  fs.writeFileSync(file, JSON.stringify(pkg, null, 2) + "\n");
+  log.dim(`  updated  package.json (added ${added.join(", ")}; run npm install)`);
+  return added;
+}
 
 export function mergePackageJson(cwd: string, web = false, mobile = false) {
   const file = path.join(cwd, "package.json");
@@ -431,6 +465,7 @@ export function addWebCommand(o: { cwd: string; healing?: "none" | "bubblegum" }
     results.push([`ci/qa-sentinel/${f}`, writeFileSafe(path.join(cwd, "ci/qa-sentinel", f), render(readTemplate(`${ciDir}/${f}`), vars), true)]);
   }
   for (const [f, status] of results) log.dim(`  ${status === "skipped" ? "kept    " : status.padEnd(8)} ${f}`);
+  addLayerDependencies(cwd, c);
   log.ok("web layer enabled in qa-sentinel.config.yaml");
   log.title("Add this project to playwright.config.ts");
   log.info(
@@ -537,15 +572,7 @@ export function addMobileCommand(o: { cwd: string; platform?: "android" | "ios" 
     if (c.level === "intelligence" && f === "Jenkinsfile.generate") continue;
     results.push([`ci/qa-sentinel/${f}`, writeFileSafe(path.join(cwd, "ci/qa-sentinel", f), render(readTemplate(`${ciDir}/${f}`), vars), true)]);
   }
-  if (fs.existsSync(path.join(cwd, "package.json"))) {
-    const pkg = readJson<any>(path.join(cwd, "package.json"));
-    pkg.devDependencies ??= {};
-    pkg.scripts ??= {};
-    pkg.scripts["test:mobile"] ??= "wdio run wdio.conf.ts";
-    for (const [k, v] of Object.entries(MOBILE_DEV_DEPENDENCIES)) pkg.devDependencies[k] ??= v;
-    fs.writeFileSync(path.join(cwd, "package.json"), JSON.stringify(pkg, null, 2) + "\n");
-    results.push(["package.json", "updated"]);
-  }
+  if (addLayerDependencies(cwd, c).length) results.push(["package.json", "updated"]);
   for (const [f, status] of results) log.dim(`  ${status === "skipped" ? "kept    " : status.padEnd(8)} ${f}`);
   log.ok("mobile layer enabled in qa-sentinel.config.yaml");
   log.info(

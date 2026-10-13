@@ -6,6 +6,7 @@ import type { IndexedTest } from "../analysis/testIndex.js";
 import { type Layer, isUiLayer, layerConfig, layerOfFile, specArgs } from "../layers.js";
 import { runProcess } from "../proc.js";
 import { matchResult, readRunResults, type RunResult } from "./results.js";
+import { redact } from "./redact.js";
 import type { EvidenceFile, StoryReadiness } from "./showcase.js";
 
 /**
@@ -55,6 +56,8 @@ export interface PackMeta {
   at: string;
 }
 
+/** Single-quoted for sh: nothing inside is expanded. */
+const shq = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`;
 const esc = (s: string) => s.replace(/[&<>"']/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[ch]!);
 const clean = (title: string) => title.replace(/\s*@\S+/g, "").trim();
 
@@ -91,7 +94,7 @@ function apiCalls(result?: RunResult): ApiCall[] {
   const log = result?.evidence.find((e) => e.kind === "api-log");
   if (!log || !fs.existsSync(log.path)) return [];
   try {
-    return (JSON.parse(fs.readFileSync(log.path, "utf8")).calls ?? []) as ApiCall[];
+    return redact((JSON.parse(fs.readFileSync(log.path, "utf8")).calls ?? []) as ApiCall[]);
   } catch {
     return [];
   }
@@ -210,7 +213,7 @@ export async function buildShowcasePack(i: {
     const l = layerConfig(c, "web");
     const json = path.join(i.workDir, "recording.json");
     const files = [...new Set(webPicks.map((p) => `${p.test.file}:${p.test.line}`))];
-    const r2 = await runProcess(`${l.runCommand} ${files.join(" ")} --workers=1 --retries=0 --reporter=json --output=${JSON.stringify(path.join(i.workDir, "recording"))}`, [], {
+    const r2 = await runProcess(`${l.runCommand} ${files.map(shq).join(" ")} --workers=1 --retries=0 --reporter=json --output=${shq(path.join(i.workDir, "recording"))}`, [], {
       cwd,
       shell: true,
       timeoutMs: 15 * 60_000,
@@ -231,7 +234,7 @@ export async function buildShowcasePack(i: {
   if (mobilePicks.length && c.showcase.video.record && c.tests.mobile.enabled) {
     const l = layerConfig(c, "mobile");
     const dir = path.join(i.workDir, "recording-mobile");
-    const r2 = await runProcess(`${l.runCommand} ${specArgs(l, mobilePicks.map((p) => p.test.file), (s) => JSON.stringify(s))}`, [], {
+    const r2 = await runProcess(`${l.runCommand} ${specArgs(l, mobilePicks.map((p) => p.test.file), shq)}`, [], {
       cwd,
       shell: true,
       timeoutMs: 20 * 60_000,

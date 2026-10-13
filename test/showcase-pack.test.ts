@@ -63,3 +63,20 @@ describe("showcase pack", () => {
     expect(out.notes.join(" ")).toMatch(/PDF not built|ffmpeg/);
   });
 });
+
+import { redact } from "../src/showcase/redact.js";
+describe("API evidence redaction", () => {
+  it("masks secrets by key and tokens inside strings, keeps the rest", () => {
+    const out = redact({ email: "a@b.c", password: "hunter2", nested: { accessToken: "abc", items: [{ cardNumber: "4111", qty: 2 }] }, note: "use Bearer abcdefghijkl now", jwt: "x eyJhbGciOi.eyJzdWIiOiIx.c2lnbmF0dXJl y", pin: null });
+    expect(out).toEqual({ email: "a@b.c", password: "[redacted]", nested: { accessToken: "[redacted]", items: [{ cardNumber: "[redacted]", qty: 2 }] }, note: "use Bearer [redacted] now", jwt: "x [redacted jwt] y", pin: null });
+  });
+});
+
+import { attachedWhat } from "../src/commands/showcase.js";
+describe("showcase mention", () => {
+  it("names what was actually attached", () => {
+    expect(attachedWhat(["S-1-showcase.mp4", "S-1-showcase.pdf"])).toBe("the showcase video and the evidence PDF are");
+    expect(attachedWhat(["S-1-showcase.pdf", "a.webm", "b.png"])).toBe("2 test recording(s) and screenshot(s) and the evidence PDF are");
+    expect(attachedWhat(["S-1-test-evidence.md"])).toBe("the test evidence is");
+  });
+});

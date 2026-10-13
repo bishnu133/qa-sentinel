@@ -3,6 +3,7 @@ import path from "node:path";
 import type { Config } from "../config.js";
 import type { IndexedTest } from "../analysis/testIndex.js";
 import { matchResult, type Evidence, type RunResult } from "./results.js";
+import { redact } from "./redact.js";
 
 /**
  * Showcase: once every acceptance criterion of a story has passing tests in a real run, collect that run's
@@ -80,7 +81,7 @@ export function collectEvidence(c: Config, r: StoryReadiness, meta: { environmen
         seen.add(ev.path);
         if (ev.kind === "api-log") {
           try {
-            const log = JSON.parse(fs.readFileSync(ev.path, "utf8"));
+            const log = redact(JSON.parse(fs.readFileSync(ev.path, "utf8")));
             md.push("", `## ${ac.id} · ${test.title}`, "");
             for (const call of log.calls ?? []) {
               md.push(`**${call.method} ${call.path}** → ${call.status} (${call.ms} ms)`);

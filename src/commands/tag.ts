@@ -12,13 +12,18 @@ import { createOrUpdateMergeRequest, gitlabContext, pushUrl } from "../scm/gitla
 import { formatUsage } from "../claude.js";
 import { log } from "../log.js";
 
-const TAGS = /\s*@[\w-]+(?::[^\s"'`]+)?/g;
+/** Tags as qa-sentinel writes them: `@key` or `@key:value`, value limited to route/id characters (no `${`, quotes or code). */
+const TAGS = /\s+@[\w-]+(?::[\w./:{},-]+)?(?=[\s"'`]|$)/g;
+const tagsIn = (line: string) => (line.match(TAGS) ?? []).map((t) => t.trim());
 /** A line with its @tags removed: what must stay identical when only tags were added. */
 export const untagged = (line: string) => line.replace(TAGS, "").replace(/\s+$/, "");
+/** A test or suite declaration with its title: the only kind of line the tag command may change. */
+const DECLARATION = /\b(?:test|it|describe)(?:\.\w+)?\s*\(\s*["'`]/;
 
 /**
- * Only tags may change: pair removed and added lines hunk by hunk; each pair must be equal once tags are removed.
- * Returns the offending lines (empty = only tags changed).
+ * Only tags may change: pair removed and added lines hunk by hunk. Each pair must be a test/describe declaration,
+ * equal once tags are removed, and keep every tag it had (tags are only added). Returns the offending lines
+ * (empty = only tags changed).
  */
 export function nonTagChanges(diff: string): string[] {
   const bad: string[] = [];
@@ -30,7 +35,9 @@ export function nonTagChanges(diff: string): string[] {
       continue;
     }
     removed.forEach((r, i) => {
-      if (untagged(r) !== untagged(added[i])) bad.push(`-${r}`, `+${added[i]}`);
+      const a = added[i];
+      const kept = tagsIn(r).every((t) => tagsIn(a).includes(t));
+      if (!DECLARATION.test(r) || !DECLARATION.test(a) || untagged(r) !== untagged(a) || !kept) bad.push(`-${r}`, `+${a}`);
     });
   }
   return bad;

@@ -49,6 +49,32 @@ describe("story mode", () => {
     expect(storyRange(path.join(ws, "payments"), "SHOP-106", "HEAD")).toBeUndefined();
   });
 
+  it("takes only the story's own change when it was merged, not main's work from the same period", () => {
+    const dir = path.join(ws, "merged");
+    repo(dir, [["a.js", "0", "initial"]]);
+    const commit = (file: string, msg: string) => {
+      fs.writeFileSync(path.join(dir, file), msg);
+      g(dir, "add", "-A");
+      g(dir, "-c", "user.name=d", "-c", "user.email=d@x", "commit", "-q", "-m", msg);
+    };
+    g(dir, "checkout", "-q", "-b", "feature/SHOP-200");
+    commit("story.js", "SHOP-200: the feature");
+    commit("story2.js", "fix lint");
+    g(dir, "checkout", "-q", "main");
+    commit("main.js", "someone else's work");
+    g(dir, "-c", "user.name=d", "-c", "user.email=d@x", "merge", "-q", "--no-ff", "-m", "Merge branch 'feature/SHOP-200'", "feature/SHOP-200");
+    const m = g(dir, "rev-parse", "HEAD");
+    const r = storyRange(dir, "SHOP-200", m, true)!;
+    expect(r.base).toBe(g(dir, "rev-parse", "HEAD^1"));
+    const files = g(dir, "diff", "--name-only", `${r.base}...${r.head}`).split("\n").sort();
+    expect(files).toEqual(["story.js", "story2.js"]);
+    // Squash: the one commit.
+    commit("other.js", "more main work");
+    commit("sq.js", "SHOP-201: squashed story (#12)");
+    const sq = storyRange(dir, "SHOP-201", "HEAD", true)!;
+    expect(g(dir, "diff", "--name-only", `${sq.base}...${sq.head}`)).toBe("sq.js");
+  });
+
   it("assembles the parts and one combined view", async () => {
     const { parts } = await storyParts({ c, cwd: tests, story: "SHOP-106" });
     expect(parts.map((p) => [p.service.name, p.relevant.sort()])).toEqual([

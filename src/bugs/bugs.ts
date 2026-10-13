@@ -168,20 +168,27 @@ export async function fileBugs(ctx: JiraContext, c: Config, story: string, candi
       skipped.push(`${b.item}: already raised as ${existing.key}`);
       continue;
     }
-    const issue = await createIssue(ctx, {
-      project,
-      issueType,
-      summary: b.title,
-      description: bugDescription(b),
-      labels: [...c.bugs.labels, ...(issueType !== "Bug" ? ["bug"] : []), ...(b.suspected ? ["qa-sentinel-suspected"] : [])],
-      priority: c.bugs.priority,
-    });
-    await linkIssues(ctx, issue.key, story, c.bugs.linkType).catch((e) => log.warn(`  could not link ${issue.key} to ${story}: ${(e as Error).message}`));
-    for (const e of b.evidence ?? []) await attachFile(ctx, issue.key, e.name, fs.readFileSync(e.path), e.contentType).catch(() => undefined);
+    let issue: { key: string };
+    try {
+      issue = await createIssue(ctx, {
+        project,
+        issueType,
+        summary: b.title,
+        description: bugDescription(b),
+        labels: [...c.bugs.labels, ...(issueType !== "Bug" ? ["bug"] : []), ...(b.suspected ? ["qa-sentinel-suspected"] : [])],
+        priority: c.bugs.priority,
+      });
+    } catch (e) {
+      skipped.push(`${b.item}: could not create the bug: ${(e as Error).message.slice(0, 200)}`);
+      continue;
+    }
+    // Record it at once: a later failure must never make the next run raise the same bug again.
     record[b.item] = { key: issue.key, kind: b.kind, createdAt: new Date().toISOString() };
     created.push(issue.key);
+    await setIssueProperty(ctx, story, BUGS_PROPERTY, record).catch((e) => log.warn(`  could not record ${issue.key} on ${story}: ${(e as Error).message}`));
+    await linkIssues(ctx, issue.key, story, c.bugs.linkType).catch((e) => log.warn(`  could not link ${issue.key} to ${story}: ${(e as Error).message}`));
+    for (const e of b.evidence ?? []) await attachFile(ctx, issue.key, e.name, fs.readFileSync(e.path), e.contentType).catch(() => undefined);
   }
-  if (created.length) await setIssueProperty(ctx, story, BUGS_PROPERTY, record);
   return { created, suggested: 0, skipped };
 }
 

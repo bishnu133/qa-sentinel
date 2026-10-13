@@ -109,6 +109,12 @@ export function parseAcceptanceCriteria(text: string): { id: string; text: strin
   return items.map((t, i) => ({ id: `AC-${i + 1}`, text: t }));
 }
 
+/** A Jira story as one markdown text: summary, description, the AC field and the configured scope fields as sections. */
+export function jiraIssueText(c: Config, issue: { key: string; summary: string; description?: string; acceptanceCriteria?: string; extra?: Record<string, string> }): string {
+  const scopeFields = c.requirements.jira.scopeFields.filter((f) => issue.extra?.[f.field]).map((f) => `## ${f.name}\n${issue.extra![f.field]}`);
+  return [`# ${issue.key} ${issue.summary}`, issue.description, issue.acceptanceCriteria ? `## Acceptance criteria\n${issue.acceptanceCriteria}` : "", ...scopeFields].filter(Boolean).join("\n\n");
+}
+
 function snapshot(
   source: RequirementSnapshot["source"],
   rawText: string,
@@ -180,8 +186,7 @@ export async function resolveRequirements(c: Config, o: ResolveOptions): Promise
     const jctx = jiraContext(c.requirements.jira.baseUrl, env);
     if (key && jctx) {
       const issue = await fetchIssue(jctx, key, c.requirements.jira.acceptanceCriteriaField, c.requirements.jira.scopeFields.map((f) => f.field));
-      const scopeFields = c.requirements.jira.scopeFields.filter((f) => issue.extra?.[f.field]).map((f) => `## ${f.name}\n${issue.extra![f.field]}`);
-      const text = [`# ${issue.key} ${issue.summary}`, issue.description, issue.acceptanceCriteria ? `## Acceptance criteria\n${issue.acceptanceCriteria}` : "", ...scopeFields].filter(Boolean).join("\n\n");
+      const text = jiraIssueText(c, issue);
       const snap = snapshot("jira", text, c, { sourceUrl: issue.url, revision: issue.updated, title: issue.summary, trackerStatus: issue.status, storyKey: issue.key });
       const approved = c.requirements.jira.approvedStatuses.some((s) => s.toLowerCase() === issue.status.toLowerCase());
       return { ...snap, approvalStatus: snap.rawText.trim() ? (approved ? "approved" : "unverified") : "missing" };

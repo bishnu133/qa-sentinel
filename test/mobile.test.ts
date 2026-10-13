@@ -121,6 +121,24 @@ describe("mobile layer", () => {
     const down = await verifyChanges({ cwd: repo, c: cc, changes, runDir: tmp(), env: { PATH: process.env.PATH, QA_APPIUM_URL: `http://127.0.0.1:${port}` } });
     expect(down.status).toBe("BLOCKED");
     expect(down.checks.find((x) => x.name === "preflight")?.detail).toContain(`127.0.0.1:${port}/status unreachable`);
+    // A device-farm URL with credentials: they go in a header and never into the report.
+    const auths: (string | undefined)[] = [];
+    const farm = http.createServer((req, res) => {
+      auths.push(req.headers.authorization);
+      res.end("{}");
+    });
+    await new Promise<void>((r) => farm.listen(0, "127.0.0.1", () => r()));
+    const fport = (farm.address() as { port: number }).port;
+    try {
+      const withKey = await verifyChanges({ cwd: repo, c: cc, changes, runDir: tmp(), env: { PATH: process.env.PATH, QA_APPIUM_URL: `http://alice:s3cr%2Ft@127.0.0.1:${fport}/wd/hub` } });
+      expect(auths).toEqual([`Basic ${Buffer.from("alice:s3cr/t").toString("base64")}`]);
+      expect(JSON.stringify(withKey.checks)).not.toContain("s3cr");
+    } finally {
+      farm.close();
+    }
+    const unreachable = await verifyChanges({ cwd: repo, c: cc, changes, runDir: tmp(), env: { PATH: process.env.PATH, QA_APPIUM_URL: `http://alice:s3cr3t@127.0.0.1:${fport}/wd/hub` } });
+    expect(unreachable.status).toBe("BLOCKED");
+    expect(JSON.stringify(unreachable.checks)).not.toContain("s3cr3t");
   });
 
   it("indexes @screen tags, plans mobile scenarios with a screen, and allows ui setup steps for them", () => {
@@ -183,5 +201,16 @@ describe("mobile layer", () => {
       ["AC-2", "web", true],
       ["AC-3", "api", false],
     ]);
+  });
+});
+
+import { rebaseImports } from "../src/commands/init.js";
+describe("scaffold imports", () => {
+  it("follow the configured folders", () => {
+    const move = (f: string) => f.replace(/^src\/screens\//, "app/screens/").replace(/^tests\/mobile\//, "e2e/");
+    const spec = 'import { useMobile } from "../../../src/fixtures/mobile";\nimport { HomeScreen } from "../../../src/screens/home-screen";';
+    expect(rebaseImports(spec, "tests/mobile/example/home.spec.ts", "e2e/example/home.spec.ts", move)).toBe('import { useMobile } from "../../src/fixtures/mobile";\nimport { HomeScreen } from "../../app/screens/home-screen";');
+    expect(rebaseImports('import type { El, Ui } from "../mobile/ui";', "src/screens/base-screen.ts", "app/screens/base-screen.ts", move)).toBe('import type { El, Ui } from "../../src/mobile/ui";');
+    expect(rebaseImports('import { BaseScreen } from "./base-screen";', "src/screens/home-screen.ts", "app/screens/home-screen.ts", move)).toBe('import { BaseScreen } from "./base-screen";');
   });
 });

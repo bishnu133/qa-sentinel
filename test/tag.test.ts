@@ -21,4 +21,12 @@ describe("tag backfill check", () => {
 +    console.log("x");`;
     expect(nonTagChanges(diff)).toEqual(["-    expect(res.status()).toBe(201);", "+    expect(res.status()).toBe(200);", '+    console.log("x");']);
   });
+  it("rejects code, comments, data or removed tags dressed up as tags", () => {
+    const pair = (a: string, b: string) => nonTagChanges(`@@ -1 +1 @@\n-${a}\n+${b}`);
+    expect(pair("  test(`creates order ${n}`, async () => {", "  test(`creates order ${n} @service:x${globalThis.process.exit(0)}`, async () => {")).not.toEqual([]);
+    expect(pair("    expect(r.status()).toBe(201); // @ok", "    expect(r.status()).toBe(201); // @ok:x;expect.soft=()=>0")).not.toEqual([]);
+    expect(pair('    const user = "admin@acme";', '    const user = "admin@guest";')).not.toEqual([]);
+    expect(pair('  test("x @service:orders", () => {', '  test("x @service:payments", () => {')).not.toEqual([]);
+    expect(pair('  it("opens @screen:home", async () => {', '  it("opens @screen:home @service:app @ac:none", async () => {')).toEqual([]);
+  });
 });

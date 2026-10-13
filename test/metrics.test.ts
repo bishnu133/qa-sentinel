@@ -27,8 +27,14 @@ describe("metrics", () => {
     sh(repo, "commit", "-q", "-m", "init");
 
     agent(repo, "qa-sentinel/a", "tests/a.spec.ts", "run-a"); // merged as is (merge commit)
+    write(repo, "test-map.yaml", "a\n");
+    sh(repo, "add", "-A");
+    sh(repo, "commit", "-q", "--amend", "--no-edit");
     sh(repo, "checkout", "-q", "main");
-    sh(repo, "merge", "-q", "--no-ff", "-m", "Merge a", "qa-sentinel/a");
+    write(repo, "test-map.yaml", "other MR\n"); // another MR changes a shared file before the merge
+    sh(repo, "add", "-A");
+    sh(repo, "commit", "-q", "-m", "other work");
+    sh(repo, "merge", "-q", "--no-ff", "-X", "theirs", "-m", "Merge a", "qa-sentinel/a");
 
     agent(repo, "qa-sentinel/b", "tests/b.spec.ts", "run-b"); // a reviewer changed the test first
     write(repo, "tests/b.spec.ts", "// fixed by reviewer\n");
@@ -36,12 +42,21 @@ describe("metrics", () => {
     sh(repo, "checkout", "-q", "main");
     sh(repo, "merge", "-q", "--no-ff", "-m", "Merge b", "qa-sentinel/b");
 
-    agent(repo, "qa-sentinel/c", "tests/c.spec.ts", "run-c"); // squash merged
-    const msg = sh(repo, "log", "-1", "--format=%B");
-    sh(repo, "checkout", "-q", "main");
-    sh(repo, "merge", "-q", "--squash", "qa-sentinel/c");
-    sh(repo, "commit", "-q", "-m", `Squashed\n\n${msg}`);
-    sh(repo, "branch", "-q", "-D", "qa-sentinel/c");
+    const squash = (branch: string, file: string, runId: string, edit: boolean, keepBranch: boolean) => {
+      agent(repo, branch, file, runId);
+      const msg = sh(repo, "log", "-1", "--format=%B");
+      if (edit) {
+        write(repo, file, "// reviewer\n");
+        sh(repo, "commit", "-qam", "review");
+      }
+      sh(repo, "checkout", "-q", "main");
+      sh(repo, "merge", "-q", "--squash", branch);
+      sh(repo, "commit", "-q", "-m", `Squashed\n\n${msg}`);
+      if (!keepBranch) sh(repo, "branch", "-q", "-D", branch);
+    };
+    squash("qa-sentinel/c", "tests/c.spec.ts", "run-c", false, true); // squash, as is, branch kept
+    squash("qa-sentinel/f", "tests/f.spec.ts", "run-f", true, true); // squash with a reviewer edit
+    squash("qa-sentinel/g", "tests/g.spec.ts", "run-g", false, false); // squash, branch deleted
 
     agent(repo, "qa-sentinel/d", "tests/d.spec.ts", "run-d"); // fast-forward
     sh(repo, "checkout", "-q", "main");
@@ -54,7 +69,16 @@ describe("metrics", () => {
     expect(target).toBe("main");
     const commits = agentCommits(repo, target);
     const state = Object.fromEntries(commits.map((c) => [c.runId, c.state]));
-    expect(state).toEqual({ "run-a": "merged-unedited", "run-b": "merged-edited", "run-c": "merged-unedited", "run-d": "merged-unedited", "run-e": "open" });
+    expect(state).toEqual({
+      "run-a": "merged-unedited",
+      "run-b": "merged-edited",
+      "run-c": "merged-unedited",
+      "run-f": "merged-edited",
+      "run-g": "merged-unknown",
+      "run-d": "merged-unedited",
+      "run-e": "open",
+    });
+    expect(commits).toHaveLength(7);
   });
 
   it("aggregates manifests (also from downloaded CI artifacts) and writes the report", () => {
@@ -77,6 +101,7 @@ describe("metrics", () => {
       { sha: "2", date: "", files: [], state: "merged-unedited" },
       { sha: "3", date: "", files: [], state: "merged-edited" },
       { sha: "4", date: "", files: [], state: "open" },
+      { sha: "5", date: "", files: [], state: "merged-unknown" },
     ]);
     expect(m.costUsd).toBe(1.1);
     expect(m.generate).toEqual({ reachedVerification: 2, verified: 1, verificationRate: 50 });

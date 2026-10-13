@@ -2,10 +2,10 @@ import fs from "node:fs";
 import path from "node:path";
 import { loadConfig } from "../config.js";
 import { indexTests } from "../analysis/testIndex.js";
-import { readRunResults } from "../showcase/results.js";
+import { matchResult, readRunResults } from "../showcase/results.js";
 import { bugsFromResults, fileBugs, noteFixedBugs } from "../bugs/bugs.js";
 import { fetchIssue, jiraContext } from "../scm/jira.js";
-import { parseAcceptanceCriteria, parseScopeItems } from "../requirements.js";
+import { jiraIssueText, parseAcceptanceCriteria, parseScopeItems } from "../requirements.js";
 import { runCommandsFor } from "../layers.js";
 import { useEnvironment } from "../run.js";
 import { log } from "../log.js";
@@ -31,8 +31,10 @@ export async function bugsCommand(o: BugsOptions): Promise<number> {
   }
   const environment = o.env || c.verification.defaultEnvironment ? useEnvironment(c, o.env, {}) : undefined;
   const file = path.resolve(cwd, o.results ?? "test-results/results.json");
-  if (!fs.existsSync(file)) throw new Error(`No test results at ${path.relative(cwd, file)}`);
-  const results = readRunResults(file);
+  const mobileDir = c.tests.mobile.enabled ? path.join(cwd, "test-results/mobile") : undefined;
+  const haveMobile = Boolean(mobileDir && fs.existsSync(mobileDir));
+  if (!fs.existsSync(file) && !haveMobile) throw new Error(`No test results at ${path.relative(cwd, file)}`);
+  const results = [...(fs.existsSync(file) ? readRunResults(file) : []), ...(haveMobile ? readRunResults(mobileDir!) : [])];
   const index = indexTests(cwd, c);
   const ctx = jiraContext(c.requirements.jira.baseUrl);
   if (!ctx && !o.dryRun) throw new Error("Jira is not configured (requirements.jira.baseUrl + JIRA_EMAIL/JIRA_API_TOKEN or JIRA_PAT)");
@@ -41,7 +43,7 @@ export async function bugsCommand(o: BugsOptions): Promise<number> {
   for (const story of stories) {
     try {
       const issue = ctx ? await fetchIssue(ctx, story, c.requirements.jira.acceptanceCriteriaField, c.requirements.jira.scopeFields.map((f) => f.field)) : undefined;
-      const text = issue ? [issue.description, issue.acceptanceCriteria ? `## Acceptance criteria\n${issue.acceptanceCriteria}` : ""].join("\n\n") : "";
+      const text = issue ? jiraIssueText(c, issue) : "";
       const items = [...parseAcceptanceCriteria(text), ...(c.requirements.scope.enabled ? parseScopeItems(text, c.requirements.scope.sections) : [])];
       const candidates = bugsFromResults(c, story, items, index, results, { environment, runCommand: (t) => runCommandsFor(c, [`${t.file}:${t.line}`])[0] });
       if (o.dryRun || !ctx) {
@@ -58,7 +60,7 @@ export async function bugsCommand(o: BugsOptions): Promise<number> {
         .map((it) => it.id)
         .filter((id) => {
           const ts = index.filter((t) => t.stories.includes(story) && t.acs.includes(id) && t.status === "active");
-          return ts.length > 0 && ts.every((t) => results.some((r) => r.status === "passed" && r.line === t.line && t.file.endsWith(r.file ?? "\0")));
+          return ts.length > 0 && ts.every((t) => matchResult(results, t)?.status === "passed");
         });
       const fixed = await noteFixedBugs(ctx, story, passing, environment);
       if (fixed.length) log.ok(`  ${story}: noted as passing on ${fixed.join(", ")}`);

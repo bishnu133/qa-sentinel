@@ -109,7 +109,7 @@ export async function showcaseCommand(o: ShowcaseOptions): Promise<number> {
       await setIssueProperty(ctx, story, SHOWCASE_PROPERTY, rec);
       const mentions = c.showcase.notify.map((u) => (/^[0-9a-f]{12,}$|:/.test(u) ? `[~accountid:${u}]` : `[~${u}]`));
       const comment = markdownToJiraWiki(showcaseComment(r, rec, c.showcase.refreshLabel));
-      await upsertIssueComment(ctx, story, "showcase", mentions.length ? `${mentions.join(" ")} this story is ready for your review: the video and the evidence PDF are attached.\n\n${comment}` : comment, c.reporting.jira.visibility, "qa-sentinel:showcase");
+      await upsertIssueComment(ctx, story, "showcase", mentions.length ? `${mentions.join(" ")} this story is ready for your review: ${attachedWhat(done.map((d) => d.filename))} attached.\n\n${comment}` : comment, c.reporting.jira.visibility, "qa-sentinel:showcase");
       if (labels.includes(c.showcase.refreshLabel)) await removeLabel(ctx, story, c.showcase.refreshLabel);
       attached++;
       log.ok(`  ${story}: evidence attached (${done.map((d) => d.filename).join(", ")})`);
@@ -165,4 +165,13 @@ function readinessMarkdown(r: StoryReadiness): string[] {
     ...r.acs.map((a) => `| ${a.id} | ${icon[a.status]} ${a.status} | ${a.tests.map((t) => `${t.test.title} (${t.result?.status ?? "not run"})`).join("<br>") || "–"}${a.pending.length ? `<br>+ ${a.pending.length} waiting for a fix` : ""} |`),
     ...(r.blockers.length ? ["", ...r.blockers.map((b) => `- ${b}`)] : []),
   ];
+}
+
+/** What the mention says is attached, from the files that actually were. */
+export function attachedWhat(names: string[]): string {
+  const video = names.some((n) => /-showcase\.mp4$/.test(n));
+  const pdf = names.some((n) => /\.pdf$/i.test(n));
+  const media = names.filter((n) => /\.(webm|mp4|png|jpe?g)$/i.test(n) && !/-showcase\.mp4$/.test(n)).length;
+  const parts = [video ? "the showcase video" : media ? `${media} test recording(s) and screenshot(s)` : undefined, pdf ? "the evidence PDF" : names.some((n) => n.endsWith(".md")) ? "the test evidence" : undefined].filter(Boolean);
+  return parts.length ? `${parts.join(" and ")} ${parts.length > 1 || video || pdf ? "are" : "is"}` : "the test results are";
 }

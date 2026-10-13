@@ -77,8 +77,11 @@ export function primaryLayer(c: Config, service: ServiceConfig): Layer {
 /** Layers that drive a user interface (recordings, screens/pages). */
 export const isUiLayer = (l: Layer | undefined) => l === "web" || l === "mobile";
 
+/** A path as a shell word: left as is when plainly safe (readable commands in reports), single-quoted otherwise. */
+export const shellWord = (s: string) => (/^[\w./:@,+=-]+$/.test(s) ? s : `'${s.replace(/'/g, `'\\''`)}'`);
+
 /** Spec paths as the layer's runner takes them (WebdriverIO: `--spec file` each, no :line). */
-export function specArgs(l: Pick<LayerConfig, "specArg">, files: string[], quote: (s: string) => string = (s) => s): string {
+export function specArgs(l: Pick<LayerConfig, "specArg">, files: string[], quote: (s: string) => string = shellWord): string {
   if (!l.specArg) return files.map(quote).join(" ");
   return [...new Set(files.map((f) => f.replace(/:\d+$/, "")))].map((f) => `${l.specArg} ${quote(f)}`).join(" ");
 }
@@ -103,7 +106,7 @@ export function runCommandsFor(c: Config, files: string[]): string[] {
   const pw = groups.map((g) => ({ g, m: g.l.runCommand.trim().match(/^(.*\bplaywright test)\s+--project[= ](\S+)$/) })).filter((x) => x.m);
   const mergeable = pw.length > 1 && new Set(pw.map((x) => x.m![1])).size === 1;
   const out: string[] = [];
-  if (mergeable) out.push(`${pw[0].m![1]} ${pw.map((x) => `--project=${x.m![2]}`).join(" ")} ${pw.flatMap((x) => x.g.files).join(" ")}`);
+  if (mergeable) out.push(`${pw[0].m![1]} ${pw.map((x) => `--project=${x.m![2]}`).join(" ")} ${pw.flatMap((x) => x.g.files).map(shellWord).join(" ")}`);
   for (const g of groups) if (!mergeable || !pw.some((x) => x.g === g)) out.push(`${g.l.runCommand} ${specArgs(g.l, g.files)}`);
   return out;
 }

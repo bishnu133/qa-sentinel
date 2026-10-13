@@ -11,15 +11,14 @@ export interface A11yViolation {
  * Accessibility check with axe (WCAG 2 A/AA rules), reported as a test attachment ("a11y").
  * Returns the violations at the given impact levels (default: critical and serious), so a spec can assert
  * `expect(await checkAccessibility(page, testInfo)).toEqual([])`.
- * Needs @axe-core/playwright; without it the check is skipped and noted on the test.
+ * Needs @axe-core/playwright; without it the check fails (a missing checker must never look like "no issues").
  */
 export async function checkAccessibility(page: Page, testInfo: TestInfo, o: { include?: string; impact?: string[] } = {}): Promise<A11yViolation[]> {
   let AxeBuilder: any;
   try {
     ({ default: AxeBuilder } = await import("@axe-core/playwright"));
   } catch {
-    testInfo.annotations.push({ type: "a11y", description: "skipped: @axe-core/playwright is not installed" });
-    return [];
+    throw new Error("Accessibility check needs @axe-core/playwright: npm i -D @axe-core/playwright");
   }
   let builder = new AxeBuilder({ page }).withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"]);
   if (o.include) builder = builder.include(o.include);
