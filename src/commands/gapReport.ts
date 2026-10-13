@@ -1,3 +1,4 @@
+import { requirementItems } from "../requirements.js";
 import fs from "node:fs";
 import path from "node:path";
 import { loadConfig } from "../config.js";
@@ -110,7 +111,7 @@ export async function gapReportCommand(o: GapReportOptions): Promise<{ report: s
     const selection = selectRegression({ c, service: service.name, plan: outcome.plan, risked: outcome.risked.changes, contract: outcome.contract, index, map: readTestMap(cwd) });
     fs.writeFileSync(path.join(run.dir, "regression.json"), JSON.stringify(selection, null, 2));
     fs.writeFileSync(path.join(path.dirname(out), "qa-regression.txt"), selection.runFullSuite ? "" : selection.args.join("\n") + "\n");
-    const trace = traceStory(index, req.storyKey, req.acceptanceCriteria);
+    const trace = traceStory(index, req.storyKey, requirementItems(req));
     const traced = trace.acs.some((r) => r.status !== "not-traced");
     log.step(`regression selection: ${selection.runFullSuite ? "full suite" : `${selection.tests.length} test(s)`}`);
     report =
@@ -126,6 +127,7 @@ export async function gapReportCommand(o: GapReportOptions): Promise<{ report: s
         oracle: oracleOf(req),
         regression: regressionMarkdown(selection, regressionCommands(c, selection)),
         rules: outcome.validation?.rules,
+        items: requirementItems(req),
         traceability: traced ? traceMarkdown(req.storyKey, trace) : undefined,
       }) + `\n\n${footer}`;
     // The same story in other services (one feature, many services): say so, so nobody tests half a feature.

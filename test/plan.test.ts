@@ -44,12 +44,30 @@ const basePlan = () => ({
   impactedTests: [{ file: "tests/api/orders/create-order.spec.ts", reason: "no slot", stillValid: false }],
   acMismatches: [{ requirementId: "AC-3", requirement: "max 3", observed: "5", evidence: ev("MAX=5") }],
   specDrift: [],
+  requirementStatus: [
+    { id: "AC-1", status: "implemented", evidence: ev("slot check") },
+    { id: "AC-2", status: "not-found" },
+    { id: "AC-3", status: "conflict", evidence: ev("MAX=5") },
+  ],
   suspicious: [],
   openQuestions: [],
   skipReason: null,
 });
 
 describe("TestPlan validation", () => {
+  it("requires an implementation status for every AC and scope item, with evidence", () => {
+    const p: any = basePlan();
+    p.requirementStatus = [{ id: "AC-1", status: "implemented" }, { id: "TS-1", status: "elsewhere" }, { id: "TS-9", status: "not-found" }];
+    const errs = validatePlan(p, { ...ctx, scopeIds: ["TS-1"] }).errors.join("\n");
+    expect(errs).toContain('requirementStatus AC-1: "implemented" needs evidence');
+    expect(errs).toContain('requirementStatus TS-1: "elsewhere" must say which service');
+    expect(errs).toContain("requirementStatus TS-9: unknown requirement id");
+    expect(errs).toContain("requirementStatus: AC-2 has no implementation status");
+    const good: any = basePlan();
+    good.requirementStatus.push({ id: "TS-1", status: "not-found", coveredByAcs: [] });
+    expect(validatePlan(good, { ...ctx, scopeIds: ["TS-1"] }).errors).toEqual([]);
+  });
+
   it("accepts a good plan and forces conflicting oracles to review", () => {
     const v = validatePlan(basePlan(), ctx);
     expect(v.errors).toEqual([]);
@@ -323,6 +341,7 @@ describe("decision engine", () => {
     p.changes = [{ ...p.changes[0], requirementIds: [], oracleStatus: "missing", evidence: [{ source: "openapi", file: "openapi.yaml", reference: "required: [slot]" }] }];
     p.decisions = [{ ...p.decisions[0], decision: "create", proposedScenarios: [{ title: "t", requirementIds: [], setup: [], assertions: ["400"] }] }];
     p.acMismatches = [];
+    p.requirementStatus = [];
     const v = validatePlan(p, { ...ctx, acIds: [], requirementsMissing: true });
     expect(v.errors).toEqual([]);
     expect(v.plan!.decisions[0].decision).toBe("create");

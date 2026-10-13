@@ -77,6 +77,7 @@ export async function planChange(i: PlanInput): Promise<PlanOutcome> {
         serviceLayer: primaryLayer(c, i.service),
         ...(i.service.routes.length ? { serviceRoutes: i.service.routes } : {}),
         acceptanceCriteriaIds: i.req.acceptanceCriteria.map((a) => a.id),
+        scopeItemIds: (i.req.scopeItems ?? []).map((x) => x.id),
         contractDiff: `${run.rel}/contract-diff.md`,
         ...(knowledge ? { knowledge } : {}),
         planPath: planRel,
@@ -117,6 +118,7 @@ export async function planChange(i: PlanInput): Promise<PlanOutcome> {
 
   const ctx = {
     acIds: i.req.acceptanceCriteria.map((a) => a.id),
+    scopeIds: (i.req.scopeItems ?? []).map((x) => x.id),
     requirementsMissing: i.req.source === "none",
     testRepo: i.cwd,
     serviceRepo: i.repo,

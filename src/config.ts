@@ -105,12 +105,30 @@ export const ConfigSchema = z.object({
       /** When true, generation refuses to run without requirements (gap reports still run and say so). */
       required: z.boolean().default(false),
       storyKeyPattern: z.string().default("[A-Z][A-Z0-9]+-\\d+"),
+      /**
+       * Scope items: what the story expects beyond its ACs (tech scope, expected results). Each list item under one
+       * of these headings becomes an item (TS-1, ER-1, …) that is checked for implementation and traced like an AC,
+       * but marked as not agreed as acceptance criteria.
+       */
+      scope: z
+        .object({
+          enabled: z.boolean().default(true),
+          sections: z
+            .array(z.object({ prefix: z.string().regex(/^[A-Z]{1,4}$/), name: z.string(), headings: z.array(z.string()).min(1) }))
+            .default([
+              { prefix: "TS", name: "Tech scope", headings: ["tech scope", "technical scope", "technical details", "tech details", "scope"] },
+              { prefix: "ER", name: "Expected result", headings: ["expected result", "expected results", "expected behaviour", "expected behavior", "expected outcome"] },
+            ]),
+        })
+        .default({}),
       jira: z
         .object({
           baseUrl: z.string().optional(),
           projectKeys: z.array(z.string()).default([]),
           /** Custom field holding acceptance criteria, e.g. customfield_10045 (else they are read from the description). */
           acceptanceCriteriaField: z.string().optional(),
+          /** Extra fields that describe the expected behaviour beyond the ACs, read as scope items (e.g. a "Tech scope" field). */
+          scopeFields: z.array(z.object({ field: z.string(), name: z.string(), prefix: z.string().regex(/^[A-Z]{1,4}$/) })).default([]),
           /** Statuses that mean the story is agreed and testable. Anything else is "unverified". */
           approvedStatuses: z.array(z.string()).default(["Ready for Development", "Ready for Dev", "Selected for Development", "In Progress", "In Development", "In Review", "In QA", "Ready for QA", "Done"]),
         })

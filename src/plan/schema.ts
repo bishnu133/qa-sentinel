@@ -125,6 +125,26 @@ export const DecisionSchema = z
   })
   .strict();
 
+/**
+ * Is each requirement item (AC, tech-scope or expected-result item) built by this change?
+ *   implemented · partial · not-found (nothing in this change does it) · conflict (code does something else) ·
+ *   elsewhere (belongs to another service/repo of the story) · not-applicable (no code needed, e.g. wording only)
+ */
+export const IMPLEMENTATION = ["implemented", "partial", "not-found", "conflict", "elsewhere", "not-applicable"] as const;
+
+export const RequirementStatusSchema = z
+  .object({
+    id: z.string(),
+    status: z.enum(IMPLEMENTATION),
+    /** Where it is built (file:line) or which service should build it (elsewhere). */
+    where: opt(z.string()),
+    /** Scope items only: the ACs that already express this item. Empty = the story's ACs don't cover it. */
+    coveredByAcs: z.array(z.string()).default([]),
+    note: opt(z.string()),
+    evidence: z.array(EvidenceSchema).default([]),
+  })
+  .strict();
+
 export const TestPlanSchema = z
   .object({
     schemaVersion: z.literal(1),
@@ -148,6 +168,7 @@ export const TestPlanSchema = z
       )
       .default([]),
     specDrift: z.array(z.string()).default([]),
+    requirementStatus: z.array(RequirementStatusSchema).default([]),
     suspicious: z.array(z.object({ file: z.string(), excerpt: z.string(), why: z.string() }).strict()).default([]),
     openQuestions: z.array(z.string()).default([]),
     skipReason: z.string().nullable().default(null),
@@ -158,6 +179,7 @@ export type Evidence = z.infer<typeof EvidenceSchema>;
 export type SetupStep = z.infer<typeof SetupStepSchema>;
 export type Scenario = z.infer<typeof ScenarioSchema>;
 export type Change = z.infer<typeof ChangeSchema>;
+export type RequirementStatus = z.infer<typeof RequirementStatusSchema>;
 export type Decision = z.infer<typeof DecisionSchema>;
 export type TestPlan = z.infer<typeof TestPlanSchema>;
 export type RiskFactor = (typeof RISK_FACTORS)[number];

@@ -18,6 +18,8 @@ export const RequirementSnapshotSchema = z.object({
   storyKey: z.string().optional(),
   title: z.string().optional(),
   acceptanceCriteria: z.array(z.object({ id: z.string(), text: z.string() })),
+  /** What the story expects beyond its ACs (tech scope, expected results): TS-1, ER-1, … Not agreed as ACs. */
+  scopeItems: z.array(z.object({ id: z.string(), text: z.string(), source: z.string() })).default([]),
   /**
    * Only a tracker can say a story is approved: Jira stories in requirements.jira.approvedStatuses are `approved`.
    * `unverified` = text found but approval unknown (MR text, story files, other Jira statuses); `missing` = nothing found.
@@ -44,6 +46,48 @@ export function extractStoryKey(pattern: string, ...texts: (string | undefined)[
  * Parse acceptance criteria from markdown/plain text: numbered or bulleted items under a heading or line
  * containing "acceptance criteria" (case-insensitive). Falls back to "Given/When/Then" blocks.
  */
+/**
+ * Scope items: list items (or, without a list, non-empty lines) under a heading that names a configured section,
+ * e.g. "## Tech scope" or "*Expected results:*". Stops at the next heading.
+ */
+export function parseScopeItems(text: string, sections: { prefix: string; name: string; headings: string[] }[]): { id: string; text: string; source: string }[] {
+  const lines = text.split(/\r?\n/);
+  const out: { id: string; text: string; source: string }[] = [];
+  const counters = new Map<string, number>();
+  const headingOf = (l: string) => {
+    const t = l.trim();
+    const isHeading = /^#{1,6}\s/.test(t) || /^h[1-6]\.\s/.test(t) || /^\*{1,2}[^*]+\*{1,2}:?$/.test(t) || /^[A-Za-z][\w ()/&-]{2,40}:$/.test(t);
+    if (!isHeading) return undefined;
+    return t.replace(/^#{1,6}\s+|^h[1-6]\.\s+/, "").replace(/[*_:]/g, "").trim().toLowerCase();
+  };
+  for (let i = 0; i < lines.length; i++) {
+    const h = headingOf(lines[i]);
+    if (h === undefined) continue;
+    const section = sections.find((s) => s.headings.some((x) => x.toLowerCase() === h));
+    if (!section) continue;
+    const items: string[] = [];
+    const loose: string[] = [];
+    for (let j = i + 1; j < lines.length; j++) {
+      const raw = lines[j];
+      if (headingOf(raw) !== undefined) break;
+      const l = raw.trim();
+      const m = l.match(/^(?:\d+[.)]|[-*+•]|#)\s+(.*)$/);
+      if (m) items.push(m[1].trim());
+      else if (l && items.length && /^\s{2,}/.test(raw)) items[items.length - 1] += " " + l;
+      else if (l) loose.push(l);
+    }
+    for (const t of items.length ? items : loose) {
+      const n = (counters.get(section.prefix) ?? 0) + 1;
+      counters.set(section.prefix, n);
+      out.push({ id: `${section.prefix}-${n}`, text: t, source: section.name });
+    }
+  }
+  return out;
+}
+
+/** Every requirement item a test or plan may cite: the ACs, then the scope items. */
+export const requirementItems = (s: Pick<RequirementSnapshot, "acceptanceCriteria" | "scopeItems">) => [...s.acceptanceCriteria, ...(s.scopeItems ?? [])];
+
 export function parseAcceptanceCriteria(text: string): { id: string; text: string }[] {
   const lines = text.split(/\r?\n/);
   const start = lines.findIndex((l) => /acceptance criteria/i.test(l));
@@ -51,7 +95,7 @@ export function parseAcceptanceCriteria(text: string): { id: string; text: strin
   if (start >= 0) {
     for (const raw of lines.slice(start + 1)) {
       const l = raw.trim();
-      if (/^#{1,6}\s/.test(l) && items.length) break; // next section
+      if ((/^#{1,6}\s/.test(l) || /^h[1-6]\.\s/.test(l) || /^\*{1,2}[^*]+\*{1,2}:?$/.test(l) || /^[A-Za-z][\w ()/&-]{2,40}:$/.test(l)) && items.length) break; // next section
       const m = l.match(/^(?:\d+[.)]|[-*+]|AC-?\d+[:.)]?)\s+(.*)$/i);
       if (m) items.push(m[1].trim());
       else if (l && items.length && /^\s{2,}/.test(raw)) items[items.length - 1] += " " + l; // continuation line
@@ -73,11 +117,13 @@ function snapshot(
 ): RequirementSnapshot {
   const { keyHints = [], ...rest } = extra;
   const acceptanceCriteria = parseAcceptanceCriteria(rawText);
+  const scopeItems = c.requirements.scope.enabled ? parseScopeItems(rawText, c.requirements.scope.sections) : [];
   const hasText = rawText.trim().length > 0;
   return RequirementSnapshotSchema.parse({
     schemaVersion: 1,
     source,
     acceptanceCriteria,
+    scopeItems,
     approvalStatus: hasText ? "unverified" : "missing",
     rawText,
     capturedAt: new Date().toISOString(),
@@ -133,8 +179,9 @@ export async function resolveRequirements(c: Config, o: ResolveOptions): Promise
     const key = extractStoryKey(jiraKeyPattern(c), ...keys);
     const jctx = jiraContext(c.requirements.jira.baseUrl, env);
     if (key && jctx) {
-      const issue = await fetchIssue(jctx, key, c.requirements.jira.acceptanceCriteriaField);
-      const text = [`# ${issue.key} ${issue.summary}`, issue.description, issue.acceptanceCriteria ? `## Acceptance criteria\n${issue.acceptanceCriteria}` : ""].filter(Boolean).join("\n\n");
+      const issue = await fetchIssue(jctx, key, c.requirements.jira.acceptanceCriteriaField, c.requirements.jira.scopeFields.map((f) => f.field));
+      const scopeFields = c.requirements.jira.scopeFields.filter((f) => issue.extra?.[f.field]).map((f) => `## ${f.name}\n${issue.extra![f.field]}`);
+      const text = [`# ${issue.key} ${issue.summary}`, issue.description, issue.acceptanceCriteria ? `## Acceptance criteria\n${issue.acceptanceCriteria}` : "", ...scopeFields].filter(Boolean).join("\n\n");
       const snap = snapshot("jira", text, c, { sourceUrl: issue.url, revision: issue.updated, title: issue.summary, trackerStatus: issue.status, storyKey: issue.key });
       const approved = c.requirements.jira.approvedStatuses.some((s) => s.toLowerCase() === issue.status.toLowerCase());
       return { ...snap, approvalStatus: snap.rawText.trim() ? (approved ? "approved" : "unverified") : "missing" };
@@ -183,6 +230,12 @@ export function storyMarkdown(s: RequirementSnapshot): string {
     s.acceptanceCriteria.length
       ? `Parsed acceptance criteria: ${s.acceptanceCriteria.map((a) => a.id).join(", ")} (cite these ids).`
       : "No numbered acceptance criteria could be parsed; treat expected behaviour as AMBIGUOUS unless the text states it precisely.",
+    ...(s.scopeItems?.length
+      ? [
+          `Scope items (expected behaviour written outside the ACs; cite these ids too, but they are not agreed acceptance criteria):`,
+          ...s.scopeItems.map((x) => `- ${x.id} (${x.source}): ${x.text}`),
+        ]
+      : []),
     "",
   ];
   return header.join("\n") + s.rawText;
@@ -192,5 +245,5 @@ export function requirementsLine(s: RequirementSnapshot): string {
   if (s.source === "none") return "**Requirements:** none found. Tests can only be checked against the API contract and code.";
   const where = s.sourceUrl ? `[${s.source}](${s.sourceUrl})` : s.source;
   const status = s.trackerStatus ? ` (status "${s.trackerStatus}")` : "";
-  return `**Requirements:** ${s.storyKey ?? s.title ?? "story"} from ${where}${s.revision ? ` @ ${s.revision}` : ""} · ${s.acceptanceCriteria.length} AC parsed · approval ${s.approvalStatus}${status}`;
+  return `**Requirements:** ${s.storyKey ?? s.title ?? "story"} from ${where}${s.revision ? ` @ ${s.revision}` : ""} · ${s.acceptanceCriteria.length} AC parsed${s.scopeItems?.length ? ` · ${s.scopeItems.length} scope item(s)` : ""} · approval ${s.approvalStatus}${status}`;
 }

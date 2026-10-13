@@ -89,6 +89,22 @@ qa-generate:
     expire_in: 2 weeks
 
 {{/if}}
+# Story review before development: start a pipeline with QA_STORY_REVIEW_KEY=SHOP-12 (e.g. from a Jira Automation
+# rule "when an issue moves to Ready for Dev → send web request" to this project's pipeline trigger URL).
+qa-story-review:
+  extends: .qa-node
+  stage: test
+  rules:
+    - if: $QA_STORY_REVIEW_KEY
+  script:
+    - npm i -g --no-audit --no-fund --loglevel=error @anthropic-ai/claude-code
+    - !reference [.qa-sentinel-install, script]
+    - qa-sentinel review-story --story "$QA_STORY_REVIEW_KEY" --post
+  artifacts:
+    when: always
+    paths: [qa-story-review.md, .qa-sentinel/runs/]
+    expire_in: 2 weeks
+
 # Blocking gate for agent MRs (and any MR touching tests): the same independent checks qa-sentinel runs after
 # generation – write policy, type-check, changed specs with JUnit. Fails unless VERIFIED.
 qa-agent-mr-checks:

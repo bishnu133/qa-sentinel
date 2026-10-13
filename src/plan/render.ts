@@ -29,6 +29,39 @@ export interface RenderInput {
   traceability?: string;
   /** Decision-engine rule per change id. */
   rules?: Record<string, string>;
+  /** The story's items (ACs, then scope items) with their text, for the "is it built?" table. */
+  items?: { id: string; text: string; source?: string }[];
+}
+
+export const BUILT: Record<string, string> = {
+  implemented: "✅ Built",
+  partial: "🟡 Partly built",
+  "not-found": "⛔ Not found in this change",
+  conflict: "⚠️ Built differently",
+  elsewhere: "↗️ In another service",
+  "not-applicable": "– No code needed",
+};
+
+/** "Is the story built?": one row per AC and scope item, then scope items no AC covers. */
+export function implementationMarkdown(plan: TestPlan, items: { id: string; text: string; source?: string }[]): string {
+  if (!plan.requirementStatus?.length || !items.length) return "";
+  const byId = new Map(plan.requirementStatus.map((r) => [r.id, r]));
+  const rows = items.map((it) => {
+    const r = byId.get(it.id);
+    const where = r ? [r.where, r.note].filter(Boolean).join(" – ") : "";
+    return `| ${it.id}${it.source ? ` _(${it.source})_` : ""} | ${esc(it.text.length > 110 ? `${it.text.slice(0, 109)}…` : it.text)} | ${r ? BUILT[r.status] : "–"} | ${esc(where)} |`;
+  });
+  const uncovered = items.filter((it) => it.source && byId.get(it.id)?.coveredByAcs.length === 0);
+  return [
+    "**Is the story built?** (every acceptance criterion and scope item, checked against the code)",
+    "",
+    "| Item | Expected | Status | Where / note |",
+    "| --- | --- | --- | --- |",
+    ...rows,
+    ...(uncovered.length
+      ? ["", `**Expected by the story but not in any acceptance criterion** (suggest adding an AC, so it is agreed and tested): ${uncovered.map((u) => `${u.id} (${esc(u.text.slice(0, 80))})`).join("; ")}`]
+      : []),
+  ].join("\n");
 }
 
 /** Decision table: the shared core of gap reports and MR descriptions. */
@@ -68,6 +101,8 @@ export function renderGapReport(i: RenderInput): string {
     out.push("");
   }
 
+  const built = implementationMarkdown(plan, i.items ?? []);
+  if (built) out.push(built, "");
   if (i.regression) out.push(i.regression, "");
 
   const scenarios = plan.decisions.filter((d) => ["create", "update", "review"].includes(d.decision)).flatMap((d) => d.proposedScenarios.map((s) => ({ d, s })));

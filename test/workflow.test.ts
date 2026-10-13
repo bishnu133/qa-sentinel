@@ -23,6 +23,7 @@ const webPlan = (scenario: Record<string, unknown>, change: Record<string, unkno
   recommendedAction: "a",
   changes: [{ id: "c1", type: "ui-change", page: "/orders/:id", summary: "order page shows payment", observable: true, requirementIds: ["AC-1"], oracleStatus: "approved", riskFactors: ["ui-visible"], evidence: ev, ...change }],
   decisions: [{ changeId: "c1", coverage: "missing", decision: "create", existingTests: [], proposedScenarios: [{ title: "shows payment status", requirementIds: ["AC-1"], assertions: ["payment shows authorised"], ...scenario }], evidence: [], reason: "new" }],
+  requirementStatus: [{ id: "AC-1", status: "implemented", evidence: ev }],
 });
 const ctx = { acIds: ["AC-1"], requirementsMissing: false, testRepo, serviceRepo, layers: ["api", "web"] as ("api" | "web")[], defaultLayer: "web" as const };
 

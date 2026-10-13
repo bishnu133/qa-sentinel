@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 import { ClaudeAccessError } from "./claude.js";
 import { Command, Option } from "commander";
-import { addWebCommand, initCommand } from "./commands/init.js";
+import { addWebCommand, initCommand, upgradeCommand } from "./commands/init.js";
 import { healedCommand } from "./commands/healed.js";
+import { reviewStoryCommand } from "./commands/reviewStoryCmd.js";
 import { learnCommand } from "./commands/learn.js";
 import { doctorCommand } from "./commands/doctor.js";
 import { gapReportCommand } from "./commands/gapReport.js";
@@ -55,10 +56,25 @@ program
   );
 
 program
+  .command("upgrade")
+  .description("after updating qa-sentinel: refresh its agents, skills, CI templates and project context (keeps your learned conventions)")
+  .action(wrap(async () => upgradeCommand({ cwd: cwd() })));
+
+program
   .command("add-web")
   .description("add the web (Playwright UI) test layer to an existing qa-sentinel project")
   .addOption(new Option("--healing <mode>", "none | bubblegum (runtime locator healing in scheduled runs)").choices(["none", "bubblegum"]))
   .action(wrap(async (o) => void addWebCommand({ cwd: cwd(), healing: o.healing })));
+
+program
+  .command("review-story")
+  .description("review a story before development: ambiguous ACs, missing negative/edge cases, scope without an AC")
+  .option("--story <key>", "Jira story key")
+  .option("--story-file <path>", "story as a markdown file")
+  .option("--post", "post the review as a comment on the Jira story (updated in place)")
+  .option("-o, --out <file>", "markdown output", "qa-story-review.md")
+  .option("--dry-run", "prepare the inputs without calling the agent")
+  .action(wrap(async (o) => reviewStoryCommand({ cwd: cwd(), story: o.story, storyFile: o.storyFile, post: o.post, out: o.out, dryRun: o.dryRun })));
 
 program
   .command("healed")

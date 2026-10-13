@@ -7,6 +7,8 @@ import { checkWorkflow, normaliseSetup } from "./workflow.js";
 export interface PlanContext {
   /** AC ids from the requirement snapshot (AC-1, AC-2, …). Empty when none were parsed. */
   acIds: string[];
+  /** Scope item ids (TS-1, ER-1, …): citable like ACs, and checked for implementation status. */
+  scopeIds?: string[];
   /** True when no requirements were found at all. */
   requirementsMissing: boolean;
   testRepo: string;
@@ -59,7 +61,7 @@ export function validatePlan(raw: unknown, ctx: PlanContext): PlanValidation {
     ids.add(c.id);
   }
   const byId = new Map(plan.changes.map((c) => [c.id, c]));
-  const acSet = new Set(ctx.acIds);
+  const acSet = new Set([...ctx.acIds, ...(ctx.scopeIds ?? [])]);
   const checkReqIds = (where: string, reqIds: string[]) => {
     if (!reqIds.length) return;
     if (ctx.requirementsMissing) errors.push(`${where}: cites ${reqIds.join(", ")} but no requirements were provided; leave requirementIds empty`);
@@ -163,6 +165,27 @@ export function validatePlan(raw: unknown, ctx: PlanContext): PlanValidation {
   for (const t of plan.impactedTests) if (!exists(ctx.testRepo, t.file)) errors.push(`impactedTests: not found: ${t.file}`);
   if (plan.skipReason && plan.changes.some((c) => c.observable)) errors.push("skipReason is set but there are observable changes");
   for (const m of plan.acMismatches) if (m.requirementId) checkReqIds("acMismatches", [m.requirementId]);
+
+  // Is the story built? Every AC and scope item gets exactly one implementation status, backed by evidence.
+  const items = [...ctx.acIds, ...(ctx.scopeIds ?? [])];
+  const seen = new Map<string, number>();
+  for (const r of plan.requirementStatus) {
+    const where = `requirementStatus ${r.id}`;
+    if (!acSet.has(r.id)) errors.push(`${where}: unknown requirement id (known: ${items.join(", ") || "none"})`);
+    seen.set(r.id, (seen.get(r.id) ?? 0) + 1);
+    if (["implemented", "partial", "conflict"].includes(r.status) && !r.evidence.length) errors.push(`${where}: "${r.status}" needs evidence (the code that does it)`);
+    if (r.status === "elsewhere" && !r.where) errors.push(`${where}: "elsewhere" must say which service or repo should build it ("where")`);
+    for (const a of r.coveredByAcs) if (!ctx.acIds.includes(a)) errors.push(`${where}: coveredByAcs cites ${a}, which is not an AC`);
+    if (r.status === "conflict" && !plan.acMismatches.some((m) => m.requirementId === r.id) && !plan.changes.some((ch) => ch.oracleStatus === "conflicting" && ch.requirementIds.includes(r.id)))
+      warnings.push(`${where}: marked "conflict" but no acMismatch or conflicting change cites it`);
+  }
+  if (!ctx.requirementsMissing) {
+    for (const id of items) {
+      const n = seen.get(id) ?? 0;
+      if (n === 0) errors.push(`requirementStatus: ${id} has no implementation status (implemented, partial, not-found, conflict, elsewhere or not-applicable)`);
+      if (n > 1) errors.push(`requirementStatus: ${id} appears ${n} times; give exactly one`);
+    }
+  }
 
   return { ok: errors.length === 0, plan, errors, corrections, warnings, rules };
 }

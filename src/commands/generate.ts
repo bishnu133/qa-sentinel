@@ -6,7 +6,7 @@ import { matchesAny } from "../fsutil.js";
 import { formatUsage } from "../claude.js";
 import { useEnvironment, ARTIFACT_GLOBS, VERSION, agentEnv, bashRulesForTests, cleanAgentAnswer, createRunDir, findService, startManifest, testEnv, writeManifest } from "../run.js";
 import { checkContent, checkPaths, checkServiceUntouched, findingsMarkdown, generatePolicy, snapshotTree, violations } from "../guardrails.js";
-import { resolveRequirements, storyMarkdown } from "../requirements.js";
+import { requirementItems, resolveRequirements, storyMarkdown } from "../requirements.js";
 import { findDiscrepancies, verifyChanges } from "../verification.js";
 import { mrDescription } from "../reporting.js";
 import { generationSummary } from "../reporting/jiraSummary.js";
@@ -84,7 +84,7 @@ export async function generateCommand(o: GenerateOptions): Promise<number> {
     if (c.requirements.required) throw new Error("No requirements found for this change and requirements.required is true. Pass --story-file or link the MR/story.");
     log.warn("no requirements found: tests can only be checked against the contract and code");
   } else {
-    log.step(`requirements: ${req.storyKey ?? req.title ?? req.source} (${req.acceptanceCriteria.length} AC, ${req.source}, ${req.approvalStatus})`);
+    log.step(`requirements: ${req.storyKey ?? req.title ?? req.source} (${req.acceptanceCriteria.length} AC${req.scopeItems?.length ? ` + ${req.scopeItems.length} scope item(s)` : ""}, ${req.source}, ${req.approvalStatus})`);
   }
 
   const sha8 = cs.head.slice(0, 8);
@@ -229,11 +229,11 @@ export async function generateCommand(o: GenerateOptions): Promise<number> {
   fs.writeFileSync(path.join(run.dir, "test-index.json"), JSON.stringify(index, null, 2));
   const changedFiles = changes.filter((x) => x.status !== "D").map((x) => x.path);
   const traceFindings = [
-    ...checkNewTests(index, changedFiles, req.storyKey, req.acceptanceCriteria.map((a) => a.id)),
+    ...checkNewTests(index, changedFiles, req.storyKey, requirementItems(req).map((a) => a.id)),
     ...checkTestMap(index, readTestMap(cwd), cwd).filter((f) => f.level === "warning" && changedFiles.some((cf) => f.file.startsWith(cf) || f.file === "test-map.yaml")),
   ];
   findings.push(...traceFindings.map((f) => ({ level: "warning" as const, rule: "traceability" as const, file: f.file, message: f.message })));
-  const trace = traceStory(index, req.storyKey, req.acceptanceCriteria);
+  const trace = traceStory(index, req.storyKey, requirementItems(req));
 
   // Independent review of the changed tests (fresh read-only agent; advisory, never changes verification).
   let review: ReviewOutcome = { status: "skipped", errors: [], runs: [] };
@@ -312,7 +312,7 @@ export async function generateCommand(o: GenerateOptions): Promise<number> {
       });
       log.ok(`merge request ${mr.action}: ${mr.web_url}`);
       if (c.reporting.targets.includes("jira")) {
-        const acText = new Map(req.acceptanceCriteria.map((a) => [a.id, a.text]));
+        const acText = new Map(requirementItems(req).map((a) => [a.id, a.text]));
         const jiraSummary = generationSummary({
           service: service.name,
           risk: planned.risked.overall,

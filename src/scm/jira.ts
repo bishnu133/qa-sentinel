@@ -28,10 +28,12 @@ export interface JiraIssue {
   status: string;
   url: string;
   updated?: string;
+  /** Extra fields asked for (scope fields), as text. */
+  extra?: Record<string, string>;
 }
 
-export async function fetchIssue(ctx: JiraContext, key: string, acField?: string): Promise<JiraIssue> {
-  const fields = ["summary", "description", "status", "updated", ...(acField ? [acField] : [])].join(",");
+export async function fetchIssue(ctx: JiraContext, key: string, acField?: string, extraFields: string[] = []): Promise<JiraIssue> {
+  const fields = ["summary", "description", "status", "updated", ...(acField ? [acField] : []), ...extraFields].join(",");
   const res = await netFetch(`${ctx.baseUrl}/rest/api/2/issue/${encodeURIComponent(key)}?fields=${fields}`, {
     headers: { Authorization: ctx.authHeader, Accept: "application/json" },
   });
@@ -46,6 +48,7 @@ export async function fetchIssue(ctx: JiraContext, key: string, acField?: string
     status: String(f.status?.name ?? ""),
     url: `${ctx.baseUrl}/browse/${j.key ?? key}`,
     updated: f.updated,
+    extra: Object.fromEntries(extraFields.map((x) => [x, toText(f[x])]).filter(([, v]) => v)),
   };
 }
 

@@ -308,7 +308,7 @@ function writeKbReadme(cwd: string, c: Config) {
 
 function ensureGitignore(cwd: string) {
   const file = path.join(cwd, ".gitignore");
-  const wanted = [".qa-sentinel/runs/", "qa-sentinel-summary.md", "qa-gap-report.md", "qa-regression.txt", "qa-feature-*", "qa-showcase.md", "qa-showcase/", "qa-verify.md", "test-results/", "playwright-report/", "node_modules/", ".env"];
+  const wanted = [".qa-sentinel/runs/", "qa-sentinel-summary.md", "qa-gap-report.md", "qa-regression.txt", "qa-feature-*", "qa-showcase.md", "qa-showcase/", "qa-verify.md", "qa-healed.md", "qa-healed.json", "qa-story-review.md", "test-results/", "playwright-report/", "node_modules/", ".env"];
   const current = fs.existsSync(file) ? fs.readFileSync(file, "utf8") : "";
   const have = new Set(current.split(/\r?\n/).map((l) => l.trim()));
   const missing = wanted.filter((l) => !have.has(l));
@@ -395,4 +395,64 @@ export function addWebCommand(o: { cwd: string; healing?: "none" | "bubblegum" }
   log.info(`Then: npx playwright install chromium (or QA_BROWSER_CHANNEL=chrome), set ${c.tests.web.baseUrlEnv}, and run qa-sentinel doctor.`);
   if (c.tests.web.healing === "bubblegum") log.info(`Healing: npm i -D ${c.tests.web.bubblegum.package} && pip install "bubblegum-ai[web]".`);
   return c;
+}
+
+/**
+ * Upgrades: write agents and skills a newer qa-sentinel ships but this repo doesn't have yet (never overwrites a
+ * team's edited copy). Called by the commands that rely on them.
+ */
+export function ensureAgentFiles(cwd: string, c: Config): string[] {
+  const vars = templateVars(c);
+  const added: string[] = [];
+  const put = (rel: string, tpl: string) => {
+    if (fs.existsSync(path.join(cwd, rel))) return;
+    fs.mkdirSync(path.dirname(path.join(cwd, rel)), { recursive: true });
+    fs.writeFileSync(path.join(cwd, rel), render(readTemplate(tpl), vars));
+    added.push(rel);
+  };
+  for (const f of listTemplateDir("agents")) put(`.claude/agents/${f}`, `agents/${f}`);
+  for (const f of listTemplateDir("skills")) {
+    if (f.startsWith("write-web-test/") && !c.tests.web.enabled) continue;
+    put(`.claude/skills/${f}`, `skills/${f}`);
+  }
+  if (added.length) log.dim(`  added ${added.join(", ")} (new in this qa-sentinel version)`);
+  return added;
+}
+
+/**
+ * `qa-sentinel upgrade`: refresh the files qa-sentinel owns after updating the package: agents, skills (except the
+ * write-*-test skills, which hold your learned conventions; those are only added when missing), the CI templates
+ * in ci/qa-sentinel/ and .claude/qa-sentinel.md. Review with git diff and commit.
+ */
+export function upgradeCommand(o: { cwd: string }): number {
+  const cwd = path.resolve(o.cwd);
+  const c = loadConfig(cwd);
+  const vars = templateVars(c);
+  const changed: string[] = [];
+  const write = (rel: string, content: string, overwrite: boolean) => {
+    const abs = path.join(cwd, rel);
+    const before = fs.existsSync(abs) ? fs.readFileSync(abs, "utf8") : undefined;
+    if (before !== undefined && (!overwrite || before === content)) return;
+    fs.mkdirSync(path.dirname(abs), { recursive: true });
+    fs.writeFileSync(abs, content);
+    changed.push(`${before === undefined ? "added  " : "updated"} ${rel}`);
+  };
+  for (const f of listTemplateDir("agents")) write(`.claude/agents/${f}`, render(readTemplate(`agents/${f}`), vars), true);
+  for (const f of listTemplateDir("skills")) {
+    if (f.startsWith("write-web-test/") && !c.tests.web.enabled) continue;
+    write(`.claude/skills/${f}`, render(readTemplate(`skills/${f}`), vars), !/^write-(api|web|mobile)-test\//.test(f));
+  }
+  write(".claude/qa-sentinel.md", render(readTemplate("claude/qa-sentinel.md"), vars), true);
+  const ciDir = `ci/${c.ci.platform}`;
+  for (const f of listTemplateDir(ciDir)) {
+    if (c.level === "intelligence" && f === "Jenkinsfile.generate") continue;
+    write(`ci/qa-sentinel/${f}`, render(readTemplate(`${ciDir}/${f}`), vars), true);
+  }
+  ensureGitignore(cwd);
+  if (!changed.length) log.ok("everything qa-sentinel owns is up to date");
+  else {
+    changed.forEach((x) => log.dim(`  ${x}`));
+    log.ok(`${changed.length} file(s) refreshed. Review with git diff, then commit. Your write-*-test skills (learned conventions) were kept.`);
+  }
+  return 0;
 }
