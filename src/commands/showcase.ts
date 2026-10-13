@@ -28,6 +28,8 @@ export interface ShowcaseOptions {
   story?: string[];
   storyFile?: string;
   results?: string;
+  /** Mobile result files (written by the mobile evidence hooks); default test-results/mobile. */
+  mobileResults?: string;
   env?: string;
   force?: boolean;
   dryRun?: boolean;
@@ -43,8 +45,10 @@ export async function showcaseCommand(o: ShowcaseOptions): Promise<number> {
   const c = loadConfig(cwd);
   const environment = o.env || c.verification.defaultEnvironment ? useEnvironment(c, o.env, {}) : undefined;
   const resultsFile = path.resolve(cwd, o.results ?? (fs.existsSync(path.join(cwd, "test-results/results.json")) ? "test-results/results.json" : "test-results/junit.xml"));
-  if (!fs.existsSync(resultsFile)) throw new Error(`No test results at ${path.relative(cwd, resultsFile)}. Run the suite first (Playwright: add the json reporter, see the scaffold's playwright.config.ts).`);
-  const results = readRunResults(resultsFile);
+  const mobileDir = c.tests.mobile.enabled ? path.resolve(cwd, o.mobileResults ?? "test-results/mobile") : undefined;
+  const haveMobile = Boolean(mobileDir && fs.existsSync(mobileDir) && fs.statSync(mobileDir).isDirectory());
+  if (!fs.existsSync(resultsFile) && !haveMobile) throw new Error(`No test results at ${path.relative(cwd, resultsFile)}. Run the suite first (Playwright: add the json reporter, see the scaffold's playwright.config.ts).`);
+  const results = [...(fs.existsSync(resultsFile) ? readRunResults(resultsFile) : []), ...(haveMobile ? readRunResults(mobileDir!) : [])];
   const index = indexTests(cwd, c);
   const ctx = jiraContext(c.requirements.jira.baseUrl);
   const stories = o.story?.length ? o.story : [...new Set(index.flatMap((t) => t.stories))].sort();

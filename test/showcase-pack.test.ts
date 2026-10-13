@@ -38,7 +38,7 @@ const r: StoryReadiness = {
 describe("showcase pack", () => {
   it("picks one test per AC: @showcase first, then a web test", () => {
     const picks = pickShowcaseTests(c, r);
-    expect(picks.map((p) => [p.ac, p.test.title, p.web])).toEqual([
+    expect(picks.map((p) => [p.ac, p.test.title, p.ui])).toEqual([
       ["AC-1", "shows the total", true],
       ["AC-2", "shows the price", true],
     ]);

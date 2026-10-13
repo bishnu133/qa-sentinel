@@ -58,6 +58,7 @@ export function runChecks(cwd: string, env: NodeJS.ProcessEnv = process.env): Ch
     const dir = path.resolve(cwd, s.path);
     if (!fs.existsSync(dir)) add("fail", `service ${s.name}: ${s.path} exists`, "check the path or clone the repo into the workspace");
     else if (!isGitRepo(dir)) add("fail", `service ${s.name}: is a git repo`);
+    else if (s.kind === "mobile") add(c.tests.mobile.enabled ? "ok" : "warn", `service ${s.name} (mobile app)`, c.tests.mobile.enabled ? undefined : "enable tests.mobile (`qa-sentinel add-mobile`) to test it through the app");
     else if (s.kind === "web") add(c.tests.web.enabled ? "ok" : "warn", `service ${s.name} (web front end${s.routes.length ? `, ${s.routes.length} routes` : ""})`, c.tests.web.enabled ? undefined : "enable tests.web (`qa-sentinel add-web`) to test it through the UI");
     else if (!s.openapi) add("warn", `service ${s.name}: OpenAPI spec`, "add one (or `openapi:` path) for much better API tests");
     else if (!fs.existsSync(path.join(dir, s.openapi))) add("warn", `service ${s.name}: ${s.openapi} found`);
@@ -76,7 +77,7 @@ export function runChecks(cwd: string, env: NodeJS.ProcessEnv = process.env): Ch
   const index = indexTests(cwd, c);
   if (index.length) {
     const tagged = index.filter((t) => t.endpoints.length || t.pages.length).length;
-    add(tagged === index.length ? "ok" : "warn", `test tags: ${tagged}/${index.length} tests have @endpoint or @page`, tagged === index.length ? undefined : "tag tests so impact analysis and traceability can find them (`qa-sentinel trace`)");
+    add(tagged === index.length ? "ok" : "warn", `test tags: ${tagged}/${index.length} tests have @endpoint, @page or @screen`, tagged === index.length ? undefined : "tag tests so impact analysis and traceability can find them (`qa-sentinel trace`)");
     const mismatches = checkTestMap(index, readTestMap(cwd), cwd).filter((f) => f.level === "warning").length;
     if (mismatches) add("warn", `test-map.yaml agrees with test tags`, `${mismatches} mismatch(es); run \`qa-sentinel trace\``);
   }
@@ -85,6 +86,7 @@ export function runChecks(cwd: string, env: NodeJS.ProcessEnv = process.env): Ch
   else add("warn", `${c.tests.api.baseUrlEnv} set`, "needed for the agent to run tests against your QA environment");
 
   if (c.tests.web.enabled) checks.push(...webChecks(cwd, c, env));
+  if (c.tests.mobile.enabled) checks.push(...mobileChecks(cwd, c, env));
 
   if (c.ci.scm === "gitlab") {
     if (env.QA_SENTINEL_GITLAB_TOKEN || env.GITLAB_TOKEN) add("ok", "GitLab token set");
@@ -135,6 +137,22 @@ export function webChecks(cwd: string, c: Config, env: NodeJS.ProcessEnv): Check
     py.status === 0 ? add("ok", "healing: Bubblegum engine importable (python3 -c 'import bubblegum')") : add("fail", "healing: Bubblegum engine installed", 'pip install "bubblegum-ai[web]" on the machine running the tests');
     add("ok", "healing runs only when QA_HEALING=bubblegum (scheduled/post-deploy jobs, feature --run); never while verifying agent-written tests");
   }
+  return out;
+}
+
+/** Mobile layer: scaffold, WebdriverIO installed, an app to test, and where Appium is (reachability is checked at run time). */
+export function mobileChecks(cwd: string, c: Config, env: NodeJS.ProcessEnv): Check[] {
+  const out: Check[] = [];
+  const add = (level: Level, label: string, hint?: string) => out.push({ level, label, hint });
+  const m = c.tests.mobile;
+  fs.existsSync(path.join(cwd, m.screensDir)) ? add("ok", `screen objects in ${m.screensDir}`) : add("warn", `screen objects folder ${m.screensDir}`, "run `qa-sentinel add-mobile` for the scaffold");
+  fs.existsSync(path.join(cwd, ".claude/skills/write-mobile-test/SKILL.md")) ? add("ok", ".claude/skills/write-mobile-test/SKILL.md") : add("fail", ".claude/skills/write-mobile-test/SKILL.md", "run `qa-sentinel add-mobile`");
+  fs.existsSync(path.join(cwd, "wdio.conf.ts")) ? add("ok", "wdio.conf.ts present") : add("warn", "wdio.conf.ts present", `run \`qa-sentinel add-mobile\` (or point tests.mobile.runCommand at your config)`);
+  fs.existsSync(path.join(cwd, "node_modules/@wdio/cli/package.json")) ? add("ok", "WebdriverIO installed") : add("warn", "WebdriverIO installed", "npm install (add-mobile added the @wdio packages to package.json)");
+  env.QA_APP || env.QA_APP_PACKAGE || env.QA_BUNDLE_ID
+    ? add("ok", `app under test: ${env.QA_APP ?? env.QA_APP_PACKAGE ?? env.QA_BUNDLE_ID}`)
+    : add("warn", "app under test (QA_APP, QA_APP_PACKAGE or QA_BUNDLE_ID)", "the .apk/.app to install, or the package/bundle id of an installed app");
+  add(env[m.appiumUrlEnv] ? "ok" : "warn", `Appium: ${env[m.appiumUrlEnv] ?? `${m.appiumUrl} (default)`}`, env[m.appiumUrlEnv] ? undefined : `set ${m.appiumUrlEnv} for a remote Appium or device farm; qa-sentinel checks <url>/status before running mobile tests`);
   return out;
 }
 

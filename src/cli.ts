@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { ClaudeAccessError } from "./claude.js";
 import { Command, Option } from "commander";
-import { addWebCommand, initCommand, upgradeCommand } from "./commands/init.js";
+import { addMobileCommand, addWebCommand, initCommand, upgradeCommand } from "./commands/init.js";
 import { healedCommand } from "./commands/healed.js";
 import { reviewStoryCommand } from "./commands/reviewStoryCmd.js";
 import { bugsCommand } from "./commands/bugs.js";
@@ -55,6 +55,7 @@ program
   .option("--workspace <dir>", "folder containing the service repos", "..")
   .option("--name <name>", "project name")
   .option("--web", "also set up web (Playwright UI) tests: page objects, ui helper, fixtures")
+  .option("--mobile", "also set up mobile (WebdriverIO + Appium) tests: screen objects, ui helper, evidence hooks")
   .option("-y, --yes", "accept detected defaults, no prompts")
   .option("--force", "overwrite generated files")
   .action(
@@ -73,6 +74,12 @@ program
   .description("add the web (Playwright UI) test layer to an existing qa-sentinel project")
   .addOption(new Option("--healing <mode>", "none | bubblegum (runtime locator healing in scheduled runs)").choices(["none", "bubblegum"]))
   .action(wrap(async (o) => void addWebCommand({ cwd: cwd(), healing: o.healing })));
+
+program
+  .command("add-mobile")
+  .description("add the mobile (WebdriverIO + Appium) test layer to an existing qa-sentinel project")
+  .addOption(new Option("--platform <platform>", "android | ios (default when QA_MOBILE_PLATFORM is not set)").choices(["android", "ios"]))
+  .action(wrap(async (o) => void addMobileCommand({ cwd: cwd(), platform: o.platform })));
 
 program
   .command("review-story")
@@ -185,6 +192,7 @@ program
   .option("--story <key...>", "only these stories (default: every story tagged in the tests)")
   .option("--story-file <file>", "acceptance criteria from a file instead of Jira (one story)")
   .option("--results <file>", "test results with attachments (default: test-results/results.json, else junit.xml)")
+  .option("--mobile-results <dir>", "mobile result files (default: test-results/mobile, when the mobile layer is on)")
   .option("--env <name>", "environment the run used, shown on the story")
   .option("--force", "attach again even if this story was already showcased")
   .option("--dry-run", "assess and list the files, attach nothing")

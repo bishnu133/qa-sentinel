@@ -4,7 +4,7 @@ import type { Scenario, SetupStep } from "./schema.js";
  * The cross-platform workflow planner, kept small: each scenario's preconditions are a dependency graph of setup
  * steps, checked in code against the test-data policy:
  *   - API or a test-data service first;
- *   - UI only for a web test, and only with a reason (no safe programmatic route);
+ *   - UI only for a web or mobile test, and only with a reason (no safe programmatic route);
  *   - DB helpers only with a reason, and only on isolated environments.
  * A web test then does exactly one thing through the browser: the behaviour under test.
  */
@@ -21,7 +21,7 @@ export interface WorkflowCheck {
   order: SetupStep[];
 }
 
-export function checkWorkflow(steps: SetupStep[], layer: "api" | "web", where: string): WorkflowCheck {
+export function checkWorkflow(steps: SetupStep[], layer: "api" | "web" | "mobile", where: string): WorkflowCheck {
   const errors: string[] = [];
   const warnings: string[] = [];
   const ids = new Set<string>();
@@ -33,7 +33,7 @@ export function checkWorkflow(steps: SetupStep[], layer: "api" | "web", where: s
     for (const d of s.dependsOn) if (!ids.has(d)) errors.push(`${where}: setup step ${s.id} depends on unknown step ${d}`);
     if (s.dependsOn.includes(s.id)) errors.push(`${where}: setup step ${s.id} depends on itself`);
     if (s.via === "ui") {
-      if (layer !== "web") errors.push(`${where}: setup step ${s.id} goes through the UI, but this is an ${layer} test; create the data through the API`);
+      if (layer === "api") errors.push(`${where}: setup step ${s.id} goes through the UI, but this is an ${layer} test; create the data through the API`);
       else if (!s.why) errors.push(`${where}: setup step ${s.id} goes through the UI; test data is created through the API unless there is no safe programmatic route (say why in "why", or use an API helper)`);
       else warnings.push(`${where}: setup step ${s.id} uses the UI (${s.why})`);
     }
@@ -66,6 +66,6 @@ export function topoOrder(steps: SetupStep[]): SetupStep[] {
 export function workflowLine(sc: Pick<Scenario, "setup" | "layer" | "page">): string {
   const steps = topoOrder(normaliseSetup(sc.setup));
   const parts = steps.map((s) => `${s.action} _(${s.via}${s.helper ? `: ${s.helper}` : ""})_`);
-  if (sc.layer === "web") parts.push(`**web**${sc.page ? ` \`${sc.page}\`` : ""}`);
+  if (sc.layer === "web" || sc.layer === "mobile") parts.push(`**${sc.layer}**${sc.page ? ` \`${sc.page}\`` : ""}`);
   return parts.join(" → ");
 }

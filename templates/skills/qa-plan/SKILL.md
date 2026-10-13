@@ -77,8 +77,8 @@ For a single-line or trivial diff you may do steps 2 and 3 yourself, but the rul
 `context.json` lists the repo's `testLayers` (api, and web when enabled) and the `serviceLayer` this service is tested on first (web for a front end).
 
 - A front-end change: `"type": "ui-change"` (or business-rule / validation-change when the UI enforces a rule), with `"page": "/orders/:id"` (the route, `:param` style; `serviceRoutes` in context.json lists known routes). Risk factors: `user-journey` for core journeys (sign-in, checkout, payment, submitting a form that writes data), `ui-visible` for other visible changes, plus the usual ones (`money` for prices and totals on screen).
-- Every scenario may set `"layer": "api"` or `"web"` (default: `serviceLayer`) and, for web, `"page"`. Prove business rules at the API layer when the API enforces them; use web scenarios for what the user sees and does.
-- `setup` is the scenario's workflow: preconditions as steps with dependencies. Test data is created **through the API** (or a test-data service), never through UI steps; a `"via": "ui"` step needs a `why` and only a web scenario may have one; `"db-helper"` needs a `why` (isolated environments only).
+- Every scenario may set `"layer": "api"`, `"web"` or `"mobile"` (only the layers in `testLayers`; default: `serviceLayer`) and, for web, `"page"` (the route) or, for mobile, `"page"` (the screen name or deep-link route, e.g. `"orders/new"`). Prove business rules at the API layer when the API enforces them; use web or mobile scenarios for what the user sees and does.
+- `setup` is the scenario's workflow: preconditions as steps with dependencies. Test data is created **through the API** (or a test-data service), never through UI steps; a `"via": "ui"` step needs a `why` and only a web or mobile scenario may have one; `"db-helper"` needs a `why` (isolated environments only).
 
 ```json
 {
@@ -118,7 +118,7 @@ Scope items can be cited in `requirementIds` like ACs. They are weaker oracles t
 - `coverage`: covered · partial · missing · outdated · unknown
 - `decision`: reuse · update · create · review · skip
 - evidence `source`: requirement · source-code · openapi · contract-diff · domain-rule · existing-test · runtime. Use paths relative to the repo they live in.
-- scenario `layer`: api · web; setup step `via`: api · test-data-service · db-helper · ui
+- scenario `layer`: api · web · mobile; setup step `via`: api · test-data-service · db-helper · ui
 
 ## Rules qa-sentinel enforces (a violation gets one repair round, then the run fails)
 - Change ids are `c1`, `c2`, …. Every observable change has **exactly one** decision. Every decision points to an existing change.
@@ -126,7 +126,7 @@ Scope items can be cited in `requirementIds` like ACs. They are weaker oracles t
 - `reuse` needs `coverage: "covered"` and the existing tests to run. `covered` must be `reuse` (or `review`). `unknown` can never be `reuse`.
 - `update` needs the existing spec(s) and at least one proposed scenario. `create` needs at least one scenario. Every scenario names at least one assertion.
 - `existingTests` and `impactedTests` must be real files in the test repo.
-- A scenario's `layer` must be enabled in this repo. A web scenario needs a `page` (or its change's `page`). Setup step ids are `s1`, `s2`, …; `dependsOn` names earlier steps; no cycles; `ui` steps only in web scenarios and only with `why`.
+- A scenario's `layer` must be enabled in this repo. A web or mobile scenario needs a `page` (or its change's `page`). Setup step ids are `s1`, `s2`, …; `dependsOn` names earlier steps; no cycles; `ui` steps only in web or mobile scenarios and only with `why`.
 - `requirementIds` must be ids from `acceptanceCriteriaIds` or `scopeItemIds` in `context.json`. Every one of those ids needs exactly one `requirementStatus` entry. When the oracle is `missing`, leave them empty, and no change may be `approved`.
 - A `conflicting` oracle is always turned into `review` by qa-sentinel. Write the decision as `review` yourself.
 - The decision must fit this table (qa-sentinel's decision engine checks it; the safety rows are corrected for you, the others are errors):

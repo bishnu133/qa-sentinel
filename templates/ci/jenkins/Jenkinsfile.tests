@@ -45,10 +45,17 @@ pipeline {
       when { expression { !params.CHANGED_ONLY } }
       steps { sh '{{#if healingBubblegum}}python3 -m pip install --quiet --break-system-packages "bubblegum-ai[web]" && {{/if}}{{#if webEnabled}}QA_HEALING=${QA_HEALING:-{{healingVar}}} {{/if}}{{suiteRunCommand}} $QA_TEST_ARGS' }
     }
+{{#if mobileEnabled}}
+    stage('Mobile tests') {
+      // Needs a device: runs when QA_APPIUM_URL points at an Appium server (device farm or an agent with an emulator).
+      when { expression { !params.CHANGED_ONLY && env.QA_APPIUM_URL } }
+      steps { sh '{{mobileRunCommand}} $QA_MOBILE_TEST_ARGS' }
+    }
+{{/if}}
   }
   post {
     always {
-      junit testResults: 'test-results/junit.xml, .qa-sentinel/runs/*/junit*.xml', allowEmptyResults: true
+      junit testResults: 'test-results/junit.xml, .qa-sentinel/runs/*/junit*.xml{{#if mobileEnabled}}, test-results/mobile/junit/*.xml, .qa-sentinel/runs/*/junit-mobile/*.xml{{/if}}', allowEmptyResults: true
       archiveArtifacts artifacts: 'playwright-report/**, test-results/**, qa-verify.md, .qa-sentinel/runs/**', allowEmptyArchive: true
     }
   }

@@ -22,8 +22,8 @@ const ServiceSchema = z.object({
   openapi: z.string().optional().describe("Path to the OpenAPI spec inside the service repo"),
   gitlabProject: z.string().optional().describe("GitLab project path of the service, e.g. group/orders-service"),
   dependsOn: z.array(z.string()).default([]),
-  /** api: a backend service (API tests); web: a front end (web UI tests through page objects, data set up via the API). */
-  kind: z.enum(["api", "web"]).default("api"),
+  /** api: a backend service (API tests); web: a front end (web UI tests through page objects); mobile: an app (WebdriverIO + Appium, screen objects). UI layers set data up via the API. */
+  kind: z.enum(["api", "web", "mobile"]).default("api"),
   /** Web front ends: the routes this service serves (e.g. /orders/new), used when a change doesn't name its page. */
   routes: z.array(z.string()).default([]),
   /** How to ask a running environment which commit of this service is deployed (for feature readiness). */
@@ -98,6 +98,17 @@ export const ConfigSchema = z.object({
       .object({
         enabled: z.boolean().default(false),
         framework: z.enum(["webdriverio-appium"]).default("webdriverio-appium"),
+        dir: z.string().default("tests/mobile"),
+        /** Screen objects: selectors live here and only here; the agent updates them before the specs. */
+        screensDir: z.string().default("src/screens"),
+        /** Command that runs mobile tests; qa-sentinel adds `--spec <file>` per spec. */
+        runCommand: z.string().default("npx wdio run wdio.conf.ts"),
+        /** The Appium server; qa-sentinel checks <url>/status before running mobile tests. */
+        appiumUrlEnv: z.string().default("QA_APPIUM_URL"),
+        appiumUrl: z.string().default("http://127.0.0.1:4723"),
+        /** Default platform when QA_MOBILE_PLATFORM is not set. */
+        platform: z.enum(["android", "ios"]).default("android"),
+        extraWritePaths: z.array(z.string()).default([]),
       })
       .default({}),
   }),

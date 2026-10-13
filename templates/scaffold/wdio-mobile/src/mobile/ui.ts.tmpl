@@ -1,0 +1,59 @@
+import { driver } from "@wdio/globals";
+import type { ChainablePromiseElement } from "webdriverio";
+
+/** A screen-object element: `$("~place-order")` (accessibility id) and friends. */
+export type El = ChainablePromiseElement;
+
+/** Showcase mode (the Biz video): slow down, so viewers can follow each step. */
+const slowMo = () => (process.env.QA_SHOWCASE_MODE ? Number(process.env.QA_SHOWCASE_SLOWMO ?? 500) : 0);
+
+/**
+ * Every screen-object action goes through `Ui`, named the way a person would say it ("Place order button",
+ * "Quantity"): the names make failures readable and are what a future healing hook recovers from.
+ * Assertions stay in the specs (`expect` from @wdio/globals); only actions go through here.
+ */
+export class Ui {
+  readonly steps: string[] = [];
+
+  async tap(target: El, name: string): Promise<void> {
+    await this.act(`Tap ${name}`, async () => {
+      await target.waitForDisplayed();
+      await target.click();
+    });
+  }
+
+  async type(target: El, value: string, field: string): Promise<void> {
+    await this.act(`Enter "${value}" into ${field}`, async () => {
+      await target.waitForDisplayed();
+      await target.setValue(value);
+    });
+  }
+
+  async clear(target: El, field: string): Promise<void> {
+    await this.act(`Clear ${field}`, () => target.clearValue());
+  }
+
+  /** Scroll until the element is on screen (native scrolling on Android and iOS). */
+  async scrollTo(target: El, name: string): Promise<void> {
+    await this.act(`Scroll to ${name}`, () => target.scrollIntoView());
+  }
+
+  async back(): Promise<void> {
+    await this.act("Go back", () => driver.back());
+  }
+
+  async hideKeyboard(): Promise<void> {
+    if (await driver.isKeyboardShown().catch(() => false)) await driver.hideKeyboard().catch(() => undefined);
+  }
+
+  private async act(intent: string, run: () => Promise<unknown>): Promise<void> {
+    this.steps.push(intent);
+    if (slowMo()) await driver.pause(slowMo());
+    try {
+      await run();
+    } catch (e) {
+      (e as Error).message = `${intent}: ${(e as Error).message}`;
+      throw e;
+    }
+  }
+}

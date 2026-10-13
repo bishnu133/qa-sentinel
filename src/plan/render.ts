@@ -109,8 +109,8 @@ export function renderGapReport(i: RenderInput): string {
   if (scenarios.length) {
     out.push("**Missing or outdated scenarios**");
     for (const { d, s } of scenarios) {
-      const flow = s.setup.length || s.layer === "web" ? workflowLine(s) : "";
-      out.push(`- ${s.layer === "web" ? "🖥️ " : ""}${s.title}${s.requirementIds.length ? ` (${s.requirementIds.join(", ")})` : ""} – ${d.decision}${flow ? `\n  - flow: ${flow}` : ""}`);
+      const flow = s.setup.length || s.layer === "web" || s.layer === "mobile" ? workflowLine(s) : "";
+      out.push(`- ${s.layer === "web" ? "🖥️ " : s.layer === "mobile" ? "📱 " : ""}${s.title}${s.requirementIds.length ? ` (${s.requirementIds.join(", ")})` : ""} – ${d.decision}${flow ? `\n  - flow: ${flow}` : ""}`);
     }
     out.push("");
   }

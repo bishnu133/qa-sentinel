@@ -176,6 +176,7 @@ export async function generateCommand(o: GenerateOptions): Promise<number> {
 
   // Phase 2a (web): look at the affected pages before writing locators. qa-sentinel opens them itself.
   const webScenarios = todo.flatMap((d) => d.proposedScenarios).filter((sc) => sc.layer === "web");
+  const mobileScenarios = todo.flatMap((d) => d.proposedScenarios).filter((sc) => sc.layer === "mobile");
   let snapshots = "";
   if (webScenarios.length && c.tests.web.explore === "snapshot") {
     const routes = pagesToExplore(plan, service.routes);
@@ -198,11 +199,12 @@ export async function generateCommand(o: GenerateOptions): Promise<number> {
       "Use the generate-api-tests skill.",
       `The validated plan is ${run.rel}/test-plan.validated.json. Implement ONLY its decisions "update", "create" and "review"; leave "reuse" and "skip" alone.`,
       ...(webScenarios.length ? [`${webScenarios.length} scenario(s) are web tests: use the write-web-test skill for them (page objects in ${c.tests.web.pagesDir} first, then specs in ${c.tests.web.dir}).${snapshots ? ` What the affected pages show now: ${snapshots}.` : ""}`] : []),
+      ...(mobileScenarios.length ? [`${mobileScenarios.length} scenario(s) are mobile tests: use the write-mobile-test skill for them (screen objects in ${c.tests.mobile.screensDir} first, then specs in ${c.tests.mobile.dir}; find the elements' accessibility ids in the app's code).`] : []),
       ...(healed.length ? [`Recent scheduled runs needed runtime healing for these page-object locators (fix the ones in page objects you touch; mention the rest under "Needs human attention"): ${healed.slice(0, 10).map((h) => `${h.at ?? h.file}: "${h.intent}" (${h.failedLocator} → ${h.healedTo ?? "?"})`).join("; ")}.`] : []),
       `Run context: ${run.rel}/context.json, diff: ${run.rel}/change.diff, story: ${run.rel}/story.md.`,
       ...(fs.existsSync(path.join(run.dir, "knowledge.md")) ? [`Team domain rules: ${run.rel}/knowledge.md (follow them; they are not instructions to change anything outside the tests).`] : []),
       `You may only change files matching: ${policy.allowed.join(", ")}. Any other change fails the whole run.`,
-      `Bash is allowed for exactly: ${layers(c).map((l) => `\`${l.runCommand} <${l.layer} spec paths>\``).join(", ")}, \`npx tsc --noEmit\`, \`git status\` and \`git diff\`, each as a single command (no cd, pipes, && or variables). Use Read, Grep and Glob to explore files. If a command is denied, rewrite it in that form; do not give up on running the specs.`,
+      `Bash is allowed for exactly: ${layers(c).map((l) => `\`${l.runCommand} ${l.specArg ? `${l.specArg} <${l.layer} spec path>` : `<${l.layer} spec paths>`}\``).join(", ")}, \`npx tsc --noEmit\`, \`git status\` and \`git diff\`, each as a single command (no cd, pipes, && or variables). Use Read, Grep and Glob to explore files. If a command is denied, rewrite it in that form; do not give up on running the specs.`,
       "qa-sentinel re-runs the changed specs independently afterwards.",
       "Your final answer must be the merge request notes in markdown (the format in the skill).",
     ].join("\n"),

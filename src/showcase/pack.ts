@@ -3,7 +3,7 @@ import path from "node:path";
 import { createRequire } from "node:module";
 import type { Config } from "../config.js";
 import type { IndexedTest } from "../analysis/testIndex.js";
-import { layerConfig, layerOfFile } from "../layers.js";
+import { type Layer, isUiLayer, layerConfig, layerOfFile, specArgs } from "../layers.js";
 import { runProcess } from "../proc.js";
 import { matchResult, readRunResults, type RunResult } from "./results.js";
 import type { EvidenceFile, StoryReadiness } from "./showcase.js";
@@ -26,16 +26,24 @@ export interface ShowcasePick {
   text?: string;
   test: IndexedTest;
   result?: RunResult;
-  web: boolean;
+  /** The test drives a UI (web or mobile), so it has a recording to show. */
+  ui: boolean;
+  layer: Layer;
 }
 
-/** One test per AC: the one tagged @showcase, else a passing web test (it shows something), else any passing test. */
+/** One test per AC: the one tagged @showcase, else a passing web or mobile test (it shows something), else any passing test. */
 export function pickShowcaseTests(c: Config, r: StoryReadiness): ShowcasePick[] {
   return r.acs.map((a) => {
     const passing = a.tests.filter((t) => t.result?.status === "passed");
-    const isWeb = (t: IndexedTest) => layerOfFile(c, t.file) === "web";
-    const chosen = passing.find((t) => t.test.tags.includes("showcase")) ?? passing.find((t) => isWeb(t.test)) ?? passing[0] ?? a.tests[0];
-    return { ac: a.id, text: a.text, test: chosen.test, result: chosen.result, web: isWeb(chosen.test) };
+    const layerOf = (t: IndexedTest) => layerOfFile(c, t.file) ?? "api";
+    const chosen =
+      passing.find((t) => t.test.tags.includes("showcase")) ??
+      passing.find((t) => layerOf(t.test) === "web") ??
+      passing.find((t) => layerOf(t.test) === "mobile") ??
+      passing[0] ??
+      a.tests[0];
+    const layer = layerOf(chosen.test);
+    return { ac: a.id, text: a.text, test: chosen.test, result: chosen.result, ui: isUiLayer(layer), layer };
   });
 }
 
@@ -65,7 +73,7 @@ export function introCardHtml(story: string, meta: PackMeta, acCount: number): s
 }
 
 export function acCardHtml(story: string, p: ShowcasePick, i: number, n: number): string {
-  const how = p.web ? `Test: ${esc(clean(p.test.title))}` : `Verified through the API: ${esc(clean(p.test.title))}. Requests and responses are in the PDF, section ${esc(p.ac)}.`;
+  const how = p.ui ? `${p.layer === "mobile" ? "App test" : "Test"}: ${esc(clean(p.test.title))}` : `Verified through the API: ${esc(clean(p.test.title))}. Requests and responses are in the PDF, section ${esc(p.ac)}.`;
   return `<!doctype html><meta charset="utf-8"><style>${CARD_CSS}</style><body>
 <div class="k">${esc(story)} · ${esc(p.ac)} (${i} of ${n})</div><h1>${esc(p.text ?? p.ac)}</h1><p>${how}</p></body>`;
 }
@@ -120,7 +128,7 @@ body{font-family:-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;colo
 header{background:#0f2a1f;color:#fff;padding:22px 28px}header h1{margin:4px 0 6px;font-size:22px}header .k{color:#9fd3b6;font-size:11px;letter-spacing:.08em;text-transform:uppercase}
 main{padding:18px 28px}table{border-collapse:collapse;width:100%;margin:8px 0 18px}td,th{border:1px solid #d9dee3;padding:6px 8px;vertical-align:top;text-align:left}th{background:#f3f5f7}
 .ok{color:#1f7a45;font-weight:600}.warn{color:#b3261e;font-weight:600}section{page-break-inside:avoid;margin-bottom:18px}h2{font-size:15px;margin:14px 0 4px}
-.m{color:#555;margin:0 0 8px}img{max-width:100%;border:1px solid #d9dee3;margin:6px 0}code{font-size:11px}
+.m{color:#555;margin:0 0 8px}img{max-width:100%;max-height:560px;border:1px solid #d9dee3;margin:6px 0}code{font-size:11px}
 .call{border:1px solid #e3e7eb;border-radius:4px;margin:6px 0;padding:6px 8px}.l{color:#666;font-size:10px;text-transform:uppercase;margin-top:4px}
 pre{background:#f6f8fa;padding:6px;margin:2px 0;white-space:pre-wrap;word-break:break-word;font-size:10px}</style>
 <header><div class="k">Showcase · ${esc(r.story)}</div><h1>${esc(meta.title ?? r.story)}</h1>
@@ -188,9 +196,16 @@ export async function buildShowcasePack(i: {
   fs.mkdirSync(i.workDir, { recursive: true });
   const picks = pickShowcaseTests(c, r);
 
-  // 1. Showcase recording of the chosen web tests: slowed down, highlighted, holding on the result.
+  // 1. Showcase recording of the chosen web and mobile tests: slowed down, highlighted, holding on the result.
   const recorded = new Map<string, RunResult>();
-  const webPicks = picks.filter((p) => p.web);
+  const showcaseEnv = {
+    QA_SHOWCASE_MODE: "1",
+    QA_SHOWCASE_SLOWMO: String(c.showcase.video.slowMoMs),
+    QA_SHOWCASE_HOLD: String(c.showcase.video.holdMs),
+    QA_VIDEO: "on",
+    QA_HEALING: "off",
+  };
+  const webPicks = picks.filter((p) => p.layer === "web");
   if (webPicks.length && c.showcase.video.record && c.tests.web.enabled) {
     const l = layerConfig(c, "web");
     const json = path.join(i.workDir, "recording.json");
@@ -199,15 +214,7 @@ export async function buildShowcasePack(i: {
       cwd,
       shell: true,
       timeoutMs: 15 * 60_000,
-      env: {
-        ...i.env,
-        QA_SHOWCASE_MODE: "1",
-        QA_SHOWCASE_SLOWMO: String(c.showcase.video.slowMoMs),
-        QA_SHOWCASE_HOLD: String(c.showcase.video.holdMs),
-        QA_VIDEO: "on",
-        QA_HEALING: "off",
-        PLAYWRIGHT_JSON_OUTPUT_NAME: json,
-      },
+      env: { ...i.env, ...showcaseEnv, PLAYWRIGHT_JSON_OUTPUT_NAME: json },
     });
     if (fs.existsSync(json)) {
       const results = readRunResults(json);
@@ -216,7 +223,29 @@ export async function buildShowcasePack(i: {
         if (m?.status === "passed" && m.evidence.some((e) => e.kind === "video")) recorded.set(p.test.id, m);
       }
     }
-    if (recorded.size < webPicks.length) notes.push(`showcase recording: ${recorded.size}/${webPicks.length} test(s) recorded${r2.code ? ` (exit ${r2.code})` : ""}; the run's own videos are used for the rest`);
+    const n = webPicks.filter((p) => recorded.has(p.test.id)).length;
+    if (n < webPicks.length) notes.push(`showcase recording (web): ${n}/${webPicks.length} test(s) recorded${r2.code ? ` (exit ${r2.code})` : ""}; the run's own videos are used for the rest`);
+  }
+  // Mobile: the same, through WebdriverIO; the evidence hooks write result files with the screen recording.
+  const mobilePicks = picks.filter((p) => p.layer === "mobile");
+  if (mobilePicks.length && c.showcase.video.record && c.tests.mobile.enabled) {
+    const l = layerConfig(c, "mobile");
+    const dir = path.join(i.workDir, "recording-mobile");
+    const r2 = await runProcess(`${l.runCommand} ${specArgs(l, mobilePicks.map((p) => p.test.file), (s) => JSON.stringify(s))}`, [], {
+      cwd,
+      shell: true,
+      timeoutMs: 20 * 60_000,
+      env: { ...i.env, ...showcaseEnv, ...(l.resultsDirEnv ? { [l.resultsDirEnv]: dir } : {}), ...(l.junitDirEnv ? { [l.junitDirEnv]: path.join(dir, "junit") } : {}) },
+    });
+    if (fs.existsSync(dir)) {
+      const results = readRunResults(dir);
+      for (const p of mobilePicks) {
+        const m = matchResult(results, p.test);
+        if (m?.status === "passed" && m.evidence.some((e) => e.kind === "video")) recorded.set(p.test.id, m);
+      }
+    }
+    const n = mobilePicks.filter((p) => recorded.has(p.test.id)).length;
+    if (n < mobilePicks.length) notes.push(`showcase recording (mobile): ${n}/${mobilePicks.length} test(s) recorded${r2.code ? ` (exit ${r2.code})` : ""}; the run's own recordings are used for the rest`);
   }
   const videoOf = (p: ShowcasePick) => (recorded.get(p.test.id) ?? p.result)?.evidence.find((e) => e.kind === "video" && fs.existsSync(e.path))?.path;
   const screenshotOf = (p: ShowcasePick) => {
@@ -268,10 +297,10 @@ export async function buildShowcasePack(i: {
   try {
     await seg(["-loop", "1", "-t", String(T), "-i", cards[0].png], path.join(i.workDir, "seg-00.mp4"));
     for (const [k, p] of picks.entries()) {
-      const v = p.web ? videoOf(p) : undefined;
+      const v = p.ui ? videoOf(p) : undefined;
       await seg(["-loop", "1", "-t", String(v ? T : T + 2), "-i", cards[k + 1].png], path.join(i.workDir, `seg-${k + 1}a.mp4`));
       if (v) await seg(["-i", v], path.join(i.workDir, `seg-${k + 1}b.mp4`));
-      else if (p.web) notes.push(`${p.ac}: no video for "${clean(p.test.title)}"; the card is shown alone`);
+      else if (p.ui) notes.push(`${p.ac}: no video for "${clean(p.test.title)}"; the card is shown alone`);
     }
     const list = path.join(i.workDir, "segments.txt");
     fs.writeFileSync(list, segments.map((s) => `file '${s.replace(/'/g, "'\\''")}'`).join("\n") + "\n");

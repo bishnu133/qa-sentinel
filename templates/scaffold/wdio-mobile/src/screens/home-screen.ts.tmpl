@@ -1,0 +1,19 @@
+import { $ } from "@wdio/globals";
+import { BaseScreen } from "./base-screen";
+
+/** Example screen object: replace the accessibility ids with your app's (testID in React Native, contentDescription on Android, accessibilityIdentifier on iOS). */
+export class HomeScreen extends BaseScreen {
+  readonly screen = "home";
+
+  get root() {
+    return $("~home");
+  }
+
+  get menuButton() {
+    return $("~menu");
+  }
+
+  async openMenu(): Promise<void> {
+    await this.ui.tap(this.menuButton, "Menu button");
+  }
+}

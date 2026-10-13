@@ -5,7 +5,7 @@ import type { Config } from "./config.js";
 import type { FileChange } from "./git.js";
 import { TEST_FILE, addedLines } from "./guardrails.js";
 import { runProcess } from "./proc.js";
-import { type Layer, type LayerConfig, layerOfFile, layers } from "./layers.js";
+import { type Layer, type LayerConfig, layerOfFile, layers, specArgs } from "./layers.js";
 
 export type VerificationStatus = "VERIFIED" | "FAILED" | "BLOCKED" | "NOT_RUN";
 export type CheckStatus = "passed" | "failed" | "blocked" | "not-run" | "skipped";
@@ -63,7 +63,18 @@ export function parseJUnit(xml: string): TestCase[] {
   return cases;
 }
 
-const ENV_ERROR = /(ECONNREFUSED|ENOTFOUND|EAI_AGAIN|ETIMEDOUT|ECONNRESET|socket hang up|getaddrinfo|certificate|connect EHOSTUNREACH)/i;
+const ENV_ERROR = /(ECONNREFUSED|ENOTFOUND|EAI_AGAIN|ETIMEDOUT|ECONNRESET|socket hang up|getaddrinfo|certificate|connect EHOSTUNREACH|Unable to connect to|Could not find a connected|no (?:connected )?devices? (?:found|connected)|Could not start a new session|session not created)/i;
+
+/** A JUnit file, or a folder of them (WebdriverIO writes one per worker). */
+function readJUnitAt(p: string | undefined): TestCase[] {
+  if (!p || !fs.existsSync(p)) return [];
+  if (!fs.statSync(p).isDirectory()) return parseJUnit(fs.readFileSync(p, "utf8"));
+  return fs
+    .readdirSync(p)
+    .filter((f) => f.endsWith(".xml"))
+    .sort()
+    .flatMap((f) => parseJUnit(fs.readFileSync(path.join(p, f), "utf8")));
+}
 
 export function overallStatus(checks: Check[]): VerificationStatus {
   if (checks.some((c) => c.status === "failed")) return "FAILED";
@@ -101,7 +112,8 @@ export async function verifyChanges(o: VerifyOptions): Promise<VerificationRepor
   }
   if (c.verification.preflight) {
     for (const l of specsByLayer.keys()) {
-      const baseUrl = o.env[l.baseUrlEnv];
+      const base = o.env[l.baseUrlEnv] || l.defaultBaseUrl;
+      const baseUrl = base && l.preflightPath ? `${base.replace(/\/+$/, "")}${l.preflightPath}` : base;
       if (!baseUrl) {
         checks.push({ name: "preflight", layer: l.layer, status: "blocked", detail: `${l.baseUrlEnv} is not set` });
         continue;
@@ -150,21 +162,34 @@ export async function verifyChanges(o: VerifyOptions): Promise<VerificationRepor
       checks.push({ name: "tests", layer: l.layer, status: "not-run", detail: "skipped because the environment is unreachable" });
       continue;
     }
-    // API keeps junit.xml (what pipelines built for v0.4 collect); other layers get junit-<layer>.xml.
-    const junit = l.isPlaywright ? path.join(o.runDir, l.layer === "api" ? "junit.xml" : `junit-${l.layer}.xml`) : c.verification.junitPath ? path.resolve(cwd, c.verification.junitPath) : undefined;
-    if (junit && fs.existsSync(junit)) fs.rmSync(junit);
-    const env = { ...o.env, ...(l.isPlaywright && junit ? { PLAYWRIGHT_JUNIT_OUTPUT_NAME: junit } : {}) };
-    const cmd = `${l.runCommand} ${layerSpecs.map(shq).join(" ")}${l.isPlaywright ? " --reporter=line,junit" : ""}`;
+    // API keeps junit.xml (what pipelines built for v0.4 collect); other layers get junit-<layer>.xml (or a folder).
+    const junit = l.isPlaywright
+      ? path.join(o.runDir, l.layer === "api" ? "junit.xml" : `junit-${l.layer}.xml`)
+      : l.junitDirEnv
+        ? path.join(o.runDir, `junit-${l.layer}`)
+        : c.verification.junitPath
+          ? path.resolve(cwd, c.verification.junitPath)
+          : undefined;
+    if (junit && fs.existsSync(junit)) fs.rmSync(junit, { recursive: true, force: true });
+    const env = {
+      ...o.env,
+      ...(l.isPlaywright && junit ? { PLAYWRIGHT_JUNIT_OUTPUT_NAME: junit } : {}),
+      ...(l.junitDirEnv && junit ? { [l.junitDirEnv]: junit } : {}),
+      ...(l.resultsDirEnv ? { [l.resultsDirEnv]: path.join(o.runDir, `results-${l.layer}`) } : {}),
+      ...(!o.env[l.baseUrlEnv] && l.defaultBaseUrl ? { [l.baseUrlEnv]: l.defaultBaseUrl } : {}),
+    };
+    const runArgs = (files: string[]) => `${l.runCommand} ${specArgs(l, files, shq)}${l.isPlaywright ? " --reporter=line,junit" : ""}`;
+    const cmd = runArgs(layerSpecs);
     let r = await runProcess(cmd, [], { cwd, env, timeoutMs, shell: true });
-    let mine = (junit && fs.existsSync(junit) ? parseJUnit(fs.readFileSync(junit, "utf8")) : []).map((x) => ({ ...x, layer: l.layer }));
+    let mine = readJUnitAt(junit).map((x) => ({ ...x, layer: l.layer }));
     // One retry of the failed specs before calling it a failure: a test that passes on retry is flaky, not a bug.
     const firstFailed = mine.filter((x) => x.status === "failed" && !ENV_ERROR.test(x.message ?? ""));
     if (c.verification.retryFailed && firstFailed.length && !r.timedOut && junit) {
       const retrySpecs = layerSpecs.filter((sp) => firstFailed.some((f) => f.file && (sp.endsWith(f.file) || f.file.endsWith(sp))));
       if (retrySpecs.length) {
-        fs.rmSync(junit, { force: true });
-        const r2 = await runProcess(`${l.runCommand} ${retrySpecs.map(shq).join(" ")}${l.isPlaywright ? " --reporter=line,junit" : ""}`, [], { cwd, env, timeoutMs, shell: true });
-        const again = fs.existsSync(junit) ? parseJUnit(fs.readFileSync(junit, "utf8")) : [];
+        fs.rmSync(junit, { recursive: true, force: true });
+        const r2 = await runProcess(runArgs(retrySpecs), [], { cwd, env, timeoutMs, shell: true });
+        const again = readJUnitAt(junit);
         const healedNames = firstFailed.filter((f) => again.some((a) => a.name === f.name && a.status === "passed")).map((f) => f.name);
         if (healedNames.length) {
           flaky.push(...healedNames);

@@ -16,8 +16,8 @@ export interface PlanContext {
   /** Story mode: every service repo, by service name (evidence may be "service/path" or a path in any of them). */
   serviceRepos?: Record<string, string>;
   /** Enabled test layers (default: api only) and the layer scenarios default to (the service's layer). */
-  layers?: ("api" | "web")[];
-  defaultLayer?: "api" | "web";
+  layers?: ("api" | "web" | "mobile")[];
+  defaultLayer?: "api" | "web" | "mobile";
 }
 
 export interface PlanValidation {
@@ -150,9 +150,9 @@ export function validatePlan(raw: unknown, ctx: PlanContext): PlanValidation {
       // Workflow planner: the layer that proves it, its page, and its setup graph checked against the data policy.
       s.layer ??= ctx.defaultLayer ?? "api";
       if (!(ctx.layers ?? ["api"]).includes(s.layer)) errors.push(`${at}: layer "${s.layer}" is not enabled in this project (enabled: ${(ctx.layers ?? ["api"]).join(", ")})`);
-      if (s.layer === "web") {
+      if (s.layer === "web" || s.layer === "mobile") {
         s.page ??= c.page;
-        if (!s.page) errors.push(`${at}: a web scenario needs the page it opens ("page": "/orders/new")`);
+        if (!s.page) errors.push(`${at}: a ${s.layer} scenario needs the ${s.layer === "web" ? 'page it opens ("page": "/orders/new")' : 'screen it opens ("page": "orders/new")'}`);
       }
       const steps = normaliseSetup(s.setup);
       const wf = checkWorkflow(steps, s.layer, at);
