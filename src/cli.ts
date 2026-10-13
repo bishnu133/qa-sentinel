@@ -24,6 +24,11 @@ program
   .option("-C, --cwd <dir>", "test repository root", process.cwd());
 
 const cwd = () => program.opts().cwd as string;
+/** gap-report/generate need either a service or --story. */
+function needService<T extends { service?: string; story?: string }>(o: T): T & { service: string } {
+  if (!o.service && !o.story) throw new Error("pass --service <name> (one service change) or --story <KEY> (everything a story changed)");
+  return { ...o, service: o.service ?? "" };
+}
 const wrap =
   <A extends unknown[]>(fn: (...args: A) => Promise<unknown> | unknown) =>
   async (...args: A) => {
@@ -98,8 +103,9 @@ program
 
 program
   .command("gap-report")
-  .description("Phase 1: analyse a service change and report impacted tests, gaps and AC mismatches")
-  .requiredOption("-s, --service <name|path>", "service name from the config, or a path to its repo")
+  .description("Phase 1: analyse a service change (or a whole story across services) and report impacted tests, gaps and AC mismatches")
+  .option("-s, --service <name|path>", "service name from the config, or a path to its repo")
+  .option("--story <key>", "story mode: analyse everything this story changed, across all its service repos")
   .option("--service-path <dir>", "override where the service repo is checked out (useful in CI)")
   .option("--base <ref>", "base ref (default: MR diff base in CI, else origin/<targetBranch>)")
   .option("--head <ref>", "head ref", "HEAD")
@@ -108,12 +114,13 @@ program
   .option("-o, --out <file>", "where to write the report", "qa-gap-report.md")
   .option("--post", "post or update the report as a GitLab MR comment")
   .option("--dry-run", "do everything except call Claude")
-  .action(wrap(async (o) => (await gapReportCommand({ cwd: cwd(), ...o })).exitCode));
+  .action(wrap(async (o) => (await gapReportCommand({ cwd: cwd(), ...needService(o) })).exitCode));
 
 program
   .command("generate")
-  .description("Phase 2: add or update API tests for a service change and commit them on a branch")
-  .requiredOption("-s, --service <name|path>", "service name from the config, or a path to its repo")
+  .description("Phase 2: add or update tests for a service change (or a whole story across services) and commit them on a branch")
+  .option("-s, --service <name|path>", "service name from the config, or a path to its repo")
+  .option("--story <key>", "story mode: one plan and one branch/MR for everything this story changed, across all its service repos")
   .option("--service-path <dir>", "override where the service repo is checked out (useful in CI)")
   .option("--base <ref>", "base ref in the service repo", "HEAD~1")
   .option("--head <ref>", "head ref in the service repo", "HEAD")
@@ -122,7 +129,7 @@ program
   .option("--push", "push the branch and open a GitLab merge request")
   .option("--env <name>", "run the tests against this environment from `environments:` (e.g. dev, sit) before pushing")
   .option("--dry-run", "do everything except call Claude and commit")
-  .action(wrap(async (o) => generateCommand({ cwd: cwd(), ...o })));
+  .action(wrap(async (o) => generateCommand({ cwd: cwd(), ...needService(o) })));
 
 program
   .command("trace")

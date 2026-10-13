@@ -65,6 +65,8 @@ export const ChangeSchema = z
     endpoint: opt(z.string()),
     /** Front-end route the change is on, e.g. /orders/new or /orders/:id. */
     page: opt(z.string()),
+    /** Story mode (several services): which service the change is in. */
+    service: opt(z.string()),
     summary: z.string().min(1),
     observable: z.boolean(),
     requirementIds: z.array(z.string()).default([]),

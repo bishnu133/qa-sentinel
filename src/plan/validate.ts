@@ -13,6 +13,8 @@ export interface PlanContext {
   requirementsMissing: boolean;
   testRepo: string;
   serviceRepo: string;
+  /** Story mode: every service repo, by service name (evidence may be "service/path" or a path in any of them). */
+  serviceRepos?: Record<string, string>;
   /** Enabled test layers (default: api only) and the layer scenarios default to (the service's layer). */
   layers?: ("api" | "web")[];
   defaultLayer?: "api" | "web";
@@ -79,7 +81,10 @@ export function validatePlan(raw: unknown, ctx: PlanContext): PlanValidation {
     if (c.observable && !c.riskFactors.length) errors.push(`change ${c.id}: an observable change needs at least one risk factor`);
     if (ctx.requirementsMissing && c.oracleStatus === "approved") errors.push(`change ${c.id}: oracle cannot be "approved" when no requirements were provided`);
     for (const e of c.evidence) {
-      if ((e.source === "source-code" || e.source === "openapi") && e.file && !exists(ctx.serviceRepo, e.file)) {
+      const inAnyRepo = (f: string) =>
+        exists(ctx.serviceRepo, f) ||
+        Object.entries(ctx.serviceRepos ?? {}).some(([name, root]) => exists(root, f) || (f.startsWith(`${name}/`) && exists(root, f.slice(name.length + 1))));
+      if ((e.source === "source-code" || e.source === "openapi") && e.file && !inAnyRepo(e.file)) {
         warnings.push(`change ${c.id}: evidence file not found in service repo: ${e.file}`);
       }
     }

@@ -10,6 +10,7 @@
 //   node sandbox/shoplite/local.mjs run SHOP-106 --change-only    # just make the developer change (no agent, no cost)
 //   node sandbox/shoplite/local.mjs merge SHOP-106                 # merge a scenario's branch into main (like merging the MR)
 //   node sandbox/shoplite/local.mjs feature SHOP-106 [--run]       # one story across services: merged? deployed? AC tests? (then run them)
+//   node sandbox/shoplite/local.mjs story SHOP-106 [--generate]    # one gap report (and one test branch) for the whole story, all services
 //   node sandbox/shoplite/local.mjs reset                          # every service back to main, env stopped
 //   node sandbox/shoplite/local.mjs env start|stop
 import fs from "node:fs";
@@ -107,6 +108,27 @@ switch (cmd) {
     envStop(true);
     log(`feature summary: ${path.join(tests, `qa-feature-${key}.md`)}`);
     process.exitCode = code;
+    break;
+  }
+  case "story": {
+    // One analysis (and with --generate one test branch) for everything a story changed, across services.
+    const id = String(arg ?? "").toUpperCase();
+    if (!id) die("usage: local.mjs story SHOP-106 [--generate]");
+    const key = storyKeyOf(id);
+    for (const svc of SERVICES) if (fs.existsSync(path.join(work, svc))) git(path.join(work, svc), "checkout", "-q", "-f", "main");
+    git(tests, "checkout", "-q", "-f", "main");
+    const storyFile = path.join(work, "stories", `${id}.md`);
+    const gap = run("node", [CLI, "gap-report", "--story", key, "--checkout", ...(fs.existsSync(storyFile) ? storyArgs(storyFile) : []), ...(JIRA ? ["--post"] : []), "-o", `../${id}-story-gap-report.md`], { cwd: tests });
+    if (gap === 3) noClaude();
+    log(`story gap report: ${path.join(work, `${id}-story-gap-report.md`)}`);
+    if (f.generate) {
+      envStart();
+      const code = run("node", [CLI, "generate", "--story", key, "--checkout", ...(fs.existsSync(storyFile) ? storyArgs(storyFile) : [])], { cwd: tests, env: { ...process.env, ...QA_URLS } });
+      envStop(true);
+      if (code === 3) noClaude();
+      log(`generation exit ${code}; branch: ${git(tests, "branch", "--show-current")}`);
+      process.exitCode = code;
+    } else process.exitCode = gap;
     break;
   }
   case "run": {

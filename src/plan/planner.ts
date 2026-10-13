@@ -12,6 +12,7 @@ import { type PlanValidation, validatePlan } from "./validate.js";
 import { type RiskedChange, applyRisk } from "./risk.js";
 import type { RiskLevel, TestPlan } from "./schema.js";
 import { log } from "../log.js";
+import type { StoryPart } from "../story.js";
 import { layers, primaryLayer } from "../layers.js";
 
 export interface PlanOutcome {
@@ -37,13 +38,31 @@ export interface PlanInput {
   dryRun?: boolean;
   /** Extra context for the agents, written into context.json (e.g. kind, allowed write paths). */
   context?: Record<string, unknown>;
+  /** Story mode: every service part of the story (service/repo/cs above are the combined view). */
+  parts?: StoryPart[];
 }
 
 export const oracleOf = (req: RequirementSnapshot): "provided" | "ambiguous" | "missing" =>
   req.source === "none" ? "missing" : req.acceptanceCriteria.length ? "provided" : "ambiguous";
 
 /** Deterministic contract diff for the service's OpenAPI spec, saved into the run dir. */
-export function computeContractDiff(i: Pick<PlanInput, "service" | "repo" | "cs" | "run">): ContractDiff {
+export function computeContractDiff(i: Pick<PlanInput, "service" | "repo" | "cs" | "run" | "parts">): ContractDiff {
+  if (i.parts?.length) {
+    // Story mode: one contract diff per service with a spec, merged; the markdown keeps a section per service.
+    const each = i.parts.map((p) => ({ p, d: p.service.openapi ? diffSpecs(showFile(p.repo, p.cs.base, p.service.openapi), showFile(p.repo, p.cs.head, p.service.openapi)) : diffSpecs(undefined, undefined) }));
+    const compared = each.filter((x) => x.d.status !== "no-spec");
+    const d: ContractDiff = {
+      status: compared.find((x) => x.d.status === "compared")?.d.status ?? compared[0]?.d.status ?? "no-spec",
+      changes: compared.flatMap((x) => x.d.changes),
+      note: compared.length ? undefined : "no service in this story has an OpenAPI spec",
+    };
+    fs.writeFileSync(path.join(i.run.dir, "contract-diff.json"), JSON.stringify(d, null, 2));
+    fs.writeFileSync(
+      path.join(i.run.dir, "contract-diff.md"),
+      (compared.length ? compared.map((x) => `#### ${x.p.service.name}\n${contractDiffMarkdown(x.d, x.p.service.openapi)}`).join("\n\n") : contractDiffMarkdown(d)) + "\n",
+    );
+    return d;
+  }
   const spec = i.service.openapi;
   const d = spec ? diffSpecs(showFile(i.repo, i.cs.base, spec), showFile(i.repo, i.cs.head, spec)) : diffSpecs(undefined, undefined);
   fs.writeFileSync(path.join(i.run.dir, "contract-diff.json"), JSON.stringify(d, null, 2));
@@ -72,6 +91,13 @@ export async function planChange(i: PlanInput): Promise<PlanOutcome> {
         head: i.cs.head,
         changedFiles: i.relevant,
         oracle,
+        ...(i.parts?.length
+          ? {
+              story: i.req.storyKey,
+              // Story mode: the change spans these services; change.diff has a section per service and changedFiles are "service/path".
+              services: i.parts.map((p) => ({ name: p.service.name, path: p.service.path, kind: p.service.kind, openapi: p.service.openapi, base: p.cs.base, head: p.cs.head, merged: p.merged, changedFiles: p.relevant })),
+            }
+          : {}),
         // Test layers in this repo and the one this service is tested on first (web for front ends).
         testLayers: layers(c).map((l) => ({ layer: l.layer, dir: l.dir, helpersDir: l.helpersDir, runCommand: l.runCommand })),
         serviceLayer: primaryLayer(c, i.service),
@@ -91,7 +117,7 @@ export async function planChange(i: PlanInput): Promise<PlanOutcome> {
   const base = {
     cwd: i.cwd,
     // Dependency services are readable when checked out alongside (locally); in CI they may not exist.
-    readOnlyDirs: [i.repo, ...c.workspace.services.filter((s) => i.service.dependsOn.includes(s.name)).map((s) => path.resolve(i.cwd, s.path))].filter((d) => fs.existsSync(d)),
+    readOnlyDirs: [...new Set([i.repo, ...(i.parts ?? []).map((p) => p.repo), ...c.workspace.services.filter((s) => i.service.dependsOn.includes(s.name)).map((s) => path.resolve(i.cwd, s.path))])].filter((d) => fs.existsSync(d)),
     write: { allowed: [planRel], blocked: [] },
     bash: [],
     env: agentEnv(c),
@@ -122,6 +148,7 @@ export async function planChange(i: PlanInput): Promise<PlanOutcome> {
     requirementsMissing: i.req.source === "none",
     testRepo: i.cwd,
     serviceRepo: i.repo,
+    serviceRepos: i.parts?.length ? Object.fromEntries(i.parts.map((p) => [p.service.name, p.repo])) : undefined,
     layers: layers(c).map((l) => l.layer),
     defaultLayer: primaryLayer(c, i.service),
   };
@@ -158,7 +185,7 @@ export async function planChange(i: PlanInput): Promise<PlanOutcome> {
     return { status: "invalid", contract, validation, runs, message: validation.errors.slice(0, 8).join("; ") };
   }
 
-  const crossService = c.workspace.services.some((s) => s.dependsOn.includes(i.service.name));
+  const crossService = (i.parts?.length ?? 0) > 1 || c.workspace.services.some((s) => s.dependsOn.includes(i.service.name));
   const risked = applyRisk(validation.plan, { breakingEndpoints: breakingEndpoints(contract), crossService });
   fs.writeFileSync(path.join(run.dir, "test-plan.validated.json"), JSON.stringify({ ...validation.plan, risk: { overall: risked.overall, changes: risked.changes.map((x) => ({ id: x.id, risk: x.risk, factors: x.factors })) }, corrections: validation.corrections, warnings: validation.warnings }, null, 2));
   return { status: "valid", plan: validation.plan, risked, contract, validation, runs };

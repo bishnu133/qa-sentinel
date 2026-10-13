@@ -21,6 +21,9 @@ import { planChange } from "../plan/planner.js";
 import { actionable } from "../plan/validate.js";
 import { decisionTable } from "../plan/render.js";
 import { log } from "../log.js";
+import type { ServiceConfig } from "../config.js";
+import { type ChangeSet, atLeast } from "../git.js";
+import { type StoryPart, combinedChange, storyParts } from "../story.js";
 import { layers } from "../layers.js";
 import { pagesToExplore, snapshotPages } from "../web/explore.js";
 import { readHealed } from "../web/healed.js";
@@ -33,6 +36,8 @@ export interface GenerateOptions {
   head?: string;
   checkout?: boolean;
   storyFile?: string;
+  /** Story mode: tests for everything this story changed, across all its service repos (one branch, one MR). */
+  story?: string;
   push?: boolean;
   /** Named environment from `environments` to run the tests against before anything is pushed. */
   env?: string;
@@ -50,20 +55,40 @@ export async function generateCommand(o: GenerateOptions): Promise<number> {
   if (c.level === "intelligence") {
     throw new Error('This project runs at level "intelligence" (read-only analysis). Set level: maintenance in qa-sentinel.config.yaml to enable test generation.');
   }
-  const service = findService(c, o.service, cwd, o.servicePath);
-  const repo = path.resolve(cwd, service.path);
-  if (!isGitRepo(repo)) throw new Error(`${repo} is not a git repository`);
+  let service: ServiceConfig, repo: string;
+  let parts: StoryPart[] | undefined;
+  if (o.story) {
+    const sp = await storyParts({ c, cwd, story: o.story });
+    sp.notes.forEach((n) => log.warn(n));
+    if (!sp.parts.length) throw new Error(`No service changes found for ${o.story}: no branch or commit message mentions it in the service repos`);
+    parts = sp.parts;
+    const unmerged = parts.filter((p) => !p.merged).map((p) => p.service.name);
+    if (unmerged.length) log.warn(`not merged yet: ${unmerged.join(", ")}. Tests will be written against the branch code; run again after the merge.`);
+    service = combinedChange(o.story, parts).service;
+    repo = parts[0].repo;
+  } else {
+    service = findService(c, o.service, cwd, o.servicePath);
+    repo = path.resolve(cwd, service.path);
+    if (!isGitRepo(repo)) throw new Error(`${repo} is not a git repository`);
+  }
   const environment = useEnvironment(c, o.env);
   if (environment) log.step(`environment: ${environment} (${layers(c).map((l) => process.env[l.baseUrlEnv]).filter(Boolean).join(", ")})`);
   if (!isGitRepo(cwd)) throw new Error(`The test repo (${cwd}) must be a git repository`);
   if (workingChanges(cwd).some((x) => !matchesAny(x.path, ARTIFACT_GLOBS)) && !o.dryRun) throw new Error("The test repo has uncommitted changes; commit or stash them first.");
 
-  const headRef = o.head ?? "HEAD";
-  // GitLab sends 0000… as the "before" SHA for new branches; fall back to the previous commit.
-  const baseRef = !o.base || /^0+$/.test(o.base) ? `${headRef}~1` : o.base;
-  const cs = changeSet(repo, baseRef, headRef);
-  ensureAtCommit(repo, cs.head, Boolean(o.checkout));
-  const relevant = cs.files.filter((f) => !matchesAny(f, c.agent.skipPaths));
+  let cs: ChangeSet, relevant: string[];
+  if (parts) {
+    for (const p of parts) atLeast(p.repo, p.cs.head, Boolean(o.checkout));
+    ({ cs, relevant } = combinedChange(o.story!, parts));
+    log.step(`story ${o.story}: ${parts.map((p) => `${p.service.name} (${p.relevant.length} file(s))`).join(", ")}`);
+  } else {
+    const headRef = o.head ?? "HEAD";
+    // GitLab sends 0000… as the "before" SHA for new branches; fall back to the previous commit.
+    const baseRef = !o.base || /^0+$/.test(o.base) ? `${headRef}~1` : o.base;
+    cs = changeSet(repo, baseRef, headRef);
+    ensureAtCommit(repo, cs.head, Boolean(o.checkout));
+    relevant = cs.files.filter((f) => !matchesAny(f, c.agent.skipPaths));
+  }
   if (relevant.length === 0) {
     log.ok("no test-relevant changes; nothing to generate");
     return 0;
@@ -74,8 +99,8 @@ export async function generateCommand(o: GenerateOptions): Promise<number> {
   const serviceProject = service.gitlabProject ?? process.env.QA_SERVICE_PROJECT;
   const req = await resolveRequirements(c, {
     storyFile: o.storyFile,
-    lookup: ctx && serviceProject ? { ctx, project: serviceProject, sha: cs.head } : undefined,
-    keyHints: commitMessages(repo, cs.base, cs.head),
+    lookup: ctx && serviceProject && !parts ? { ctx, project: serviceProject, sha: cs.head } : undefined,
+    keyHints: parts ? [o.story] : commitMessages(repo, cs.base, cs.head),
   }).catch((e) => {
     log.warn(`could not fetch requirements: ${(e as Error).message}`);
     return resolveRequirements(c, {});
@@ -87,8 +112,9 @@ export async function generateCommand(o: GenerateOptions): Promise<number> {
     log.step(`requirements: ${req.storyKey ?? req.title ?? req.source} (${req.acceptanceCriteria.length} AC${req.scopeItems?.length ? ` + ${req.scopeItems.length} scope item(s)` : ""}, ${req.source}, ${req.approvalStatus})`);
   }
 
-  const sha8 = cs.head.slice(0, 8);
-  const branch = `qa-sentinel/${service.name}-${sha8}`;
+  const sha8 = parts ? o.story! : cs.head.slice(0, 8);
+  const branch = parts ? `qa-sentinel/story-${o.story}` : `qa-sentinel/${service.name}-${sha8}`;
+  const subject = parts ? `story ${o.story} (${parts.map((p) => p.service.name).join(", ")})` : `${service.name}@${sha8}`;
   const policy = generatePolicy(c);
   const run = createRunDir(cwd, `gen-${service.name}`);
   fs.writeFileSync(path.join(run.dir, "change.diff"), cs.diff);
@@ -96,7 +122,7 @@ export async function generateCommand(o: GenerateOptions): Promise<number> {
   fs.writeFileSync(path.join(run.dir, "requirements.json"), JSON.stringify(req, null, 2));
   const manifest = startManifest(cwd, c, run, "generate", { service, base: cs.base, head: cs.head, changedFiles: relevant }, req);
   const startSha = resolveSha(cwd, "HEAD");
-  const serviceBefore = snapshotTree(repo);
+  const before = (parts ? parts.map((p) => ({ name: p.service.name, repo: p.repo })) : [{ name: service.name, repo }]).map((r) => ({ ...r, snap: snapshotTree(r.repo) }));
   const engine = engineFor(c);
   const runs: AgentResult[] = [];
   const finish = (outcome: string, code: number) => {
@@ -111,7 +137,7 @@ export async function generateCommand(o: GenerateOptions): Promise<number> {
   };
 
   // Phase 1: plan (read-only) and validate in code.
-  log.step(`${service.name}@${sha8}: planning`);
+  log.step(`${subject}: planning`);
   const planned = await planChange({
     cwd,
     c,
@@ -124,6 +150,7 @@ export async function generateCommand(o: GenerateOptions): Promise<number> {
     engine,
     dryRun: o.dryRun,
     context: { kind: "generate", allowedWritePaths: policy.allowed, blockedWritePaths: policy.blocked, maxFixAttempts: c.agent.maxFixAttempts },
+    parts,
   });
   runs.push(...planned.runs);
   manifest.plan = { status: planned.status, risk: planned.risked?.overall, corrections: planned.validation?.corrections.length ?? 0 };
@@ -137,7 +164,7 @@ export async function generateCommand(o: GenerateOptions): Promise<number> {
   const todo = actionable(plan);
   log.step(`plan: ${planned.risked.overall} risk · ${plan.decisions.map((d) => `${d.changeId}=${d.decision}`).join(", ") || "no decisions"}`);
   if (todo.length === 0) {
-    const summary = [`## QA agent: ${service.name}@${sha8} – no test changes needed`, "", plan.verdict, "", decisionTable(plan, planned.risked.changes)].join("\n");
+    const summary = [`## QA agent: ${subject} – no test changes needed`, "", plan.verdict, "", decisionTable(plan, planned.risked.changes)].join("\n");
     fs.writeFileSync(path.join(run.dir, "summary.md"), summary);
     fs.writeFileSync(path.join(cwd, "qa-sentinel-summary.md"), summary);
     log.ok("every decision is reuse or skip: existing tests are enough");
@@ -176,7 +203,7 @@ export async function generateCommand(o: GenerateOptions): Promise<number> {
       "qa-sentinel re-runs the changed specs independently afterwards.",
       "Your final answer must be the merge request notes in markdown (the format in the skill).",
     ].join("\n"),
-    readOnlyDirs: [repo],
+    readOnlyDirs: before.map((b) => b.repo),
     write: policy,
     bash: [...bashRulesForTests(c), "npx tsc --noEmit", "git status *", "git diff *"],
     maxTurns: c.agent.maxTurns.generate,
@@ -204,7 +231,7 @@ export async function generateCommand(o: GenerateOptions): Promise<number> {
       extraBaseUrls: layers(c).map((l) => process.env[l.baseUrlEnv]).filter((u): u is string => Boolean(u)),
       assertionRemoval: c.guardrails.assertionRemoval,
     }),
-    ...checkServiceUntouched(repo, service.name, serviceBefore),
+    ...before.flatMap((b) => checkServiceUntouched(b.repo, b.name, b.snap)),
   ];
   const bad = violations(findings);
   manifest.guardrails = { violations: bad.length, warnings: findings.length - bad.length };
@@ -255,6 +282,7 @@ export async function generateCommand(o: GenerateOptions): Promise<number> {
     environment,
     service: service.name,
     sha: cs.head,
+    subject,
     version: VERSION,
     requirements: req,
     verification,
@@ -277,7 +305,7 @@ export async function generateCommand(o: GenerateOptions): Promise<number> {
     "commit",
     "-q",
     "-m",
-    `test(${service.name}): QA agent updates for ${sha8}\n\nGenerated by qa-sentinel ${VERSION} from ${service.name}@${cs.head}.\nRisk: ${planned.risked.overall}. Verification: ${verification.status}. Run: ${run.id}`,
+    `test(${service.name}): QA agent updates for ${sha8}\n\nGenerated by qa-sentinel ${VERSION} from ${parts ? parts.map((p) => `${p.service.name}@${p.cs.head}`).join(", ") : `${service.name}@${cs.head}`}.\nRisk: ${planned.risked.overall}. Verification: ${verification.status}. Run: ${run.id}`,
   ]);
   log.ok(`committed ${paths.length} file(s) on ${branch}`);
 
@@ -299,11 +327,11 @@ export async function generateCommand(o: GenerateOptions): Promise<number> {
       const mr = await createOrUpdateMergeRequest(ctx, project, {
         source: branch,
         target: c.ci.targetBranch,
-        title: `${verified ? "" : "Draft: "}QA agent: tests for ${service.name}@${sha8}${verified ? "" : ` (${verification.status})`}`,
+        title: `${verified ? "" : "Draft: "}QA agent: tests for ${subject}${verified ? "" : ` (${verification.status})`}`,
         description,
         labels: [
           "qa-agent",
-          `service::${service.name}`,
+          ...(parts ? [`story::${o.story}`, ...parts.map((p) => `service::${p.service.name}`)] : [`service::${service.name}`]),
           `qa-sentinel::${verification.status.toLowerCase()}`,
           `risk::${planned.risked.overall}`,
           ...(discrepancies.length ? ["qa-sentinel::discrepancy"] : []),
