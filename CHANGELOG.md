@@ -6,6 +6,7 @@
 - `showcase.format: pack` (default): when every AC of a story passed, qa-sentinel re-records the chosen test per AC in showcase mode (slowed down, the element being used outlined, a pause on the result; `showcase.video`) and joins them with title cards into **one `<STORY>-showcase.mp4`**, plus **one `<STORY>-showcase.pdf`** with the results per AC, a screenshot per UI test and the API requests and responses. Picks per AC: a test tagged `@showcase`, else a web test, else a mobile test, else any passing test.
 - Attached once, only after all ACs passed, and only from runs on `showcase.environments`. `showcase.notify` tags the reviewers; the comment names exactly what was attached.
 - Needs a full ffmpeg with libx264 (`showcase.video.ffmpeg`, `QA_FFMPEG`, PATH or `ffmpeg-static`); without it the PDF and the separate recordings are attached. `format: files` keeps the v0.5 behaviour.
+- In the video every step is captioned ("Click Checkout button", "Enter "2" into Quantity") next to the outlined element, held long enough to read (`showcase.video.stepMs`), and each test ends on "✓ Verified: <test>". The blank start of each recording is trimmed (`trimStartMs`). A failed showcase recording pass now says why.
 - Secrets in API evidence (password, token, authorization, card fields, JWTs, bearer tokens) are redacted in the PDF and the evidence file.
 - GitLab template: the showcase job installs ffmpeg and starts the environment.
 

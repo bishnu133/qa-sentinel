@@ -58,6 +58,10 @@ export interface PackMeta {
   approach?: string;
 }
 
+/** The first error line of a failed run, for the note (e.g. "page.goto: Invalid URL" when the base URL isn't set). */
+const why = (r: { stdout: string; stderr: string }) =>
+  ((r.stdout + "\n" + r.stderr).split("\n").map((l) => l.replace(/\u001b\[[0-9;]*m/g, "").trim()).find((l) => /^(Error|TypeError|.*Error:)|ECONNREFUSED|Invalid URL|No tests found/i.test(l)) ?? "see the test output").slice(0, 200);
+
 /** Single-quoted for sh: nothing inside is expanded. */
 const shq = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`;
 const esc = (s: string) => s.replace(/[&<>"']/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[ch]!);
@@ -209,6 +213,7 @@ export async function buildShowcasePack(i: {
     QA_SHOWCASE_MODE: "1",
     QA_SHOWCASE_SLOWMO: String(c.showcase.video.slowMoMs),
     QA_SHOWCASE_HOLD: String(c.showcase.video.holdMs),
+    QA_SHOWCASE_STEP_MS: String(c.showcase.video.stepMs),
     QA_VIDEO: "on",
     QA_HEALING: "off",
   };
@@ -231,7 +236,7 @@ export async function buildShowcasePack(i: {
       }
     }
     const n = webPicks.filter((p) => recorded.has(p.test.id)).length;
-    if (n < webPicks.length) notes.push(`showcase recording (web): ${n}/${webPicks.length} test(s) recorded${r2.code ? ` (exit ${r2.code})` : ""}; the run's own videos are used for the rest`);
+    if (n < webPicks.length) notes.push(`showcase recording (web): ${n}/${webPicks.length} test(s) recorded${r2.code ? ` (exit ${r2.code}: ${why(r2)})` : ""}; the run's own videos are used for the rest`);
   }
   // Mobile: the same, through WebdriverIO; the evidence hooks write result files with the screen recording.
   const mobilePicks = picks.filter((p) => p.layer === "mobile");
@@ -252,7 +257,7 @@ export async function buildShowcasePack(i: {
       }
     }
     const n = mobilePicks.filter((p) => recorded.has(p.test.id)).length;
-    if (n < mobilePicks.length) notes.push(`showcase recording (mobile): ${n}/${mobilePicks.length} test(s) recorded${r2.code ? ` (exit ${r2.code})` : ""}; the run's own recordings are used for the rest`);
+    if (n < mobilePicks.length) notes.push(`showcase recording (mobile): ${n}/${mobilePicks.length} test(s) recorded${r2.code ? ` (exit ${r2.code}: ${why(r2)})` : ""}; the run's own recordings are used for the rest`);
   }
   const videoOf = (p: ShowcasePick) => (recorded.get(p.test.id) ?? p.result)?.evidence.find((e) => e.kind === "video" && fs.existsSync(e.path))?.path;
   const screenshotOf = (p: ShowcasePick) => {
@@ -310,7 +315,7 @@ export async function buildShowcasePack(i: {
     for (const [k, p] of picks.entries()) {
       const v = p.ui ? videoOf(p) : undefined;
       await seg(["-loop", "1", "-t", String(v ? T : T + 2), "-i", cards[k + 1].png], path.join(i.workDir, `seg-${k + 1}a.mp4`));
-      if (v) await seg(["-i", v], path.join(i.workDir, `seg-${k + 1}b.mp4`));
+      if (v) await seg([...(c.showcase.video.trimStartMs ? ["-ss", (c.showcase.video.trimStartMs / 1000).toFixed(2)] : []), "-i", v], path.join(i.workDir, `seg-${k + 1}b.mp4`));
       else if (p.ui) notes.push(`${p.ac}: no video for "${clean(p.test.title)}"; the card is shown alone`);
     }
     const list = path.join(i.workDir, "segments.txt");

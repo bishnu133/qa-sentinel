@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import { test as base, expect } from "@playwright/test";
-import { Ui } from "../web/ui";
+import { Ui, caption } from "../web/ui";
 import { cdpPort, healingOn } from "../web/healing";
 {{#if isScratch}}
 import { ApiClient } from "../api/client";
@@ -36,7 +36,10 @@ export const test = browserBase.extend<WebFixtures>({
   ui: async ({ page }, use, testInfo) => {
     await use(new Ui(page, testInfo));
     // Showcase mode: stay on the final screen for a moment, so the result is visible in the video.
-    if (process.env.QA_SHOWCASE_MODE) await page.waitForTimeout(Number(process.env.QA_SHOWCASE_HOLD ?? 2000)).catch(() => undefined);
+    if (process.env.QA_SHOWCASE_MODE) {
+      await caption(page, `✓ Verified: ${testInfo.title.replace(/\s*@\S+/g, "").trim()}`);
+      await page.waitForTimeout(Number(process.env.QA_SHOWCASE_HOLD ?? 2000)).catch(() => undefined);
+    }
   },
 {{#if isScratch}}
   api: async ({ playwright }, use, testInfo) => {

@@ -1,24 +1,66 @@
 import type { Locator, Page, TestInfo } from "@playwright/test";
 import { healingOn, recoverStep } from "./healing";
 
-/** Showcase mode (the Biz video): outline the element about to be used, so viewers can follow each step. */
+/**
+ * Showcase mode (the Biz video): outline the element about to be used and caption the step ("Click Checkout
+ * button"), pausing long enough to read it (QA_SHOWCASE_STEP_MS). Off in normal runs.
+ */
 const showcase = () => Boolean(process.env.QA_SHOWCASE_MODE);
-async function highlight(target: Locator): Promise<void> {
+
+/** Showcase mode: show a caption at the bottom of the page (also used for the final "✓ Verified: …" caption). */
+export async function caption(page: Page, text: string): Promise<void> {
+  if (!showcase()) return;
+  await page
+    .evaluate((step) => {
+      let cap = document.getElementById("qa-step-caption");
+      if (!cap) {
+        cap = document.createElement("div");
+        cap.id = "qa-step-caption";
+        cap.setAttribute("aria-hidden", "true");
+        Object.assign(cap.style, {
+          position: "fixed",
+          left: "50%",
+          bottom: "24px",
+          transform: "translateX(-50%)",
+          maxWidth: "80%",
+          padding: "10px 18px",
+          borderRadius: "8px",
+          background: "rgba(15, 42, 31, 0.92)",
+          color: "#fff",
+          font: "600 20px/1.35 -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif",
+          boxShadow: "0 4px 18px rgba(0,0,0,.25)",
+          zIndex: "2147483647",
+          pointerEvents: "none",
+        });
+        document.body.appendChild(cap);
+      }
+      cap.textContent = step;
+    }, text)
+    .catch(() => undefined);
+}
+
+async function highlight(target: Locator, intent: string): Promise<void> {
   if (!showcase()) return;
   await target
-    .evaluate((el) => {
-      // One highlight at a time: clear the previous step's outline first.
-      for (const prev of Array.from(document.querySelectorAll<HTMLElement>("[data-qa-highlight]"))) {
-        prev.style.outline = prev.dataset.qaHighlight ?? "";
-        delete prev.dataset.qaHighlight;
-      }
-      const e = el as HTMLElement;
-      e.dataset.qaHighlight = e.style.outline;
-      e.style.outline = "3px solid #e8590c";
-      e.style.outlineOffset = "3px";
-    }, undefined, { timeout: 2_000 })
+    .evaluate(
+      (el) => {
+        // One highlight at a time: clear the previous step's outline first.
+        for (const prev of Array.from(document.querySelectorAll<HTMLElement>("[data-qa-highlight]"))) {
+          prev.style.outline = prev.dataset.qaHighlight ?? "";
+          delete prev.dataset.qaHighlight;
+        }
+        const e = el as HTMLElement;
+        e.dataset.qaHighlight = e.style.outline;
+        e.style.outline = "3px solid #e8590c";
+        e.style.outlineOffset = "3px";
+        e.scrollIntoView({ block: "center", inline: "nearest" });
+      },
+      undefined,
+      { timeout: 2_000 },
+    )
     .catch(() => undefined);
-  await target.page().waitForTimeout(400);
+  await caption(target.page(), intent);
+  await target.page().waitForTimeout(Number(process.env.QA_SHOWCASE_STEP_MS ?? 1200));
 }
 
 /**
@@ -55,7 +97,7 @@ export class Ui {
   }
 
   private async act(target: Locator, intent: string, run: (timeout?: number) => Promise<unknown>): Promise<void> {
-    await highlight(target);
+    await highlight(target, intent);
     try {
       await run(this.timeout);
     } catch (e) {

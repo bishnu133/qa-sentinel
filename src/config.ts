@@ -194,6 +194,10 @@ export const ConfigSchema = z.object({
           record: z.boolean().default(true),
           slowMoMs: z.number().int().min(0).max(3000).default(500),
           holdMs: z.number().int().min(0).max(10000).default(2000),
+          /** Pause on each step, with its caption shown ("Click Checkout button"), so viewers can follow. */
+          stepMs: z.number().int().min(0).max(10000).default(1200),
+          /** Cut this much from the start of each recording (the blank page before the site loads). */
+          trimStartMs: z.number().int().min(0).max(5000).default(800),
           titleSeconds: z.number().min(0.5).max(10).default(3),
           /** Path to a full ffmpeg (libx264). Default: QA_FFMPEG, then ffmpeg on PATH, then the ffmpeg-static package. */
           ffmpeg: z.string().optional(),
