@@ -37,8 +37,9 @@ export function generatePolicy(c: Config): WritePolicy {
 
 /** `learn` may only touch the three knowledge files it is responsible for. */
 export const LEARN_FILES = [".claude/skills/write-api-test/SKILL.md", "test-map.yaml", ".claude/qa-sentinel.md"];
-export function learnPolicy(): WritePolicy {
-  return { allowed: LEARN_FILES, blocked: [] };
+/** With the web layer on, `learn` also writes the web conventions into the write-web-test skill. */
+export function learnPolicy(c?: Config): WritePolicy {
+  return { allowed: [...LEARN_FILES, ...(c?.tests.web.enabled ? [".claude/skills/write-web-test/SKILL.md"] : [])], blocked: [] };
 }
 
 /** Path rules: blocked always wins; everything else must be allowed. Deletions and both sides of renames count. */

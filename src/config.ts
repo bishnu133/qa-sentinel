@@ -76,6 +76,8 @@ export const ConfigSchema = z.object({
         extraWritePaths: z.array(z.string()).default([]),
         /** Before authoring, qa-sentinel opens the affected pages and saves what is on them (accessibility tree + screenshot) for the agent. */
         explore: z.enum(["snapshot", "none"]).default("snapshot"),
+        /** new-pages: new or changed pages get one accessibility test (axe, WCAG 2 AA; critical and serious issues). */
+        accessibility: z.enum(["off", "new-pages"]).default("new-pages"),
         /**
          * Runtime locator healing. none: plain Playwright. bubblegum: when a page-object action fails, the ui helper asks
          * Bubblegum (@bubblegum-ai/node) to recover it over CDP. Never used while qa-sentinel verifies agent-written tests.

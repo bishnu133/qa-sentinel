@@ -113,6 +113,9 @@ describe("init --web", () => {
     for (const f of ["src/web/ui.ts", "src/web/healing.ts", "src/pages/base-page.ts", "src/fixtures/web.ts", "tests/web/example/home.spec.ts", ".claude/skills/write-web-test/SKILL.md"]) expect(fs.existsSync(path.join(repo, f)), f).toBe(true);
     expect(fs.readFileSync(path.join(repo, "src/web/healing.ts"), "utf8")).toContain("[\\\\/]src[\\\\/]pages[\\\\/]");
     expect(fs.readFileSync(path.join(repo, "src/web/healing.ts"), "utf8")).toContain('"@bubblegum-ai/node"');
+    expect(fs.existsSync(path.join(repo, "src/web/a11y.ts"))).toBe(true);
+    expect(JSON.parse(fs.readFileSync(path.join(repo, "package.json"), "utf8")).devDependencies["@axe-core/playwright"]).toBeTruthy();
+    expect(fs.readFileSync(path.join(repo, ".claude/skills/write-web-test/SKILL.md"), "utf8")).toContain("checkAccessibility");
     const pw = fs.readFileSync(path.join(repo, "playwright.config.ts"), "utf8");
     expect(pw).toContain('name: "web"');
     expect(pw).toContain("process.env.QA_WEB_URL");

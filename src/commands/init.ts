@@ -206,6 +206,7 @@ export function templateVars(c: Config): TemplateVars {
     webRunCommand: c.tests.web.runCommand,
     webBaseUrlEnv: c.tests.web.baseUrlEnv,
     healing: c.tests.web.healing,
+    a11y: c.tests.web.accessibility !== "off",
     healingBubblegum: c.tests.web.enabled && c.tests.web.healing === "bubblegum",
     healingVar: c.tests.web.healing === "bubblegum" ? "bubblegum" : "off",
     suiteRunCommand: suiteRunCommand(c),
@@ -320,8 +321,11 @@ function mergePackageJson(cwd: string, web = false) {
   const fragment = JSON.parse(readTemplate("scaffold/playwright-api/package.fragment.json"));
   const pkg = readJson<any>(file) ?? { name: path.basename(cwd), version: "0.1.0", private: true };
   pkg.scripts = { ...fragment.scripts, ...(pkg.scripts ?? {}) };
-  if (web) pkg.scripts["test:web"] ??= "playwright test --project=web";
   pkg.devDependencies = { ...fragment.devDependencies, ...(pkg.devDependencies ?? {}) };
+  if (web) {
+    pkg.scripts["test:web"] ??= "playwright test --project=web";
+    pkg.devDependencies["@axe-core/playwright"] ??= "^4.10.0";
+  }
   ensureDir(cwd);
   fs.writeFileSync(file, JSON.stringify(pkg, null, 2) + "\n");
   log.dim("  updated  package.json (scripts, devDependencies)");

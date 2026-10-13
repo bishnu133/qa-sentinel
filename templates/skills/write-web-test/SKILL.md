@@ -26,6 +26,9 @@ The site's base URL comes from `process.env.{{webBaseUrlEnv}}`; API calls for te
 - **Tags in the title (required):** `@service:<front end> @page:/orders/:id @story:SHOP-123 @ac:AC-2`. Use the route as in the page object (`:param` style). `@ac:none` for tests beyond the ACs.
 - Waits: rely on Playwright's auto-waiting and web-first assertions (`await expect(locator).toHaveText(…)`). No `waitForTimeout`, no sleeps.
 - Known product bug / AC mismatch: `test.fixme(...)` with `// QA-AGENT: <mismatch>` above it, written to the requirement.
+{{#if a11y}}
+- **Accessibility:** for a new page, or a page whose form or controls changed, add one test that opens it in the state the user sees and asserts `expect(await checkAccessibility(page, testInfo)).toEqual([])` (import from `src/web/a11y`; WCAG 2 AA, critical and serious issues). Title it `has no serious accessibility issues @service:… @page:… @a11y` (plus `@story`, and `@ac:none` unless an AC asks for accessibility).
+{{/if}}
 - Evidence is automatic (video, screenshots and the API setup calls are recorded by the web project); don't add your own.
 - **Example:** `{{webDir}}/example/home.spec.ts` and `{{pagesDir}}/home-page.ts`.
 

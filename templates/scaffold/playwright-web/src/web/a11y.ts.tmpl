@@ -1,0 +1,33 @@
+import type { Page, TestInfo } from "@playwright/test";
+
+export interface A11yViolation {
+  id: string;
+  impact: string | null | undefined;
+  help: string;
+  nodes: number;
+}
+
+/**
+ * Accessibility check with axe (WCAG 2 A/AA rules), reported as a test attachment ("a11y").
+ * Returns the violations at the given impact levels (default: critical and serious), so a spec can assert
+ * `expect(await checkAccessibility(page, testInfo)).toEqual([])`.
+ * Needs @axe-core/playwright; without it the check is skipped and noted on the test.
+ */
+export async function checkAccessibility(page: Page, testInfo: TestInfo, o: { include?: string; impact?: string[] } = {}): Promise<A11yViolation[]> {
+  let AxeBuilder: any;
+  try {
+    ({ default: AxeBuilder } = await import("@axe-core/playwright"));
+  } catch {
+    testInfo.annotations.push({ type: "a11y", description: "skipped: @axe-core/playwright is not installed" });
+    return [];
+  }
+  let builder = new AxeBuilder({ page }).withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"]);
+  if (o.include) builder = builder.include(o.include);
+  const result = await builder.analyze();
+  const impacts = o.impact ?? ["critical", "serious"];
+  const violations: A11yViolation[] = result.violations
+    .filter((v: any) => impacts.includes(v.impact ?? ""))
+    .map((v: any) => ({ id: v.id, impact: v.impact, help: v.help, nodes: v.nodes.length }));
+  await testInfo.attach("a11y", { body: JSON.stringify({ violations, all: result.violations.length }, null, 2), contentType: "application/json" });
+  return violations;
+}
