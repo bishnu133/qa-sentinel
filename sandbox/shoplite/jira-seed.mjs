@@ -56,7 +56,7 @@ async function main() {
   const meta = await jira("GET", `/rest/api/2/project/${project}`);
   const types = (meta.issueTypes ?? []).map((t) => t.name);
   const issueType = types.includes("Story") ? "Story" : types.includes("Task") ? "Task" : types[0] ?? "Story";
-  log(`project ${project}: creating ${SCENARIOS.length} ${issueType}s`);
+  log(`project ${project}: creating ${SCENARIOS.filter((s) => !s.storyKey).length} ${issueType}s`);
   const keys = fs.existsSync(path.join(work, ".jira-keys.json")) ? JSON.parse(fs.readFileSync(path.join(work, ".jira-keys.json"), "utf8")) : {};
 
   for (const s of SCENARIOS) {
