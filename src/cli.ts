@@ -6,6 +6,7 @@ import { healedCommand } from "./commands/healed.js";
 import { reviewStoryCommand } from "./commands/reviewStoryCmd.js";
 import { bugsCommand } from "./commands/bugs.js";
 import { tagCommand } from "./commands/tag.js";
+import { metricsCommand } from "./commands/metrics.js";
 import { learnCommand } from "./commands/learn.js";
 import { doctorCommand } from "./commands/doctor.js";
 import { gapReportCommand } from "./commands/gapReport.js";
@@ -99,6 +100,15 @@ program
   .option("--limit <n>", "at most this many tests", (v) => Number(v))
   .option("--dry-run", "list the untagged tests")
   .action(wrap(async (o) => tagCommand({ cwd: cwd(), push: o.push, limit: o.limit, dryRun: o.dryRun })));
+
+program
+  .command("metrics")
+  .description("how the agents are doing: verification rate, merged-without-edits rate, cost, plan repairs (qa-metrics.md)")
+  .option("--runs <dir...>", "extra folders with run manifests (e.g. downloaded CI artifacts)")
+  .option("--since <when>", "30d, 12w or a date")
+  .option("-o, --out <file>", "markdown output", "qa-metrics.md")
+  .option("--json", "print the numbers as JSON instead")
+  .action(wrap(async (o) => metricsCommand({ cwd: cwd(), runs: o.runs, since: o.since, out: o.out, json: o.json })));
 
 program
   .command("healed")
