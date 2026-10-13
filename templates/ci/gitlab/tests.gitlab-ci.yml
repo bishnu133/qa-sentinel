@@ -174,8 +174,12 @@ qa-showcase:
     - if: $QA_SHOWCASE == "true" && ($CI_PIPELINE_SOURCE == "schedule" || $CI_PIPELINE_SOURCE == "trigger" || $CI_PIPELINE_SOURCE == "api" || $CI_COMMIT_BRANCH == "{{targetBranch}}")
   script:
     - !reference [.qa-sentinel-install, script]
+    # A full ffmpeg builds the single showcase video (title cards + the recorded tests).
+    - command -v ffmpeg >/dev/null || (apt-get update -qq && apt-get install -y -qq ffmpeg >/dev/null)
+    # The showcase re-records the chosen web tests slowly, so the environment must be up.
+    - if [ -n "$QA_ENV_START" ]; then eval "$QA_ENV_START"; fi
     - qa-sentinel showcase ${QA_ENVIRONMENT:+--env "$QA_ENVIRONMENT"}
   artifacts:
     when: always
-    paths: [qa-showcase.md, qa-showcase/]
+    paths: [qa-showcase.md, qa-showcase/, .qa-sentinel/showcase/]
     expire_in: 2 weeks

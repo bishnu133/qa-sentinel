@@ -1,6 +1,26 @@
 import type { Locator, Page, TestInfo } from "@playwright/test";
 import { healingOn, recoverStep } from "./healing";
 
+/** Showcase mode (the Biz video): outline the element about to be used, so viewers can follow each step. */
+const showcase = () => Boolean(process.env.QA_SHOWCASE_MODE);
+async function highlight(target: Locator): Promise<void> {
+  if (!showcase()) return;
+  await target
+    .evaluate((el) => {
+      // One highlight at a time: clear the previous step's outline first.
+      for (const prev of Array.from(document.querySelectorAll<HTMLElement>("[data-qa-highlight]"))) {
+        prev.style.outline = prev.dataset.qaHighlight ?? "";
+        delete prev.dataset.qaHighlight;
+      }
+      const e = el as HTMLElement;
+      e.dataset.qaHighlight = e.style.outline;
+      e.style.outline = "3px solid #e8590c";
+      e.style.outlineOffset = "3px";
+    }, undefined, { timeout: 2_000 })
+    .catch(() => undefined);
+  await target.page().waitForTimeout(400);
+}
+
 /**
  * Every page-object action goes through `Ui`, named the way a person would say it ("Place order button",
  * "Quantity"). With healing off this is plain Playwright. With QA_HEALING=bubblegum, a failed action is retried
@@ -35,6 +55,7 @@ export class Ui {
   }
 
   private async act(target: Locator, intent: string, run: (timeout?: number) => Promise<unknown>): Promise<void> {
+    await highlight(target);
     try {
       await run(this.timeout);
     } catch (e) {

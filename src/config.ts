@@ -140,7 +140,28 @@ export const ConfigSchema = z.object({
       /** Evidence kinds to attach, in order of preference. api-log is folded into the evidence summary file. */
       kinds: z.array(z.enum(["video", "screenshot", "trace", "api-log"])).default(["video", "screenshot", "api-log"]),
       maxFiles: z.number().int().min(1).max(50).default(20),
-      maxFileMb: z.number().positive().max(100).default(10),
+      maxFileMb: z.number().positive().max(500).default(50),
+      /**
+       * pack (default): ONE video of the whole story (a title card per AC, then its test, recorded slowly with the
+       * actions highlighted) plus ONE PDF with the results and the API requests/responses: what Biz users review.
+       * files: the run's own videos, screenshots and logs, one attachment each.
+       */
+      format: z.enum(["pack", "files"]).default("pack"),
+      video: z
+        .object({
+          /** Re-run the chosen web tests once in showcase mode (slowed down, highlighted) instead of reusing the fast CI videos. */
+          record: z.boolean().default(true),
+          slowMoMs: z.number().int().min(0).max(3000).default(500),
+          holdMs: z.number().int().min(0).max(10000).default(2000),
+          titleSeconds: z.number().min(0.5).max(10).default(3),
+          /** Path to a full ffmpeg (libx264). Default: QA_FFMPEG, then ffmpeg on PATH, then the ffmpeg-static package. */
+          ffmpeg: z.string().optional(),
+        })
+        .default({}),
+      /** Who to tag when a story is ready for review: Jira Cloud account ids (or Server/DC usernames). */
+      notify: z.array(z.string()).default([]),
+      /** Only showcase runs against these environments (e.g. [sit, uat]); empty = any. */
+      environments: z.array(z.string()).default([]),
       /** A story with a fixme/skip test (known product discrepancy) is not showcased. */
       requireNoPending: z.boolean().default(true),
     })

@@ -35,6 +35,8 @@ const browserBase = healingOn()
 export const test = browserBase.extend<WebFixtures>({
   ui: async ({ page }, use, testInfo) => {
     await use(new Ui(page, testInfo));
+    // Showcase mode: stay on the final screen for a moment, so the result is visible in the video.
+    if (process.env.QA_SHOWCASE_MODE) await page.waitForTimeout(Number(process.env.QA_SHOWCASE_HOLD ?? 2000)).catch(() => undefined);
   },
 {{#if isScratch}}
   api: async ({ playwright }, use, testInfo) => {
