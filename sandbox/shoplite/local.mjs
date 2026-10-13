@@ -102,6 +102,7 @@ switch (cmd) {
     }
     const story = path.join(work, "stories", `${s.id}.md`);
     const gap = run("node", [CLI, "gap-report", "-s", s.service, "--base", "main", "--head", "HEAD", "--story-file", story, "-o", `../${s.id}-gap-report.md`], { cwd: tests });
+    if (gap === 3) noClaude();
     log(`gap report: ${path.join(work, `${s.id}-gap-report.md`)}`);
     if (f.regression) {
       // Run the existing tests qa-sentinel selected, against the developer's change: do the predicted breaks happen?
@@ -118,6 +119,7 @@ switch (cmd) {
         env: { ...process.env, QA_BASE_URL: "http://127.0.0.1:8080" },
       });
       envStop(true);
+      if (code === 3) noClaude();
       const branch = git(tests, "branch", "--show-current");
       if (f.showcase) {
         // Showcase: run the whole suite on the generated branch (json reporter keeps evidence), then attach evidence
@@ -137,4 +139,15 @@ switch (cmd) {
   }
   default:
     console.log(fs.readFileSync(new URL(import.meta.url), "utf8").split("\n").slice(1, 14).join("\n").replace(/^\/\/ ?/gm, ""));
+}
+
+/** qa-sentinel exits 3 when Claude can't be used at all; nothing after that step would mean anything. */
+function noClaude() {
+  die(
+    "stopped: Claude Code can't run (see the error above). In this terminal:\n" +
+      "  read -s ANTHROPIC_API_KEY && export ANTHROPIC_API_KEY   # paste the key, press Enter (nothing is shown)\n" +
+      "  echo ${#ANTHROPIC_API_KEY}                                 # should print a number above 100\n" +
+      '  claude -p "reply with OK"                                  # should print OK\n' +
+      "then rerun this command.",
+  );
 }
