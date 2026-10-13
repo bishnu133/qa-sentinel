@@ -141,7 +141,12 @@ export function discoverServices(workspaceDir: string, testRepoRoot: string): Di
     if (!entry.isDirectory() || entry.name.startsWith(".")) continue;
     const dir = path.join(workspaceDir, entry.name);
     if (path.resolve(dir) === path.resolve(testRepoRoot)) continue;
-    const names = fs.readdirSync(dir);
+    let names: string[];
+    try {
+      names = fs.readdirSync(dir);
+    } catch {
+      continue; // unreadable folder next to the test repo (permissions): not a service we can use
+    }
     const isService =
       names.includes(".git") ||
       SERVICE_MARKERS.some((m) => (m.startsWith("*") ? names.some((n) => n.endsWith(m.slice(1))) : names.includes(m)));

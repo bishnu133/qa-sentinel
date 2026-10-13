@@ -17,6 +17,12 @@ import { loadConfig } from "../src/config.js";
 import { renderGapReport } from "../src/plan/render.js";
 
 const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), "qas-web-"));
+/** A test repo inside its own workspace folder, so init's service discovery never scans the shared temp dir. */
+const repoDir = () => {
+  const r = path.join(tmp(), "qa-tests");
+  fs.mkdirSync(r);
+  return r;
+};
 
 describe("web tests in the index", () => {
   const web = indexSource(
@@ -88,7 +94,7 @@ describe("healed steps", () => {
   });
 
   it("writes qa-healed.json for the next generation and fails only when asked", async () => {
-    const repo = tmp();
+    const repo = repoDir();
     await initCommand({ cwd: repo, yes: true, mode: "scratch", web: true, ci: "gitlab", level: "maintenance", name: "w" });
     fs.mkdirSync(path.join(repo, "test-results"));
     fs.writeFileSync(path.join(repo, "test-results/results.json"), JSON.stringify(results([step({})])));
@@ -101,7 +107,7 @@ describe("healed steps", () => {
 
 describe("init --web", () => {
   it("writes the web layer: config, page objects, ui helper with the healing hook, fixtures, skill, Playwright project, CI", async () => {
-    const repo = tmp();
+    const repo = repoDir();
     const c = await initCommand({ cwd: repo, yes: true, mode: "scratch", web: true, ci: "gitlab", level: "maintenance", name: "w" });
     expect(c.tests.web.enabled).toBe(true);
     for (const f of ["src/web/ui.ts", "src/web/healing.ts", "src/pages/base-page.ts", "src/fixtures/web.ts", "tests/web/example/home.spec.ts", ".claude/skills/write-web-test/SKILL.md"]) expect(fs.existsSync(path.join(repo, f)), f).toBe(true);
@@ -117,7 +123,7 @@ describe("init --web", () => {
     expect(ci).not.toMatch(/\{\{/);
   });
   it("without --web nothing web is written", async () => {
-    const repo = tmp();
+    const repo = repoDir();
     await initCommand({ cwd: repo, yes: true, mode: "scratch", ci: "gitlab", level: "maintenance", name: "a" });
     expect(fs.existsSync(path.join(repo, "src/web/ui.ts"))).toBe(false);
     expect(fs.existsSync(path.join(repo, ".claude/skills/write-web-test"))).toBe(false);
@@ -128,7 +134,7 @@ describe("init --web", () => {
 
 describe("verification per layer", () => {
   it("runs each layer's changed specs with its own command and base URL, healing off", async () => {
-    const repo = tmp();
+    const repo = repoDir();
     await initCommand({ cwd: repo, yes: true, mode: "scratch", web: true, ci: "gitlab", level: "maintenance", name: "w" });
     // Fake runners: write a JUnit file to $PLAYWRIGHT_JUNIT_OUTPUT_NAME and record what they saw.
     const runner = (layer: string) =>
@@ -184,7 +190,7 @@ describe("add-web and healing safety", () => {
   });
 
   it("adds the web layer to an API-only project, with healing wired into CI", async () => {
-    const repo = tmp();
+    const repo = repoDir();
     await initCommand({ cwd: repo, yes: true, mode: "scratch", ci: "gitlab", level: "maintenance", name: "a" });
     const c = addWebCommand({ cwd: repo, healing: "bubblegum" });
     expect(c.tests.web.enabled).toBe(true);
@@ -200,7 +206,7 @@ describe("add-web and healing safety", () => {
   });
 
   it("never lets the agent heal or change the healing switch", async () => {
-    const repo = tmp();
+    const repo = repoDir();
     const c = await initCommand({ cwd: repo, yes: true, mode: "scratch", web: true, ci: "gitlab", level: "maintenance", name: "w" });
     const h = { ...c, tests: { ...c.tests, web: { ...c.tests.web, healing: "bubblegum" as const } } };
     expect(agentEnv(h, { PATH: "/bin", QA_HEALING: "bubblegum" }).QA_HEALING).toBe("off");
