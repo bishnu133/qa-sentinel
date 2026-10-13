@@ -1,5 +1,48 @@
 # Changelog
 
+## 0.6.0 — One showcase video per story, Mobile, "is the story built?", story-wide runs, bug cards, metrics
+
+### Showcase pack (replaces the manual Biz showcase)
+- `showcase.format: pack` (default): when every AC of a story passed, qa-sentinel re-records the chosen test per AC in showcase mode (slowed down, the element being used outlined, a pause on the result; `showcase.video`) and joins them with title cards into **one `<STORY>-showcase.mp4`**, plus **one `<STORY>-showcase.pdf`** with the results per AC, a screenshot per UI test and the API requests and responses. Picks per AC: a test tagged `@showcase`, else a web test, else a mobile test, else any passing test.
+- Attached once, only after all ACs passed, and only from runs on `showcase.environments`. `showcase.notify` tags the reviewers; the comment names exactly what was attached.
+- Needs a full ffmpeg with libx264 (`showcase.video.ffmpeg`, `QA_FFMPEG`, PATH or `ffmpeg-static`); without it the PDF and the separate recordings are attached. `format: files` keeps the v0.5 behaviour.
+- Secrets in API evidence (password, token, authorization, card fields, JWTs, bearer tokens) are redacted in the PDF and the evidence file.
+- GitLab template: the showcase job installs ffmpeg and starts the environment.
+
+### Mobile (WebdriverIO + Appium)
+- New layer `tests.mobile` (dir, screensDir, runCommand, appiumUrlEnv, platform) and service `kind: mobile`. `init --mobile` / `add-mobile` scaffold `wdio.conf.ts` (device and app from the environment; device-farm URLs with credentials), screen objects, a ui helper with intents, evidence hooks (screen recording, final screenshot, API setup calls, one result file per test) and the `write-mobile-test` skill, and add the WebdriverIO packages.
+- Plans: scenarios with `layer: mobile` and a screen; `@screen:` tags are indexed like pages; UI setup steps are allowed for mobile tests (with a reason).
+- Verification: Appium `/status` preflight (credentials sent as a header, never printed), `--spec` per file, JUnit from a folder; regression and `feature --run` run mobile specs with their own command. The showcase pack re-records mobile tests and includes their recordings.
+- CI: a `mobile-tests` job (GitLab, when `QA_APPIUM_URL` is set) and a `Mobile tests` stage (Jenkins). The scheduled suite command leaves mobile out.
+- The device and evidence files (`wdio.conf.ts`, `src/mobile/evidence.ts`, `src/mobile/ui.ts`, `src/fixtures/mobile.ts`) are blocked for agent writes.
+
+### Requirements: "is the story built?"
+- Scope items: list items under the story's "Tech scope" / "Expected results" headings (`requirements.scope.sections`) or Jira fields (`requirements.jira.scopeFields`) become TS-n / ER-n, traced like ACs.
+- Every plan has `requirementStatus`: implemented · partial · not-found · conflict · elsewhere · not-applicable per AC and scope item, with evidence and the ACs that cover it. The gap report has an "Is the story built?" table and lists scope items no AC covers; the Jira summary shows "⛔ Not built".
+- `review-story`: before development, a read-only review of the story (ambiguous ACs, missing negative and edge cases, scope without an AC, open questions), optionally posted on the story.
+
+### Story-wide runs
+- `gap-report --story KEY` and `generate --story KEY`: everything the story changed across services as one plan and one test MR (`qa-sentinel/story-KEY`). For merged parts only the story's own change is taken (the merge's or squash's net change), never other work merged meanwhile. Regression selections are merged across parts.
+
+### Bug cards
+- `bugs.mode: off | suggest | create`. Sources: failing tests written to an AC (`qa-sentinel bugs` after a run), the fixme tests a generation wrote because the product disagrees, and (story-wide, `bugs.notBuilt`) ACs nothing builds (labelled suspected).
+- Each bug has expected vs actual, the test and command to reproduce, the environment, where to look in the code, evidence, and a `{code:json}` block for coding agents. Recorded on the story as soon as it is created (never raised twice); "now passes" is noted on the bug when its tests pass.
+
+### Quality
+- Verification retries failed specs once (`verification.retryFailed`); a pass on retry is reported as flaky, matched by file and title.
+- `tag`: one-off backfill of `@service`/`@endpoint`/`@page` tags on existing tests; only added tags inside test titles are accepted.
+- `learn` also writes web and mobile conventions into their skills.
+- Accessibility: `tests.web.accessibility: new-pages` adds one axe (WCAG 2 AA) test per new or changed page; the check fails if `@axe-core/playwright` is missing.
+- Risk factors `user-journey`, `ui-visible` and `price-display`.
+- `metrics`: verification rate, merged-without-edits rate (merge, squash, fast-forward), cost per command, plan repairs, guardrail stops, from run manifests (local or downloaded CI artifacts) and git history.
+- `upgrade`: refreshes qa-sentinel's agents, skills, CI templates and project context after an update, keeping learned conventions.
+- Spec paths are shell-quoted wherever a command line is built.
+
+### Also
+- Existing projects (`init --mode existing`, `add-web`, `add-mobile`) get the packages the new scaffold files import added to package.json.
+- Scaffold files follow `pagesDir`, `screensDir` and the tests' `dir` in their relative imports.
+- Benchmark on v0.6: 100% gap recall, precision and decision accuracy, no repair rounds, $0.73.
+
 ## 0.5.0 — Web tests, workflow planner, video evidence, optional Bubblegum healing
 
 ### Web (Playwright UI)

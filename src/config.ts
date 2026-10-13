@@ -180,7 +180,7 @@ export const ConfigSchema = z.object({
       format: z.enum(["pack", "files"]).default("pack"),
       video: z
         .object({
-          /** Re-run the chosen web tests once in showcase mode (slowed down, highlighted) instead of reusing the fast CI videos. */
+          /** Re-run the chosen web and mobile tests once in showcase mode (slowed down, highlighted) instead of reusing the fast CI recordings. */
           record: z.boolean().default(true),
           slowMoMs: z.number().int().min(0).max(3000).default(500),
           holdMs: z.number().int().min(0).max(10000).default(2000),

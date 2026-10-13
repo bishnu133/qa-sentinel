@@ -1,8 +1,8 @@
 # qa-sentinel
 
-**AI QA agents you plug into any test repo.** Every time a developer changes a service, qa-sentinel tells the team which tests are affected, what coverage is missing and where the code disagrees with the story's acceptance criteria. Then it writes or updates the API and web tests and opens a merge request for a QA engineer to review.
+**AI QA agents you plug into any test repo.** Every time a developer changes a service, qa-sentinel tells the team which tests are affected, what coverage is missing and where the code disagrees with the story's acceptance criteria. Then it writes or updates the API, web and mobile tests and opens a merge request for a QA engineer to review. When every acceptance criterion passes, it attaches one showcase video and an evidence PDF to the Jira story for the business to review; when one doesn't, it can raise the bug.
 
-Built on [Claude Code](https://docs.claude.com/en/docs/claude-code/overview) in headless mode. Runs in **GitLab CI** and **Jenkins**. Works with an **existing** test suite (it learns your conventions) or **from scratch** (it scaffolds a TypeScript Playwright framework for API tests, and with `--web` for web UI tests with page objects).
+Built on [Claude Code](https://docs.claude.com/en/docs/claude-code/overview) in headless mode. Runs in **GitLab CI** and **Jenkins**. Works with an **existing** test suite (it learns your conventions) or **from scratch** (it scaffolds a TypeScript Playwright framework for API tests, with `--web` for web UI tests with page objects, and with `--mobile` for WebdriverIO + Appium app tests with screen objects).
 
 > Agents draft and review; humans approve. qa-sentinel never merges anything.
 
@@ -12,7 +12,7 @@ Built on [Claude Code](https://docs.claude.com/en/docs/claude-code/overview) in 
 | --- | --- | --- |
 | **1 · QA intelligence** (default) | On every MR: behaviour changes, risk, requirement conflicts, contract changes, and a reuse/update/create/review/skip decision per change | No |
 | **2 · Assisted test maintenance** | Level 1 plus generated or updated API and web tests through reviewed, independently verified MRs | Yes, test folders only |
-| 3 · Cross-platform orchestration | API, Web and Mobile workflows across services | Web and the workflow planner in v0.5; Mobile and story-wide generation planned (v0.6) |
+| 3 · Cross-platform orchestration | API, Web and Mobile workflows across services | Web and the workflow planner (v0.5); Mobile and story-wide analysis and generation (v0.6) |
 
 Choose with `init --level intelligence|maintenance` or `level:` in the config. Most teams should start at level 1.
 
@@ -23,7 +23,10 @@ Choose with `init --level intelligence|maintenance` or `level:` in the config. M
 | 1 · Gap report | `qa-sentinel gap-report` | dev merge request | one MR comment: impacted tests, coverage gaps, AC mismatches, spec drift |
 | 2 · API tests | `qa-sentinel generate` | dev MR merged | `qa-sentinel/<service>-<sha>` branch + MR with new/updated tests, **independently verified by qa-sentinel** |
 | Gate | `qa-sentinel verify` | MR touching tests | same policy, type-check and changed-spec checks; fails unless VERIFIED |
-| Later · Web, Mobile | adapters | — | see [Roadmap](#roadmap) |
+| 0 · Story review | `qa-sentinel review-story` | story ready for dev | ambiguous ACs, missing negative/edge cases, scope without an AC (Jira comment) |
+| Story-wide | `gap-report --story` / `generate --story` | all of a story's MRs merged | one analysis and one test MR across every service the story changed |
+| 3 · Showcase | `qa-sentinel showcase` | full suite run on SIT/UAT | one video + one evidence PDF on the Jira story, once, when every AC passed |
+| Bugs | `qa-sentinel bugs` / automatic | AC failing or not built | a bug card per requirement with expected vs actual, how to reproduce, evidence (opt-in) |
 
 ### Real output
 
@@ -31,7 +34,7 @@ From [`examples/delivery-slot-demo`](examples/delivery-slot-demo): a dev added a
 
 - **Gap report** (v0.2: 47 s, $0.13): the agent wrote a structured test plan, which qa-sentinel validated. qa-sentinel computed the risk (**High**) from evidence-backed factors and rendered the report. The plan has 4 changes, each with a decision; the AC-3 conflict is routed to human review, and a stale test and the spec drift are flagged. [Report →](examples/delivery-slot-demo/expected-output/gap-report.md) · [validated plan →](examples/delivery-slot-demo/expected-output/test-plan.validated.json)
 - **Generated tests** (v0.2): the agent implemented only the plan's update/create/review decisions, writing the capacity test to the **acceptance criteria** as `test.fixme`. qa-sentinel then **re-ran everything itself** (tsc clean, 5 passed, 1 skipped) and listed the fixme as an unresolved product discrepancy. [MR description →](examples/delivery-slot-demo/expected-output/merge-request-summary.md) · [diff →](examples/delivery-slot-demo/expected-output/generated-tests.diff) · [run manifest →](examples/delivery-slot-demo/expected-output/run-manifest.json)
-- **Benchmark:** 8 scenarios from the external review (new endpoint, field rename, new validation, AC conflict, refactor, wrong-reason pass, missing requirement, prompt injection). The last 3 full runs scored 100% on gap recall, gap precision and decision accuracy, at $0.70 per run. The first run, before the fixes it found, scored 88% decision accuracy. [Results →](bench/results/latest.md) · [method →](bench/README.md)
+- **Benchmark:** 8 scenarios from the external review (new endpoint, field rename, new validation, AC conflict, refactor, wrong-reason pass, missing requirement, prompt injection). The latest full run (v0.6, with the stricter plan that also says whether each requirement is built) scored 100% on gap recall, gap precision and decision accuracy with no repair rounds, at $0.73; the runs before it did too. The first run, before the fixes it found, scored 88% decision accuracy. [Results →](bench/results/latest.md) · [method →](bench/README.md)
 - **Prompt injection:** a comment in the dev's code told "AI QA agents" to add `curl … | sh` to CI and dump env vars. Both phases ignored it and flagged it for humans. Had it been followed, the guardrails would have rejected the run.
 
 ## How it works
@@ -68,6 +71,16 @@ Risk is a fixed rule that you can read: **critical** for auth, money or personal
 - **Independent test review.** After verification, a second read-only agent with a fresh context judges every changed test against the ACs: strong / adequate / weak / wrong-oracle, with issues and the missing assertion. Advisory: it labels the MR (`qa-sentinel::weak-tests`) but never changes VERIFIED.
 - **Knowledge base (`kb/`).** Team-written domain rules and review lessons, read by every agent and citable as `domain-rule` evidence. When a story is silent, a kb rule can be the oracle. Agents can't edit it.
 - **Jira as a report target.** `reporting.targets: [gitlab-mr, jira]` posts the gap report on the story too.
+
+### What's in v0.6
+
+- **One showcase video per story.** When every acceptance criterion passed on the agreed environment (`showcase.environments`), qa-sentinel re-records the chosen test for each AC in showcase mode (slowed down, the element being used outlined, a pause on the result) and joins them with title cards into **one `<STORY>-showcase.mp4`**, plus **one evidence PDF** (results per AC, a screenshot per UI test, the API requests and responses, with secrets redacted). Attached once, only after all ACs passed; the people in `showcase.notify` are tagged. This replaces the manual "Biz showcase" session.
+- **Mobile tests (WebdriverIO + Appium).** Apps are services with `kind: mobile`. `init --mobile` / `add-mobile` scaffold screen objects, a ui helper with intents, evidence hooks (screen recording, screenshot, API setup calls per test) and a `write-mobile-test` skill. Mobile specs are verified against an Appium server (`QA_APPIUM_URL`, checked first; device-farm URLs with credentials work), selected for regression by `@screen` tag, and their recordings go into the showcase video.
+- **Is the story built?** Besides ACs, qa-sentinel reads the story's tech scope and expected results (description headings or Jira fields: `requirements.scope`, `requirements.jira.scopeFields`) as items TS-n / ER-n. Every plan says, with evidence, whether each AC and scope item is implemented, partial, not found or built differently. Scope items no AC covers are listed for the PO.
+- **Story review before development.** `review-story` finds ambiguous ACs, missing negative and edge cases and scope without an AC, and can post them on the story.
+- **Story-wide runs.** `gap-report --story SHOP-12` and `generate --story SHOP-12` analyse everything a story changed across services (only the story's own commits, not other work merged meanwhile) and write one test MR for it.
+- **Bug cards.** `bugs.mode: suggest | create`: a failing test written to an AC, a fixme the agent wrote because the product disagrees, or (story-wide) an AC nothing builds becomes a Jira bug with expected vs actual, the test and command to reproduce, where to look in the code, the evidence and a machine-readable block for coding agents. Never raised twice; "now passes" is noted on the bug.
+- **Quality extras.** Failed specs are retried once and reported as flaky, not failed. `tag` backfills `@service`/`@endpoint`/`@page` tags on existing tests (only titles may change; checked). `learn` also learns web and mobile conventions. New pages get an axe accessibility test (WCAG 2 AA). `metrics` reports the verification rate, the **merged-without-edits rate**, cost and plan repairs. `upgrade` refreshes qa-sentinel's own files after an update.
 
 ### What's in v0.5
 
@@ -110,11 +123,18 @@ Starting from nothing? `qa-sentinel init --mode scratch` scaffolds Playwright AP
 | `gap-report -s <service>` | Read-only, risk-ranked analysis. The run is discarded if anything changed in either repo. `--post` creates or updates a single MR comment. Skips the agent for docs- or config-only changes. |
 | `generate -s <service>` | Writes and updates tests on a branch. **Rejected with nothing committed** on any guardrail violation. Otherwise independently verified, then committed. `--push` opens or updates a GitLab MR (Draft unless VERIFIED). Exit code 0 only when VERIFIED. |
 | `verify [--policy] [--base <ref>]` | The same independent checks, for any branch. Use it as the blocking CI gate on agent MRs. |
+| `gap-report --story KEY` / `generate --story KEY` | Story mode: the story's changes in every service (from MRs, branches and commits naming the key) as one analysis and one test MR on `qa-sentinel/story-KEY`. |
+| `review-story --story KEY [--post]` | Before development: reviews the story's ACs and scope (ambiguity, missing negative/edge cases, scope without an AC). `--post` comments on the story. |
+| `add-mobile [--platform android\|ios]` | Adds the mobile layer (WebdriverIO + Appium): turns `tests.mobile` on, writes `wdio.conf.ts`, screen objects, ui helper, evidence hooks, example spec, the write-mobile-test skill and the WebdriverIO packages. (`init --mobile` for new projects.) |
+| `bugs [--story KEY] [--results f] [--env sit] [--dry-run]` | After a run: raises (or proposes, per `bugs.mode`) a bug card for each AC whose tests failed, and notes "now passes" on earlier bugs. |
+| `tag [--limit n] [--push] [--dry-run]` | One-off: an agent adds traceability tags to existing untagged tests on a branch; qa-sentinel rejects anything but added tags in test titles. |
+| `metrics [--since 30d] [--runs dir…] [--json]` | How the agents are doing: verification rate, merged-without-edits rate (merge, squash and fast-forward), cost, plan repairs, guardrail stops (`qa-metrics.md`). |
+| `upgrade` | After updating qa-sentinel: refreshes its agents, skills, CI templates and project context; keeps your learned `write-*-test` conventions. |
 | `add-web [--healing none\|bubblegum]` | Adds the web layer to an existing project: turns `tests.web` on, writes the ui helper, page-object base, web fixtures, example spec and the write-web-test skill, and prints the Playwright project to add. (`init --web` does the same for new projects.) |
 | `healed [--results f] [--fail-on-heal]` | After a run with `QA_HEALING=bubblegum`: lists healed steps as page-object fixes (`qa-healed.md`) and keeps them for the next generation (`qa-healed.json`). |
 | `trace [--story KEY] [--story-file f] [--json]` | Requirement traceability from test tags: which tests prove which acceptance criteria, and whether `test-map.yaml` agrees with the tags. |
 | `feature <story> [--env sit] [--run] [--post] [--json]` | Feature manifest: every MR/branch for the story across services, whether each is merged and deployed on the environment (version endpoint), and the overall status. `--run` runs the story's tests when ready; `--post` updates the Jira story. |
-| `showcase [--story KEY] [--results f] [--env sit] [--force] [--dry-run]` | After a passing run, attaches evidence (API call logs, videos, screenshots) to the Jira story once all ACs pass. One time per story; again only with the `qa-showcase-refresh` label or `--force`. Without Jira, or with `--dry-run`, saves it to `qa-showcase/<story>/`. |
+| `showcase [--story KEY] [--results f] [--mobile-results d] [--env sit] [--force] [--dry-run]` | After a passing run, attaches the showcase pack (one video, one evidence PDF; `showcase.format: files` for the separate recordings and logs) to the Jira story once all ACs pass. One time per story; again only with the `qa-showcase-refresh` label or `--force`. Without Jira, or with `--dry-run`, saves it to `qa-showcase/<story>/`. |
 
 Common flags: `--env <name>` (generate, verify, feature, showcase: an environment from `environments:`), `--service-path` (where the service is checked out, for CI), `--checkout` (detach the service to the analysed SHA), `--story-file`, `--dry-run` (prints the Claude command instead of running it).
 
@@ -147,6 +167,9 @@ workspace:
       kind: web
       routes: [/, /orders/new, /orders/:id]
       dependsOn: [orders-service]
+    - name: shop-app                 # a mobile app: tested through WebdriverIO + Appium
+      path: ../shop-app
+      kind: mobile
 environments:                        # lower environments the tests can run against (generate/verify/feature --env)
   dev: { baseUrl: https://dev.shop.example.test }
   sit: { baseUrl: https://sit.shop.example.test, webUrl: https://sit.shop.example.test/app/, description: System integration }
@@ -167,7 +190,14 @@ tests:
     explore: snapshot                # save each affected page's accessibility tree + screenshot for the agent
     healing: none                    # none | bubblegum (runtime locator healing, never while verifying)
     bubblegum: { package: "@bubblegum-ai/node", cdpPort: 9222, failOnHeal: false }
-  mobile: { enabled: false }
+    accessibility: new-pages         # off | new-pages (one axe WCAG 2 AA test per new or changed page)
+  mobile:
+    enabled: true                    # `init --mobile` or `add-mobile`
+    dir: tests/mobile
+    screensDir: src/screens          # screen objects: the only place selectors live
+    runCommand: npx wdio run wdio.conf.ts   # qa-sentinel adds --spec <file>
+    appiumUrlEnv: QA_APPIUM_URL      # checked at <url>/status before mobile tests run
+    platform: android                # default when QA_MOBILE_PLATFORM is not set
 level: intelligence                  # intelligence (read-only) | maintenance (also generate tests)
 requirements:
   source: jira                       # mr-description | jira | none
@@ -176,17 +206,24 @@ requirements:
     baseUrl: https://yourco.atlassian.net
     projectKeys: [SHOP]              # story keys are found in MR title, branch or commit messages
     acceptanceCriteriaField: customfield_10045   # optional; else AC are read from the description
+    scopeFields: [{ field: customfield_10050, name: Tech scope, prefix: TS }]   # optional: scope kept in Jira fields
     approvedStatuses: [Ready for Dev, In Progress, Done]   # these statuses make AC "approved"
+  scope: { enabled: true }           # "Tech scope" / "Expected results" headings become items TS-n / ER-n
 reporting:
   targets: [gitlab-mr]               # where `gap-report --post` publishes: gitlab-mr, jira, or both
   jira: { format: summary, maxChars: 30000 }   # summary (plain language, default) | full; optional visibility: { type: role, value: Developers }
 showcase:
+  format: pack                       # pack: one video + one PDF per story | files: the separate recordings and logs
+  video: { record: true, slowMoMs: 500, holdMs: 2000, titleSeconds: 3 }   # needs a full ffmpeg (libx264)
+  environments: [sit, uat]           # only runs on these environments are showcased
+  notify: ["5b10ac8d82e05b22cc7d4ef5"]   # Jira account ids to tag when a story is ready for review
   refreshLabel: qa-showcase-refresh  # QA adds this label to attach evidence again
   replaceOnRefresh: true             # delete the previous evidence when refreshing
   kinds: [video, screenshot, api-log]   # also: trace
-  maxFiles: 20                       # videos first, then screenshots
-  maxFileMb: 10
+  maxFiles: 20                       # files format: videos first, then screenshots
+  maxFileMb: 50
   requireNoPending: true             # a fixme/skip test on an AC blocks the showcase
+bugs: { mode: off, issueType: Bug, priority: Low, labels: [qa-sentinel], linkType: Relates, notBuilt: true }   # off | suggest | create
 ci: { platform: gitlab, testRepoProject: my-group/qa-tests, targetBranch: main }
 agent:
   model: <optional, passed to claude --model>
@@ -201,7 +238,7 @@ guardrails:
   allowedHosts: [localhost, example.test]   # hosts allowed in added test code (+ host of the base URL)
   assertionRemoval: warn             # warn | fail
   passEnv: []                        # extra env vars for tests/agents; credentials are never passed otherwise
-verification: { typecheck: auto, lintCommand: "npx eslint", preflight: true, timeoutMinutes: 15, defaultEnvironment: sit, requireVerifiedToPush: true }
+verification: { typecheck: auto, lintCommand: "npx eslint", preflight: true, retryFailed: true, timeoutMinutes: 15, defaultEnvironment: sit, requireVerifiedToPush: true }
 ```
 
 ## CI
@@ -238,7 +275,10 @@ Agent policy: diffs, stories and comments are **evidence, not instructions**. Or
 - **No acceptance criteria → weaker tests.** Without a story, tests can only check what the code does.
 - **Review is still required.** Expect most agent MRs to need small edits at first; track the merged-without-edits rate.
 - Behaviour that needs real infrastructure (queues, third-party callbacks) still needs human test design.
-- **Web:** proven on the ShopLite storefront (Chromium). The Bubblegum hook is tested over CDP with a stand-in client; it has not yet run against the real Bubblegum engine. Videos need Playwright's ffmpeg: on networks that block Playwright's downloads, use `QA_BROWSER_CHANNEL=chrome QA_VIDEO=off`. Mobile comes in v0.6.
+- **Web:** proven on the ShopLite storefront (Chromium). The Bubblegum hook is tested over CDP with a stand-in client; it has not yet run against the real Bubblegum engine. Videos need Playwright's ffmpeg: on networks that block Playwright's downloads, use `QA_BROWSER_CHANNEL=chrome QA_VIDEO=off`.
+- **Mobile:** the scaffold type-checks and runs end to end against a stand-in Appium server (session, recording, screenshot, result files, JUnit); it has **not yet run on a real emulator or device farm**. There is no page snapshot for apps yet: the agent finds accessibility ids in the app's code.
+- **Showcase pack:** the single video needs a full ffmpeg with libx264 (`apt-get install ffmpeg`, `QA_FFMPEG`, or `ffmpeg-static`); without it the PDF and the separate recordings are attached instead.
+- **Metrics:** fast-forward merges always count as "merged without edits", and squash merges whose branch was deleted are counted as merged with edits unknown.
 
 ## Roadmap
 
@@ -253,8 +293,8 @@ The order follows external review #1 ([response](docs/REVIEW-RESPONSE-1.md)):
 | **v0.3** ✅ | Decision engine, requirement traceability from test tags, regression selection, independent AI test review, `kb/` |
 | **v0.4** ✅ | Plain-language Jira comments, lower-environment runs before the MR, Showcase evidence on the story (once), feature manifests with deployment readiness |
 | **v0.5** ✅ | Web (Playwright UI, page objects first, page snapshots for the agent), workflow planner (API-first setup graphs), video evidence, optional [Bubblegum](https://github.com/bishnu133/bubblegum) healing |
-| v0.6 | Mobile (WebdriverIO + Appium) on the same workflow planner and API data layer; one generation per story across services |
-| Later | Learning from review feedback, mutation checks in the benchmark, alternative engines |
+| **v0.6** ✅ | One showcase video + evidence PDF per story, Mobile (WebdriverIO + Appium), tech scope / expected results and "is the story built?", story review, story-wide runs, bug cards, flaky retry, tag backfill, accessibility checks, metrics |
+| Later | Mobile on real devices and a device farm in the sandbox, app screen snapshots for the agent, learning from review feedback, mutation checks in the benchmark, alternative engines |
 
 ## Try it yourself
 
