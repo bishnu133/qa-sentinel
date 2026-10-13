@@ -24,11 +24,22 @@ async function jira(method, route, body) {
     log(`[dry-run] ${method} ${route}`);
     return method === "POST" && route === "/rest/api/2/issue" ? { key: `${project}-?` } : { transitions: [], issueTypes: [] };
   }
-  const res = await fetch(`${base.replace(/\/$/, "")}${route}`, {
-    method,
-    headers: { Authorization: auth, Accept: "application/json", "Content-Type": "application/json" },
-    body: body ? JSON.stringify(body) : undefined,
-  });
+  let res;
+  try {
+    res = await fetch(`${base.replace(/\/$/, "")}${route}`, {
+      method,
+      headers: { Authorization: auth, Accept: "application/json", "Content-Type": "application/json" },
+      body: body ? JSON.stringify(body) : undefined,
+    });
+  } catch (e) {
+    // Node's fetch says only "fetch failed"; the reason is in e.cause.
+    const c = e.cause ?? {};
+    const why = [c.code, c.message].filter(Boolean).join(": ") || e.message;
+    const hint = /CERT|certificate|SELF_SIGNED|UNABLE_TO/i.test(why)
+      ? "\n  This network inspects HTTPS and Node doesn't trust its certificate (curl does). Run with:\n  NODE_OPTIONS=--use-system-ca node sandbox/shoplite/jira-seed.mjs …"
+      : "";
+    throw new Error(`Jira ${method} ${route} failed: ${why}${hint}`);
+  }
   const text = await res.text();
   if (!res.ok) throw new Error(`Jira ${method} ${route}: ${res.status} ${text.slice(0, 300)}`);
   return text ? JSON.parse(text) : {};
