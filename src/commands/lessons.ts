@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import { execFileSync } from "node:child_process";
 import path from "node:path";
 import { loadConfig } from "../config.js";
 import { git, resolveSha, workingChanges } from "../git.js";
@@ -37,7 +38,8 @@ export async function lessonsCommand(o: LessonsOptions): Promise<number> {
   const branch = "qa-sentinel/review-lessons";
   const at = (ref: string) => {
     try {
-      return git(cwd, ["show", `${ref}:${lessonsPath}`]);
+      // Quietly: a missing file is the normal first run, not an error worth printing.
+      return execFileSync("git", ["show", `${ref}:${lessonsPath}`], { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
     } catch {
       return undefined;
     }
@@ -95,7 +97,7 @@ export async function lessonsCommand(o: LessonsOptions): Promise<number> {
   const touched = workingChanges(cwd).filter((x) => !matchesAny(x.path, ARTIFACT_GLOBS) && !before.has(x.path));
   if (touched.length) {
     log.fail(`the agent changed files it must not touch: ${touched.map((x) => x.path).join(", ")}; nothing proposed`);
-    git(cwd, ["checkout", "-q", "-f", start]);
+    git(cwd, ["checkout", "-q", "-f", startBranch ?? start]);
     return 1;
   }
   if (!r.lessons) {

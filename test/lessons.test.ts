@@ -99,6 +99,26 @@ describe("learning from review", () => {
     expect(again.tasks).toHaveLength(0);
   });
 
+  it("ignores files macOS Finder drops (.DS_Store), and returns to the starting branch when the agent oversteps", async () => {
+    const { repo, a } = await repoWithReviewedMrs();
+    fs.writeFileSync(path.join(repo, ".DS_Store"), "x"); // already there before the run
+    const lesson = { schemaVersion: 1, lessons: [{ lesson: "Assert what the AC names.", why: "w", appliesTo: "all", sources: [a.slice(0, 8)] }], skipped: [] };
+    const finder = fakeEngine(() => {
+      fs.mkdirSync(path.join(repo, "tests"), { recursive: true });
+      fs.writeFileSync(path.join(repo, "tests", ".DS_Store"), "x"); // appears while the agent runs
+      return lesson;
+    });
+    expect(await lessonsCommand({ cwd: repo, engine: finder })).toBe(0);
+    expect(sh(repo, "branch", "--show-current")).toBe("main");
+    const rogue = fakeEngine(() => {
+      fs.writeFileSync(path.join(repo, "rogue.ts"), "x");
+      return lesson;
+    });
+    sh(repo, "branch", "-D", "qa-sentinel/review-lessons");
+    expect(await lessonsCommand({ cwd: repo, engine: rogue })).toBe(1);
+    expect(sh(repo, "branch", "--show-current")).toBe("main"); // not a detached HEAD
+  });
+
   it("checks the agent's answer: known commits only, real headings for updates; strengthens instead of repeating", () => {
     const md = applyLessons(undefined, { schemaVersion: 1, lessons: [{ lesson: "Prefer roles over CSS selectors in page objects.", why: "w", appliesTo: "web", sources: ["aaaaaaaa"] }], skipped: [] }, ["aaaaaaaa11"]);
     expect(validateLessons({ schemaVersion: 1, lessons: [{ lesson: "Something general enough here.", why: "w", appliesTo: "all", sources: ["bbbbbbbb"] }] }, ["aaaaaaaa11"], []).errors[0]).toMatch(/not one of the reviewed commits/);
