@@ -1,0 +1,50 @@
+import { Ui } from "../mobile/ui";
+import { trackApiCalls } from "../mobile/evidence";
+{{#if isScratch}}
+import { request, type APIRequestContext } from "@playwright/test";
+import { ApiClient } from "../api/client";
+import { DataFactory } from "../data/builders";
+{{/if}}
+
+export interface MobileContext {
+  /** Screen-object actions with intents. */
+  ui: Ui;
+{{#if isScratch}}
+  /** API client for test data (policy: data is created through the API, never through app steps). */
+  api: ApiClient;
+  data: DataFactory;
+{{/if}}
+}
+
+/**
+ * Call once inside each `describe`: sets up a fresh context per test (ui, and the API client and data factory
+ * for setup) and hands the API calls to the evidence hook.
+ *
+ *   describe("orders", () => {
+ *     const t = useMobile();
+ *     it("… @service:app @screen:orders/new @story:SHOP-1 @ac:AC-1", async () => { await new OrderScreen(t.ui)… });
+ *   });
+ */
+export function useMobile(): MobileContext {
+  const ctx = {} as MobileContext;
+{{#if isScratch}}
+  let req: APIRequestContext | undefined;
+  before(async () => {
+    req = await request.newContext({ baseURL: process.env.{{baseUrlEnv}}, extraHTTPHeaders: { Accept: "application/json" } });
+  });
+  after(async () => {
+    await req?.dispose();
+  });
+{{/if}}
+  beforeEach(function () {
+    ctx.ui = new Ui();
+{{#if isScratch}}
+    ctx.api = new ApiClient(req!);
+    ctx.data = new DataFactory(`m-${Date.now()}`);
+    trackApiCalls(ctx.api.calls);
+{{/if}}
+  });
+  return ctx;
+}
+
+export { trackApiCalls };

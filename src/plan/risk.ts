@@ -6,7 +6,7 @@ import type { Change, RiskFactor, RiskLevel, TestPlan } from "./schema.js";
  */
 export const RISK_RULES: Record<Exclude<RiskLevel, "low">, RiskFactor[]> = {
   critical: ["auth", "money", "personal-data"],
-  high: ["business-rule", "breaking-contract", "write-path-error-handling", "cross-service", "conflicting-oracle", "user-journey"],
+  high: ["business-rule", "breaking-contract", "write-path-error-handling", "cross-service", "conflicting-oracle", "user-journey", "price-display"],
   medium: ["new-endpoint", "validation", "non-breaking-contract", "ui-visible"],
 };
 

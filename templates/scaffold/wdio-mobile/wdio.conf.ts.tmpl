@@ -1,0 +1,62 @@
+/**
+ * WebdriverIO + Appium for the mobile layer ({{mobileDir}}). Everything device-specific comes from the environment,
+ * so the same config runs on a laptop emulator, a CI emulator or a device farm:
+ *   QA_APPIUM_URL        Appium server (default http://127.0.0.1:4723); a device farm's https://user:key@host/wd/hub works too
+ *   QA_MOBILE_PLATFORM   android | ios (default {{mobilePlatform}})
+ *   QA_DEVICE_NAME, QA_PLATFORM_VERSION, QA_UDID
+ *   QA_APP               path or URL of the .apk/.aab/.app/.ipa to install, or
+ *   QA_APP_PACKAGE + QA_APP_ACTIVITY (Android) / QA_BUNDLE_ID (iOS) for an installed app
+ *   QA_VIDEO=off         no screen recording; QA_JUNIT_DIR / QA_RESULTS_DIR: where reports and evidence go
+ * qa-sentinel runs specs with `{{mobileRunCommand}} --spec <file>`.
+ */
+import { afterMobileTest, beforeMobileTest } from "./src/mobile/evidence";
+
+const appium = new URL(process.env.QA_APPIUM_URL ?? "http://127.0.0.1:4723");
+const ios = (process.env.QA_MOBILE_PLATFORM ?? "{{mobilePlatform}}").toLowerCase() === "ios";
+const env = (k: string) => process.env[k] || undefined;
+
+const capabilities: Record<string, unknown> = {
+  platformName: ios ? "iOS" : "Android",
+  "appium:automationName": ios ? "XCUITest" : "UiAutomator2",
+  "appium:deviceName": env("QA_DEVICE_NAME") ?? (ios ? "iPhone 15" : "Android Emulator"),
+  "appium:platformVersion": env("QA_PLATFORM_VERSION"),
+  "appium:udid": env("QA_UDID"),
+  "appium:app": env("QA_APP"),
+  "appium:appPackage": env("QA_APP_PACKAGE"),
+  "appium:appActivity": env("QA_APP_ACTIVITY"),
+  "appium:bundleId": env("QA_BUNDLE_ID"),
+  "appium:newCommandTimeout": 240,
+  "appium:autoGrantPermissions": ios ? undefined : true,
+};
+for (const k of Object.keys(capabilities)) if (capabilities[k] === undefined) delete capabilities[k];
+
+export const config = {
+  runner: "local",
+  protocol: appium.protocol.replace(":", ""),
+  hostname: appium.hostname,
+  port: Number(appium.port || (appium.protocol === "https:" ? 443 : 80)),
+  path: appium.pathname || "/",
+  // Device farms: credentials from the URL (sent as basic auth / the farm's user and key).
+  ...(appium.username ? { user: decodeURIComponent(appium.username), key: decodeURIComponent(appium.password) } : {}),
+  specs: ["./{{mobileDir}}/**/*.spec.ts"],
+  maxInstances: 1,
+  capabilities: [capabilities],
+  logLevel: "warn",
+  waitforTimeout: 10_000,
+  connectionRetryCount: 1,
+  framework: "mocha",
+  mochaOpts: { ui: "bdd", timeout: 180_000 },
+  reporters: [
+    "spec",
+    [
+      "junit",
+      {
+        outputDir: process.env.QA_JUNIT_DIR ?? "test-results/mobile/junit",
+        outputFileFormat: (o: { cid: string }) => `results-${o.cid}.xml`,
+        addFileAttribute: true,
+      },
+    ],
+  ],
+  beforeTest: beforeMobileTest,
+  afterTest: afterMobileTest,
+};

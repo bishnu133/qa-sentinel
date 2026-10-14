@@ -1,0 +1,27 @@
+import { driver } from "@wdio/globals";
+import type { El, Ui } from "../mobile/ui";
+
+/**
+ * One class per app screen. Elements are getters (accessibility ids first: `$("~place-order")`), actions are
+ * methods named after what the user does, and every action goes through `this.ui` with a human name.
+ */
+export abstract class BaseScreen {
+  /** The screen's name or deep-link route, the same value as the specs' @screen tag (e.g. "orders/new"). */
+  abstract readonly screen: string;
+  /** An element only this screen shows; `waitForOpen()` waits for it. */
+  abstract get root(): El;
+
+  constructor(protected readonly ui: Ui) {}
+
+  async waitForOpen(timeout = 15_000): Promise<this> {
+    await this.root.waitForDisplayed({ timeout });
+    return this;
+  }
+
+  /** Open a deep link (myapp://orders/new) when the app supports them: faster and steadier than tapping there. */
+  async openDeepLink(url: string): Promise<this> {
+    if (driver.isAndroid) await driver.execute("mobile: deepLink", { url, package: process.env.QA_APP_PACKAGE });
+    else await driver.url(url);
+    return this.waitForOpen();
+  }
+}

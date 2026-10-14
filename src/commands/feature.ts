@@ -4,7 +4,7 @@ import { spawnSync } from "node:child_process";
 import { loadConfig } from "../config.js";
 import { assembleFeature, featureMarkdown } from "../feature/manifest.js";
 import { indexTests, traceMarkdown, traceStory } from "../analysis/testIndex.js";
-import { parseAcceptanceCriteria } from "../requirements.js";
+import { jiraIssueText, parseStoryFor } from "../requirements.js";
 import { gitlabContext } from "../scm/gitlab.js";
 import { fetchIssue, jiraContext, markdownToJiraWiki, upsertIssueComment } from "../scm/jira.js";
 import { testEnv, useEnvironment } from "../run.js";
@@ -38,9 +38,11 @@ export async function featureCommand(o: FeatureOptions): Promise<number> {
 
   const jira = jiraContext(c.requirements.jira.baseUrl);
   const acs = o.storyFile
-    ? parseAcceptanceCriteria(fs.readFileSync(path.resolve(cwd, o.storyFile), "utf8"))
+    ? parseStoryFor(c, fs.readFileSync(path.resolve(cwd, o.storyFile), "utf8")).acceptanceCriteria
     : jira
-      ? await fetchIssue(jira, story, c.requirements.jira.acceptanceCriteriaField).then((i) => parseAcceptanceCriteria([i.description, i.acceptanceCriteria ?? ""].join("\n\n"))).catch(() => [])
+      ? await fetchIssue(jira, story, c.requirements.jira.acceptanceCriteriaField, c.requirements.jira.scopeFields.map((f) => f.field))
+          .then((i) => parseStoryFor(c, jiraIssueText(c, i)).acceptanceCriteria)
+          .catch(() => [])
       : [];
   const index = indexTests(cwd, c);
   const tests = index.filter((t) => t.stories.includes(story));

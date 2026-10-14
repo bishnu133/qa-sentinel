@@ -7,13 +7,17 @@ import { checkWorkflow, normaliseSetup } from "./workflow.js";
 export interface PlanContext {
   /** AC ids from the requirement snapshot (AC-1, AC-2, …). Empty when none were parsed. */
   acIds: string[];
+  /** Scope item ids (TS-1, ER-1, …): citable like ACs, and checked for implementation status. */
+  scopeIds?: string[];
   /** True when no requirements were found at all. */
   requirementsMissing: boolean;
   testRepo: string;
   serviceRepo: string;
+  /** Story mode: every service repo, by service name (evidence may be "service/path" or a path in any of them). */
+  serviceRepos?: Record<string, string>;
   /** Enabled test layers (default: api only) and the layer scenarios default to (the service's layer). */
-  layers?: ("api" | "web")[];
-  defaultLayer?: "api" | "web";
+  layers?: ("api" | "web" | "mobile")[];
+  defaultLayer?: "api" | "web" | "mobile";
 }
 
 export interface PlanValidation {
@@ -59,7 +63,7 @@ export function validatePlan(raw: unknown, ctx: PlanContext): PlanValidation {
     ids.add(c.id);
   }
   const byId = new Map(plan.changes.map((c) => [c.id, c]));
-  const acSet = new Set(ctx.acIds);
+  const acSet = new Set([...ctx.acIds, ...(ctx.scopeIds ?? [])]);
   const checkReqIds = (where: string, reqIds: string[]) => {
     if (!reqIds.length) return;
     if (ctx.requirementsMissing) errors.push(`${where}: cites ${reqIds.join(", ")} but no requirements were provided; leave requirementIds empty`);
@@ -77,7 +81,10 @@ export function validatePlan(raw: unknown, ctx: PlanContext): PlanValidation {
     if (c.observable && !c.riskFactors.length) errors.push(`change ${c.id}: an observable change needs at least one risk factor`);
     if (ctx.requirementsMissing && c.oracleStatus === "approved") errors.push(`change ${c.id}: oracle cannot be "approved" when no requirements were provided`);
     for (const e of c.evidence) {
-      if ((e.source === "source-code" || e.source === "openapi") && e.file && !exists(ctx.serviceRepo, e.file)) {
+      const inAnyRepo = (f: string) =>
+        exists(ctx.serviceRepo, f) ||
+        Object.entries(ctx.serviceRepos ?? {}).some(([name, root]) => exists(root, f) || (f.startsWith(`${name}/`) && exists(root, f.slice(name.length + 1))));
+      if ((e.source === "source-code" || e.source === "openapi") && e.file && !inAnyRepo(e.file)) {
         warnings.push(`change ${c.id}: evidence file not found in service repo: ${e.file}`);
       }
     }
@@ -143,9 +150,9 @@ export function validatePlan(raw: unknown, ctx: PlanContext): PlanValidation {
       // Workflow planner: the layer that proves it, its page, and its setup graph checked against the data policy.
       s.layer ??= ctx.defaultLayer ?? "api";
       if (!(ctx.layers ?? ["api"]).includes(s.layer)) errors.push(`${at}: layer "${s.layer}" is not enabled in this project (enabled: ${(ctx.layers ?? ["api"]).join(", ")})`);
-      if (s.layer === "web") {
+      if (s.layer === "web" || s.layer === "mobile") {
         s.page ??= c.page;
-        if (!s.page) errors.push(`${at}: a web scenario needs the page it opens ("page": "/orders/new")`);
+        if (!s.page) errors.push(`${at}: a ${s.layer} scenario needs the ${s.layer === "web" ? 'page it opens ("page": "/orders/new")' : 'screen it opens ("page": "orders/new")'}`);
       }
       const steps = normaliseSetup(s.setup);
       const wf = checkWorkflow(steps, s.layer, at);
@@ -163,6 +170,27 @@ export function validatePlan(raw: unknown, ctx: PlanContext): PlanValidation {
   for (const t of plan.impactedTests) if (!exists(ctx.testRepo, t.file)) errors.push(`impactedTests: not found: ${t.file}`);
   if (plan.skipReason && plan.changes.some((c) => c.observable)) errors.push("skipReason is set but there are observable changes");
   for (const m of plan.acMismatches) if (m.requirementId) checkReqIds("acMismatches", [m.requirementId]);
+
+  // Is the story built? Every AC and scope item gets exactly one implementation status, backed by evidence.
+  const items = [...ctx.acIds, ...(ctx.scopeIds ?? [])];
+  const seen = new Map<string, number>();
+  for (const r of plan.requirementStatus) {
+    const where = `requirementStatus ${r.id}`;
+    if (!acSet.has(r.id)) errors.push(`${where}: unknown requirement id (known: ${items.join(", ") || "none"})`);
+    seen.set(r.id, (seen.get(r.id) ?? 0) + 1);
+    if (["implemented", "partial", "conflict"].includes(r.status) && !r.evidence.length) errors.push(`${where}: "${r.status}" needs evidence (the code that does it)`);
+    if (r.status === "elsewhere" && !r.where) errors.push(`${where}: "elsewhere" must say which service or repo should build it ("where")`);
+    for (const a of r.coveredByAcs) if (!ctx.acIds.includes(a)) errors.push(`${where}: coveredByAcs cites ${a}, which is not an AC`);
+    if (r.status === "conflict" && !plan.acMismatches.some((m) => m.requirementId === r.id) && !plan.changes.some((ch) => ch.oracleStatus === "conflicting" && ch.requirementIds.includes(r.id)))
+      warnings.push(`${where}: marked "conflict" but no acMismatch or conflicting change cites it`);
+  }
+  if (!ctx.requirementsMissing) {
+    for (const id of items) {
+      const n = seen.get(id) ?? 0;
+      if (n === 0) errors.push(`requirementStatus: ${id} has no implementation status (implemented, partial, not-found, conflict, elsewhere or not-applicable)`);
+      if (n > 1) errors.push(`requirementStatus: ${id} appears ${n} times; give exactly one`);
+    }
+  }
 
   return { ok: errors.length === 0, plan, errors, corrections, warnings, rules };
 }

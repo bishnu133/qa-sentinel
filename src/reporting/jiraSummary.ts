@@ -11,8 +11,9 @@ import type { AcTrace } from "../analysis/testIndex.js";
 const RISK = { critical: "🔴 Critical", high: "🟠 High", medium: "🟡 Medium", low: "🟢 Low" } as const;
 const link = (label: string, url?: string) => (url ? `[${label}](${url})` : label);
 
-export type AcStanding = "conflict" | "needs-tests" | "covered" | "not-affected";
+export type AcStanding = "not-built" | "conflict" | "needs-tests" | "covered" | "not-affected";
 const STANDING: Record<AcStanding, string> = {
+  "not-built": "⛔ Not built in this change",
   conflict: "⚠️ Code and story disagree, needs a decision",
   "needs-tests": "🆕 Tests to add or update",
   covered: "✅ Existing tests cover it",
@@ -26,7 +27,9 @@ export function acStandings(plan: TestPlan, acIds: string[]): Map<string, AcStan
   for (const ac of acIds) {
     const changes = plan.changes.filter((c) => c.requirementIds.includes(ac));
     const scenarioHit = plan.decisions.some((d) => ["create", "update", "review"].includes(d.decision) && d.proposedScenarios.some((s) => s.requirementIds.includes(ac)));
-    if (plan.acMismatches.some((m) => m.requirementId === ac) || changes.some((c) => c.oracleStatus === "conflicting")) out.set(ac, "conflict");
+    const built = (plan.requirementStatus ?? []).find((r) => r.id === ac)?.status;
+    if (built === "conflict" || plan.acMismatches.some((m) => m.requirementId === ac) || changes.some((c) => c.oracleStatus === "conflicting")) out.set(ac, "conflict");
+    else if (built === "not-found") out.set(ac, "not-built");
     else if (scenarioHit || changes.some((c) => ["create", "update", "review"].includes(decisionFor.get(c.id)?.decision ?? ""))) out.set(ac, "needs-tests");
     else if (changes.some((c) => decisionFor.get(c.id)?.decision === "reuse")) out.set(ac, "covered");
     else out.set(ac, "not-affected");
@@ -43,7 +46,8 @@ export function gapSummary(i: {
   reportUrl?: string;
   regressionTests?: number;
 }): string {
-  const standings = acStandings(i.plan, i.req.acceptanceCriteria.map((a) => a.id));
+  const items = [...i.req.acceptanceCriteria, ...(i.req.scopeItems ?? [])];
+  const standings = acStandings(i.plan, items.map((a) => a.id));
   const lines = [
     `### QA check · ${i.service} · ${RISK[i.risk]} risk`,
     `Stage: *analysed the code change* ${i.mrUrl ? `(${link("merge request", i.mrUrl)})` : ""}`.trim(),
@@ -55,6 +59,12 @@ export function gapSummary(i: {
   if (standings.size) {
     lines.push("", "| Acceptance criterion | Status |", "| --- | --- |");
     for (const ac of i.req.acceptanceCriteria) lines.push(`| ${ac.id}: ${short(ac.text)} | ${STANDING[standings.get(ac.id)!]} |`);
+    for (const sc of i.req.scopeItems ?? []) lines.push(`| ${sc.id} _(${sc.source})_: ${short(sc.text)} | ${STANDING[standings.get(sc.id)!]} |`);
+  }
+  const notInAc = (i.req.scopeItems ?? []).filter((sc) => (i.plan.requirementStatus ?? []).find((r) => r.id === sc.id)?.coveredByAcs.length === 0);
+  if (notInAc.length) {
+    lines.push("", "**In the story's scope but not in any acceptance criterion** (PO: add an AC so it is agreed and tested):");
+    for (const sc of notInAc) lines.push(`- ${sc.id}: ${short(sc.text, 160)}`);
   }
   if (i.plan.acMismatches.length) {
     lines.push("", "**Needs a decision (PO / dev):**");

@@ -9,7 +9,7 @@ import { scrubbedEnv } from "./env.js";
 import { layerEnvNames, layers } from "./layers.js";
 import type { RequirementSnapshot } from "./requirements.js";
 
-export const VERSION = "0.5.0";
+export const VERSION = "0.6.0";
 
 export interface RunDir {
   id: string;
@@ -79,6 +79,9 @@ export const ARTIFACT_GLOBS = [
   "qa-showcase/**",
   "qa-verify.md",
   "qa-healed.md",
+  "qa-metrics.md",
+  "qa-story-check.md",
+  "qa-story-review.md",
   "qa-healed.json",
   ".qa-sentinel-snapshots/**",
   "test-results/**",

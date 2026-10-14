@@ -113,6 +113,9 @@ describe("init --web", () => {
     for (const f of ["src/web/ui.ts", "src/web/healing.ts", "src/pages/base-page.ts", "src/fixtures/web.ts", "tests/web/example/home.spec.ts", ".claude/skills/write-web-test/SKILL.md"]) expect(fs.existsSync(path.join(repo, f)), f).toBe(true);
     expect(fs.readFileSync(path.join(repo, "src/web/healing.ts"), "utf8")).toContain("[\\\\/]src[\\\\/]pages[\\\\/]");
     expect(fs.readFileSync(path.join(repo, "src/web/healing.ts"), "utf8")).toContain('"@bubblegum-ai/node"');
+    expect(fs.existsSync(path.join(repo, "src/web/a11y.ts"))).toBe(true);
+    expect(JSON.parse(fs.readFileSync(path.join(repo, "package.json"), "utf8")).devDependencies["@axe-core/playwright"]).toBeTruthy();
+    expect(fs.readFileSync(path.join(repo, ".claude/skills/write-web-test/SKILL.md"), "utf8")).toContain("checkAccessibility");
     const pw = fs.readFileSync(path.join(repo, "playwright.config.ts"), "utf8");
     expect(pw).toContain('name: "web"');
     expect(pw).toContain("process.env.QA_WEB_URL");
@@ -212,5 +215,38 @@ describe("add-web and healing safety", () => {
     expect(agentEnv(h, { PATH: "/bin", QA_HEALING: "bubblegum" }).QA_HEALING).toBe("off");
     const findings = checkPaths([{ status: "M", path: "src/web/healing.ts" }, { status: "M", path: "src/fixtures/web.ts" }, { status: "M", path: "src/pages/order-page.ts" }], generatePolicy(h));
     expect(findings.map((f) => [f.file, f.rule])).toEqual([["src/web/healing.ts", "blocked-path"], ["src/fixtures/web.ts", "blocked-path"]]);
+  });
+});
+
+describe("flaky retry", () => {
+  it("re-runs failed specs once and reports a pass on retry as flaky, not failed", async () => {
+    const repo = repoDir();
+    await initCommand({ cwd: repo, yes: true, mode: "scratch", ci: "gitlab", level: "maintenance", name: "f" });
+    // Fails on the first run, passes on the second (a counter file), like a timing-dependent test.
+    const runner = `node -e "const fs=require('fs');const n='${repo}/count';const k=fs.existsSync(n)?+fs.readFileSync(n,'utf8'):0;fs.writeFileSync(n,String(k+1));const ok=k>0;fs.writeFileSync(process.env.PLAYWRIGHT_JUNIT_OUTPUT_NAME,'<testsuite><testcase name=\\"t\\" file=\\"tests/api/a.spec.ts\\">'+(ok?'':'<failure message=\\"boom\\"/>')+'</testcase></testsuite>');process.exit(ok?0:1)"`;
+    const cfg = path.join(repo, "qa-sentinel.config.yaml");
+    fs.writeFileSync(cfg, fs.readFileSync(cfg, "utf8").replace(/runCommand: npx playwright test --project=api/, `runCommand: ${JSON.stringify(runner)}`));
+    const c = loadConfig(repo);
+    fs.writeFileSync(path.join(repo, "tests/api/a.spec.ts"), "x");
+    const r = await verifyChanges({ cwd: repo, c: { ...c, verification: { ...c.verification, preflight: false, typecheck: "never" } }, changes: [{ status: "A", path: "tests/api/a.spec.ts" }], runDir: tmp(), env: { PATH: process.env.PATH } });
+    expect(r.status).toBe("VERIFIED");
+    expect(r.flaky).toEqual(["t"]);
+    expect(r.checks.find((x) => x.name === "tests")!.detail).toContain("1 only on retry (flaky)");
+  });
+
+  it("does not let a flaky test excuse a real failure with the same title in another spec", async () => {
+    const repo = repoDir();
+    await initCommand({ cwd: repo, yes: true, mode: "scratch", ci: "gitlab", level: "maintenance", name: "f2" });
+    // a.spec "t" fails once then passes; b.spec "t" always fails.
+    const runner = `node -e "const fs=require('fs');const n='${repo}/count';const k=fs.existsSync(n)?+fs.readFileSync(n,'utf8'):0;fs.writeFileSync(n,String(k+1));const a=k>0?'':'<failure message=\\"boom\\"/>';fs.writeFileSync(process.env.PLAYWRIGHT_JUNIT_OUTPUT_NAME,'<testsuite><testcase name=\\"t\\" file=\\"tests/api/a.spec.ts\\">'+a+'</testcase><testcase name=\\"t\\" file=\\"tests/api/b.spec.ts\\"><failure message=\\"real\\"/></testcase></testsuite>');process.exit(1)"`;
+    const cfg = path.join(repo, "qa-sentinel.config.yaml");
+    fs.writeFileSync(cfg, fs.readFileSync(cfg, "utf8").replace(/runCommand: npx playwright test --project=api/, `runCommand: ${JSON.stringify(runner)}`));
+    const c = loadConfig(repo);
+    fs.writeFileSync(path.join(repo, "tests/api/a.spec.ts"), "x");
+    fs.writeFileSync(path.join(repo, "tests/api/b.spec.ts"), "x");
+    const r = await verifyChanges({ cwd: repo, c: { ...c, verification: { ...c.verification, preflight: false, typecheck: "never" } }, changes: [{ status: "A", path: "tests/api/a.spec.ts" }, { status: "A", path: "tests/api/b.spec.ts" }], runDir: tmp(), env: { PATH: process.env.PATH } });
+    expect(r.status).toBe("FAILED");
+    expect(r.flaky).toEqual(["t"]);
+    expect(r.cases.filter((x) => x.status === "failed").map((x) => x.file)).toEqual(["tests/api/b.spec.ts"]);
   });
 });

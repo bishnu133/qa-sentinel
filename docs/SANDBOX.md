@@ -51,7 +51,7 @@ Eight scenarios play the developer. Each one is a real code change and a story w
 ```bash
 git clone https://github.com/bishnu133/qa-sentinel.git
 cd qa-sentinel
-git checkout v0.5               # until the open PRs are merged into main
+git checkout v0.6               # until the open PRs are merged into main
 npm install && npm run build
 export ANTHROPIC_API_KEY=sk-ant-...      # in your shell only; never commit it
 ```
@@ -123,6 +123,30 @@ node sandbox/shoplite/local.mjs run SHOP-108 --generate --showcase     # web tes
 - **SHOP-108:** new locators go into the page object, then 4 tests, one or more per AC. With `--showcase`, `shoplite-local/qa-showcase/SHOP-108/` holds the evidence file plus a **video and a screenshot per acceptance criterion**.
 - Before writing web tests, qa-sentinel opens the affected pages and saves their accessibility tree and a screenshot for the agent: see `page-snapshots/` in the run directory.
 - **Browser:** `setup` runs `npx playwright install chromium`. If your network blocks that download, use the installed Google Chrome without videos: `export QA_BROWSER_CHANNEL=chrome QA_VIDEO=off`. Watch the browser with `QA_HEADED=1`.
+
+New in v0.6:
+
+```bash
+# One showcase video + one evidence PDF for the whole story (needs a full ffmpeg: brew install ffmpeg / apt-get install ffmpeg)
+node sandbox/shoplite/local.mjs run SHOP-108 --generate --showcase
+
+# One gap report (and with --generate one test branch) for everything SHOP-106 changed, in both services
+node sandbox/shoplite/local.mjs run SHOP-106 --change-only && node sandbox/shoplite/local.mjs merge SHOP-106
+node sandbox/shoplite/local.mjs run SHOP-106b --change-only && node sandbox/shoplite/local.mjs merge SHOP-106b
+node sandbox/shoplite/local.mjs story SHOP-106 --generate
+
+# Review a story before development, and see how the agents are doing
+cd shoplite-local/qa-tests
+node ../../dist/cli.js review-story --story-file ../stories/SHOP-106.md    # → qa-story-review.md
+node ../../dist/cli.js metrics                                             # → qa-metrics.md
+cd ../..
+```
+
+- **Showcase pack:** `shoplite-local/qa-showcase/SHOP-108/` now holds `SHOP-108-showcase.mp4` (an intro card, then per AC a title card and its web test re-recorded slowly, with the element being used outlined) and `SHOP-108-showcase.pdf` (results per AC, a screenshot per web test, the API requests and responses). With Jira (Part C) both are attached to the story once, and the people in `showcase.notify` are tagged. Without ffmpeg you get the PDF and the separate videos.
+- **Is the story built?** The gap report has a table with a status per AC and per scope item (the story's "Tech scope" and "Expected results" lists become TS-n / ER-n). Scope items no AC covers are listed for the PO.
+- **Story mode:** the story gap report covers both services' changes (and only those: work merged to `main` in the meantime is left out); the story's AC-3 needs tests across the two services.
+- **Bug cards:** set `bugs: { mode: suggest }` (or `create`) in `shoplite-local/qa-tests/qa-sentinel.config.yaml` and run SHOP-107 with `--generate`: the planted total bug becomes a proposed bug on the story (Jira, Part C), with expected vs actual and the test to reproduce it.
+- **Mobile:** ShopLite has no app, so there is no mobile scenario. To try the layer, `node ../../dist/cli.js add-mobile` in a scratch test repo, then point `QA_APPIUM_URL` at an Appium server with an emulator.
 
 Other commands:
 
@@ -235,7 +259,7 @@ Keep the variables set in the terminal for every `local.mjs` command; without th
 
 ```bash
 node sandbox/shoplite/jira-seed.mjs
-node sandbox/shoplite/setup-gitlab.mjs --force --package github:bishnu133/qa-sentinel#v0.5
+node sandbox/shoplite/setup-gitlab.mjs --force --package github:bishnu133/qa-sentinel#v0.6
 ```
 
 > `--force` re-pushes all projects (it rewrites their `main`). Close any open sandbox MRs first.
@@ -313,6 +337,8 @@ Cost and time are in each run's `manifest.json` (`.qa-sentinel/runs/<id>/` local
 | Local `run` hangs | Something is holding port 3001–3003, 8080 or 8081. Run `node sandbox/shoplite/local.mjs env stop`. |
 | Web tests: "Executable doesn't exist at …/chromium" or "…/ffmpeg" | Playwright's browser (or ffmpeg, for videos) isn't downloaded. Run `npx playwright install chromium` in `shoplite-local/qa-tests`; if the download is blocked, `export QA_BROWSER_CHANNEL=chrome QA_VIDEO=off` to use your installed Chrome without videos. |
 | Web tests time out on a button or field | The page changed and the page object didn't (that's SHOP-107's point). Open `test-results/<test>/error-context.md`: it shows what was on the page. |
+| Showcase: "no full ffmpeg (with libx264) found" | Install ffmpeg (`brew install ffmpeg`, `apt-get install ffmpeg`), or set `QA_FFMPEG` to one, or `npm i -D ffmpeg-static` in `qa-tests`. Playwright's own ffmpeg can record videos but can't build the showcase video. |
+| Accessibility test fails with "needs @axe-core/playwright" | Run `npm install` in the test repo (`init --web` / `add-web` added it to package.json). |
 | Jira returns 401/403 | Check the email and token pair (a token "with scopes" doesn't work with the site URL; create a plain API token). The project key must be `SHOP`, or set `JIRA_PROJECT`. |
 | `jira-seed.mjs`: "fetch failed … CERT" | Same as GitLab on a network that inspects HTTPS: prefix with `NODE_OPTIONS=--use-system-ca`. |
 | "Jira is configured but the stories aren't in Jira yet" | Run `jira-seed.mjs --work shoplite-local` (same `--work` as `local.mjs`). |

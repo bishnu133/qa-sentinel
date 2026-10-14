@@ -1,0 +1,69 @@
+import fs from "node:fs";
+import path from "node:path";
+import { driver } from "@wdio/globals";
+
+/**
+ * Evidence for every mobile test, written where qa-sentinel reads it (the showcase stage and bug cards):
+ * a screen recording (Appium startRecordingScreen; on by default, QA_VIDEO=off to skip), a final screenshot,
+ * the API setup calls, and one result file per test in QA_RESULTS_DIR (default test-results/mobile).
+ */
+const resultsDir = () => process.env.QA_RESULTS_DIR ?? "test-results/mobile";
+const recording = () => process.env.QA_VIDEO !== "off";
+const slug = (s: string) => s.replace(/\s*@\S+/g, "").replace(/[^a-z0-9]+/gi, "-").replace(/^-|-$/g, "").toLowerCase().slice(0, 80) || "test";
+
+let apiCalls: unknown[] | undefined;
+/** The fixture hands over the API client's call list, so setup calls are attached to the test. */
+export function trackApiCalls(calls: unknown[]): void {
+  apiCalls = calls;
+}
+
+interface TestLike {
+  title: string;
+  file?: string;
+  parent?: string;
+  fullTitle?: string;
+}
+
+export async function beforeMobileTest(): Promise<void> {
+  apiCalls = undefined;
+  if (process.env.QA_SHOWCASE_MODE && driver.isAndroid) {
+    // Show touches in the recording (needs Appium with --allow-insecure=adb_shell; skipped otherwise).
+    await driver.execute("mobile: shell", { command: "settings", args: ["put", "system", "show_touches", "1"] }).catch(() => undefined);
+  }
+  // Native resolution and orientation (a fixed landscape size would shrink a portrait phone into the middle).
+  if (recording()) await driver.startRecordingScreen({ timeLimit: 600 } as never).catch(() => undefined);
+}
+
+export async function afterMobileTest(test: TestLike, _context: unknown, result: { passed: boolean; error?: Error; skipped?: boolean }): Promise<void> {
+  const dir = path.resolve(resultsDir());
+  fs.mkdirSync(dir, { recursive: true });
+  const base = `${slug(test.fullTitle ?? test.title)}-${Date.now()}`;
+  const evidence: { kind: string; name: string; path: string; contentType: string }[] = [];
+  if (process.env.QA_SHOWCASE_MODE) await driver.pause(Number(process.env.QA_SHOWCASE_HOLD ?? 2000)).catch(() => undefined);
+  try {
+    const png = path.join(dir, `${base}.png`);
+    await driver.saveScreenshot(png);
+    evidence.push({ kind: "screenshot", name: "screenshot", path: png, contentType: "image/png" });
+  } catch {
+    /* session gone */
+  }
+  if (recording()) {
+    const b64 = await driver.stopRecordingScreen().catch(() => "");
+    if (b64) {
+      const mp4 = path.join(dir, `${base}.mp4`);
+      fs.writeFileSync(mp4, Buffer.from(b64, "base64"));
+      evidence.push({ kind: "video", name: "video", path: mp4, contentType: "video/mp4" });
+    }
+  }
+  if (apiCalls?.length && process.env.QA_API_LOG !== "off") {
+    const log = path.join(dir, `${base}.api-log.json`);
+    fs.writeFileSync(log, JSON.stringify({ test: test.title, calls: apiCalls }, null, 2));
+    evidence.push({ kind: "api-log", name: "api-log", path: log, contentType: "application/json" });
+  }
+  const status = result.skipped ? "skipped" : result.passed ? "passed" : "failed";
+  const error = result.error?.message?.split("\n").slice(0, 3).join(" ").slice(0, 300);
+  fs.writeFileSync(
+    path.join(dir, `${base}.result.json`),
+    JSON.stringify({ file: test.file ? path.relative(process.cwd(), test.file) : undefined, title: test.title, status, evidence, ...(status === "failed" && error ? { error } : {}) }, null, 2),
+  );
+}

@@ -22,6 +22,11 @@
 - Run these jobs on agents whose network reaches only GitLab, the Anthropic API, your registry and the QA environment.
 - Run `qa-sentinel doctor --online` locally first.
 
+{{#if mobileEnabled}}
+## Mobile tests (when `tests.mobile` is enabled)
+- The `Mobile tests` stage runs when the agent has `QA_APPIUM_URL` (an Appium server with an emulator or device, or a device farm URL with credentials from the credentials store), plus `QA_APP` (or `QA_APP_PACKAGE`/`QA_BUNDLE_ID`) and `QA_MOBILE_PLATFORM`. Recordings and result files land in `test-results/mobile/` for the showcase.
+
+{{/if}}
 ## Web tests (when `tests.web` is enabled)
 - The `Install` stage downloads Chromium; the suite stage runs API and web tests together (videos for the showcase are in `test-results/`).
 - Runtime healing (`tests.web.healing: bubblegum`): the suite stage installs the Bubblegum engine and runs with `QA_HEALING=bubblegum`. To list healed steps, run `qa-sentinel healed` after the tests and archive `qa-healed.md` and `qa-healed.json`. For the next generation to fix those page objects, copy `qa-healed.json` into the `qa-sentinel-generate` workspace (Copy Artifact plugin). GitLab does this automatically.

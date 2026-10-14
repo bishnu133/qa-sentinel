@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import YAML from "yaml";
 import { z } from "zod";
+import { DEFAULT_TEMPLATE, SECTION_ROLES } from "./storyTemplate.js";
 
 export const CONFIG_FILE = "qa-sentinel.config.yaml";
 
@@ -22,8 +23,8 @@ const ServiceSchema = z.object({
   openapi: z.string().optional().describe("Path to the OpenAPI spec inside the service repo"),
   gitlabProject: z.string().optional().describe("GitLab project path of the service, e.g. group/orders-service"),
   dependsOn: z.array(z.string()).default([]),
-  /** api: a backend service (API tests); web: a front end (web UI tests through page objects, data set up via the API). */
-  kind: z.enum(["api", "web"]).default("api"),
+  /** api: a backend service (API tests); web: a front end (web UI tests through page objects); mobile: an app (WebdriverIO + Appium, screen objects). UI layers set data up via the API. */
+  kind: z.enum(["api", "web", "mobile"]).default("api"),
   /** Web front ends: the routes this service serves (e.g. /orders/new), used when a change doesn't name its page. */
   routes: z.array(z.string()).default([]),
   /** How to ask a running environment which commit of this service is deployed (for feature readiness). */
@@ -76,6 +77,8 @@ export const ConfigSchema = z.object({
         extraWritePaths: z.array(z.string()).default([]),
         /** Before authoring, qa-sentinel opens the affected pages and saves what is on them (accessibility tree + screenshot) for the agent. */
         explore: z.enum(["snapshot", "none"]).default("snapshot"),
+        /** new-pages: new or changed pages get one accessibility test (axe, WCAG 2 AA; critical and serious issues). */
+        accessibility: z.enum(["off", "new-pages"]).default("new-pages"),
         /**
          * Runtime locator healing. none: plain Playwright. bubblegum: when a page-object action fails, the ui helper asks
          * Bubblegum (@bubblegum-ai/node) to recover it over CDP. Never used while qa-sentinel verifies agent-written tests.
@@ -96,6 +99,17 @@ export const ConfigSchema = z.object({
       .object({
         enabled: z.boolean().default(false),
         framework: z.enum(["webdriverio-appium"]).default("webdriverio-appium"),
+        dir: z.string().default("tests/mobile"),
+        /** Screen objects: selectors live here and only here; the agent updates them before the specs. */
+        screensDir: z.string().default("src/screens"),
+        /** Command that runs mobile tests; qa-sentinel adds `--spec <file>` per spec. */
+        runCommand: z.string().default("npx wdio run wdio.conf.ts"),
+        /** The Appium server; qa-sentinel checks <url>/status before running mobile tests. */
+        appiumUrlEnv: z.string().default("QA_APPIUM_URL"),
+        appiumUrl: z.string().default("http://127.0.0.1:4723"),
+        /** Default platform when QA_MOBILE_PLATFORM is not set. */
+        platform: z.enum(["android", "ios"]).default("android"),
+        extraWritePaths: z.array(z.string()).default([]),
       })
       .default({}),
   }),
@@ -105,12 +119,39 @@ export const ConfigSchema = z.object({
       /** When true, generation refuses to run without requirements (gap reports still run and say so). */
       required: z.boolean().default(false),
       storyKeyPattern: z.string().default("[A-Z][A-Z0-9]+-\\d+"),
+      /**
+       * How your team writes stories: which headings hold the acceptance criteria, what is in scope (items IS-1, TS-1,
+       * ER-1 … checked for "is it built?" and traced like ACs), what is out of scope (never planned or raised as bugs),
+       * context for the agents, the showcase approach, and what to ignore. Headings match ignoring case, punctuation
+       * and markup. Check how your real stories are read with `qa-sentinel story-check --story KEY`.
+       */
+      template: z
+        .array(
+          z
+            .object({
+              role: z.enum(SECTION_ROLES),
+              name: z.string(),
+              headings: z.array(z.string()).min(1),
+              prefix: z.string().regex(/^[A-Z]{1,4}$/).optional(),
+            })
+            .refine((s) => s.role !== "scope" || s.prefix, { message: "scope sections need a prefix (e.g. IS)" }),
+        )
+        .default(DEFAULT_TEMPLATE),
+      /** Turn scope items off (only ACs are traced). `sections` is the v0.6.0 form of scope sections; prefer `template`. */
+      scope: z
+        .object({
+          enabled: z.boolean().default(true),
+          sections: z.array(z.object({ prefix: z.string().regex(/^[A-Z]{1,4}$/), name: z.string(), headings: z.array(z.string()).min(1) })).default([]),
+        })
+        .default({}),
       jira: z
         .object({
           baseUrl: z.string().optional(),
           projectKeys: z.array(z.string()).default([]),
           /** Custom field holding acceptance criteria, e.g. customfield_10045 (else they are read from the description). */
           acceptanceCriteriaField: z.string().optional(),
+          /** Extra fields that describe the expected behaviour beyond the ACs, read as scope items (e.g. a "Tech scope" field). */
+          scopeFields: z.array(z.object({ field: z.string(), name: z.string(), prefix: z.string().regex(/^[A-Z]{1,4}$/) })).default([]),
           /** Statuses that mean the story is agreed and testable. Anything else is "unverified". */
           approvedStatuses: z.array(z.string()).default(["Ready for Development", "Ready for Dev", "Selected for Development", "In Progress", "In Development", "In Review", "In QA", "Ready for QA", "Done"]),
         })
@@ -140,9 +181,54 @@ export const ConfigSchema = z.object({
       /** Evidence kinds to attach, in order of preference. api-log is folded into the evidence summary file. */
       kinds: z.array(z.enum(["video", "screenshot", "trace", "api-log"])).default(["video", "screenshot", "api-log"]),
       maxFiles: z.number().int().min(1).max(50).default(20),
-      maxFileMb: z.number().positive().max(100).default(10),
+      maxFileMb: z.number().positive().max(500).default(50),
+      /**
+       * pack (default): ONE video of the whole story (a title card per AC, then its test, recorded slowly with the
+       * actions highlighted) plus ONE PDF with the results and the API requests/responses: what Biz users review.
+       * files: the run's own videos, screenshots and logs, one attachment each.
+       */
+      format: z.enum(["pack", "files"]).default("pack"),
+      video: z
+        .object({
+          /** Re-run the chosen web and mobile tests once in showcase mode (slowed down, highlighted) instead of reusing the fast CI recordings. */
+          record: z.boolean().default(true),
+          slowMoMs: z.number().int().min(0).max(3000).default(500),
+          holdMs: z.number().int().min(0).max(10000).default(2000),
+          /** Pause on each step, with its caption shown ("Click Checkout button"), so viewers can follow. */
+          stepMs: z.number().int().min(0).max(10000).default(1200),
+          /** Cut this much from the start of each recording (the blank page before the site loads). */
+          trimStartMs: z.number().int().min(0).max(5000).default(800),
+          titleSeconds: z.number().min(0.5).max(10).default(3),
+          /** Path to a full ffmpeg (libx264). Default: QA_FFMPEG, then ffmpeg on PATH, then the ffmpeg-static package. */
+          ffmpeg: z.string().optional(),
+        })
+        .default({}),
+      /** Who to tag when a story is ready for review: Jira Cloud account ids (or Server/DC usernames). */
+      notify: z.array(z.string()).default([]),
+      /** Only showcase runs against these environments (e.g. [sit, uat]); empty = any. */
+      environments: z.array(z.string()).default([]),
       /** A story with a fixme/skip test (known product discrepancy) is not showcased. */
       requireNoPending: z.boolean().default(true),
+    })
+    .default({}),
+  /**
+   * Bug cards from evidence. off (default) · suggest: list the proposed bugs on the story, ready to create ·
+   * create: create them in Jira, linked to the story, once per story and AC; comment on them when the test passes.
+   * "Not working" bugs come from tests written to an AC that fail (on a run, or the fixme a generation wrote);
+   * "not built" bugs from a story-wide gap report, only when every part of the story is merged (suspected).
+   */
+  bugs: z
+    .object({
+      mode: z.enum(["off", "suggest", "create"]).default("off"),
+      /** Jira project for the bugs (default: the story's project). */
+      project: z.string().optional(),
+      /** Issue type; falls back to Task (labelled "bug") when the project has no such type. */
+      issueType: z.string().default("Bug"),
+      priority: z.string().optional(),
+      labels: z.array(z.string()).default(["qa-sentinel"]),
+      linkType: z.string().default("Relates"),
+      /** Also raise "not built" bugs from story-wide gap reports (static analysis: labelled suspected). */
+      notBuilt: z.boolean().default(true),
     })
     .default({}),
   /** Where `gap-report --post` publishes. One comment per target, updated in place on every run. */
@@ -253,6 +339,8 @@ export const ConfigSchema = z.object({
       timeoutMinutes: z.number().positive().default(15),
       /** Environment `generate`/`verify` run against when --env is not given (a key of `environments`). */
       defaultEnvironment: z.string().optional(),
+      /** Re-run failed specs once; a test that passes on retry is reported as flaky instead of failed. */
+      retryFailed: z.boolean().default(true),
       /** With --push: keep the branch local unless verification is VERIFIED (no draft MRs). */
       requireVerifiedToPush: z.boolean().default(false),
     })

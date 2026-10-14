@@ -23,13 +23,15 @@ export async function learnCommand(o: LearnOptions): Promise<number> {
   log.step(`mode: ${c.mode}; services: ${c.workspace.services.length}`);
 
   const before = snapshotTree(cwd);
-  const policy = learnPolicy();
+  const policy = learnPolicy(c);
   const serviceDirs = c.workspace.services.map((s) => path.resolve(cwd, s.path)).filter((d) => fs.existsSync(d));
   const perms = claudePermissions({ write: policy, bash: [], readOnlyDirs: serviceDirs });
   const res = await runClaude({
     cwd,
     prompt: [
       "Use the learn-conventions skill.",
+      ...(c.tests.web.enabled ? [`The web layer is on (tests in ${c.tests.web.dir}, page objects in ${c.tests.web.pagesDir}): also do step 1b for the write-web-test skill.`] : []),
+      ...(c.tests.mobile.enabled ? [`The mobile layer is on (tests in ${c.tests.mobile.dir}, screen objects in ${c.tests.mobile.screensDir}): also do step 1c for the write-mobile-test skill.`] : []),
       `Update only these files: ${policy.allowed.join(", ")}. Any other change is rejected.`,
       "Finish with a short summary of what you learned and what a human should verify.",
     ].join("\n"),

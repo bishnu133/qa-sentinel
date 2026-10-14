@@ -122,6 +122,26 @@ export function selectRegression(i: {
   return { tests, serviceWide, runFullSuite, args: tests.map((s) => `${s.test.file}:${s.test.line}`), notes };
 }
 
+/** Union of several selections (story mode: one per service), reasons merged per test. */
+export function mergeSelections(sels: RegressionSelection[]): RegressionSelection {
+  const byId = new Map<string, SelectedTest>();
+  for (const sel of sels)
+    for (const t of sel.tests) {
+      const m = byId.get(t.test.id) ?? { test: t.test, reasons: [], detail: [] };
+      for (const r of t.reasons) if (!m.reasons.includes(r)) m.reasons.push(r);
+      for (const d of t.detail) if (!m.detail.includes(d)) m.detail.push(d);
+      byId.set(t.test.id, m);
+    }
+  const tests = [...byId.values()].sort((a, b) => a.test.file.localeCompare(b.test.file) || a.test.line - b.test.line);
+  return {
+    tests,
+    serviceWide: sels.some((s) => s.serviceWide),
+    runFullSuite: tests.length === 0,
+    args: tests.map((s) => `${s.test.file}:${s.test.line}`),
+    notes: [...new Set(sels.flatMap((s) => s.notes))],
+  };
+}
+
 const REASON_LABEL: Record<SelectionReason, string> = {
   "named-by-plan": "named by the plan",
   "changed-endpoint": "changed endpoint",

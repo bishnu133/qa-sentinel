@@ -137,3 +137,16 @@ export function commitMessages(repo: string, base: string, head: string): string
     return [];
   }
 }
+
+/**
+ * The working tree must contain `sha` (story mode reads the code as of the story's tip): fine when HEAD is that
+ * commit or a descendant (e.g. main after the merge); else check it out when allowed.
+ */
+export function atLeast(repo: string, sha: string, checkout: boolean): void {
+  try {
+    execFileSync("git", ["merge-base", "--is-ancestor", sha, "HEAD"], { cwd: repo, stdio: "ignore" });
+    return;
+  } catch {
+    ensureAtCommit(repo, sha, checkout);
+  }
+}

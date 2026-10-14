@@ -5,7 +5,7 @@ import type { Config } from "./config.js";
 import type { FileChange } from "./git.js";
 import { TEST_FILE, addedLines } from "./guardrails.js";
 import { runProcess } from "./proc.js";
-import { type Layer, type LayerConfig, layerOfFile, layers } from "./layers.js";
+import { type Layer, type LayerConfig, layerOfFile, layers, specArgs } from "./layers.js";
 
 export type VerificationStatus = "VERIFIED" | "FAILED" | "BLOCKED" | "NOT_RUN";
 export type CheckStatus = "passed" | "failed" | "blocked" | "not-run" | "skipped";
@@ -29,6 +29,8 @@ export interface TestCase {
 
 export interface VerificationReport {
   status: VerificationStatus;
+  /** Tests that failed once and passed on the automatic retry: not a product bug, but not stable either. */
+  flaky?: string[];
   checks: Check[];
   specs: string[];
   cases: TestCase[];
@@ -61,7 +63,18 @@ export function parseJUnit(xml: string): TestCase[] {
   return cases;
 }
 
-const ENV_ERROR = /(ECONNREFUSED|ENOTFOUND|EAI_AGAIN|ETIMEDOUT|ECONNRESET|socket hang up|getaddrinfo|certificate|connect EHOSTUNREACH)/i;
+const ENV_ERROR = /(ECONNREFUSED|ENOTFOUND|EAI_AGAIN|ETIMEDOUT|ECONNRESET|socket hang up|getaddrinfo|certificate|connect EHOSTUNREACH|Unable to connect to|Could not find a connected|no (?:connected )?devices? (?:found|connected)|Could not start a new session|session not created)/i;
+
+/** A JUnit file, or a folder of them (WebdriverIO writes one per worker). */
+function readJUnitAt(p: string | undefined): TestCase[] {
+  if (!p || !fs.existsSync(p)) return [];
+  if (!fs.statSync(p).isDirectory()) return parseJUnit(fs.readFileSync(p, "utf8"));
+  return fs
+    .readdirSync(p)
+    .filter((f) => f.endsWith(".xml"))
+    .sort()
+    .flatMap((f) => parseJUnit(fs.readFileSync(path.join(p, f), "utf8")));
+}
 
 export function overallStatus(checks: Check[]): VerificationStatus {
   if (checks.some((c) => c.status === "failed")) return "FAILED";
@@ -99,20 +112,33 @@ export async function verifyChanges(o: VerifyOptions): Promise<VerificationRepor
   }
   if (c.verification.preflight) {
     for (const l of specsByLayer.keys()) {
-      const baseUrl = o.env[l.baseUrlEnv];
+      const base = o.env[l.baseUrlEnv] || l.defaultBaseUrl;
+      const baseUrl = base && l.preflightPath ? `${base.replace(/\/+$/, "")}${l.preflightPath}` : base;
       if (!baseUrl) {
         checks.push({ name: "preflight", layer: l.layer, status: "blocked", detail: `${l.baseUrlEnv} is not set` });
         continue;
       }
       const t0 = Date.now();
+      // Device farms put credentials in the URL (https://user:key@hub…): send them as a header, never print them.
+      let target: URL;
+      try {
+        target = new URL(baseUrl);
+      } catch {
+        checks.push({ name: "preflight", layer: l.layer, status: "blocked", detail: `${l.baseUrlEnv} is not a valid URL` });
+        continue;
+      }
+      const auth = target.username || target.password ? `Basic ${Buffer.from(`${decodeURIComponent(target.username)}:${decodeURIComponent(target.password)}`).toString("base64")}` : undefined;
+      target.username = "";
+      target.password = "";
+      const shown = `${target.origin}${target.pathname}`;
       try {
         const ctrl = new AbortController();
         const timer = setTimeout(() => ctrl.abort(), 10_000);
-        const res = await fetch(baseUrl, { method: "GET", signal: ctrl.signal, redirect: "manual" });
+        const res = await fetch(target, { method: "GET", signal: ctrl.signal, redirect: "manual", headers: auth ? { Authorization: auth } : {} });
         clearTimeout(timer);
-        checks.push({ name: "preflight", layer: l.layer, status: "passed", detail: `${new URL(baseUrl).host} answered ${res.status}`, durationMs: Date.now() - t0 });
+        checks.push({ name: "preflight", layer: l.layer, status: "passed", detail: `${target.host} answered ${res.status}`, durationMs: Date.now() - t0 });
       } catch (e) {
-        checks.push({ name: "preflight", layer: l.layer, status: "blocked", detail: `${baseUrl} unreachable: ${(e as Error).message}`, durationMs: Date.now() - t0 });
+        checks.push({ name: "preflight", layer: l.layer, status: "blocked", detail: `${shown} unreachable: ${(e as Error).message}`, durationMs: Date.now() - t0 });
       }
     }
   }
@@ -139,6 +165,7 @@ export async function verifyChanges(o: VerifyOptions): Promise<VerificationRepor
   // 4. Tests: only the changed specs, per layer (each with its own command and base URL), with a machine-readable report.
   let cases: TestCase[] = [];
   const outputs: string[] = [];
+  const flaky: string[] = [];
   if (!specs.length) {
     checks.push({ name: "tests", status: "not-run", detail: codeFiles.length ? "helpers changed but no spec files changed" : "no spec files changed" });
   }
@@ -147,13 +174,46 @@ export async function verifyChanges(o: VerifyOptions): Promise<VerificationRepor
       checks.push({ name: "tests", layer: l.layer, status: "not-run", detail: "skipped because the environment is unreachable" });
       continue;
     }
-    // API keeps junit.xml (what pipelines built for v0.4 collect); other layers get junit-<layer>.xml.
-    const junit = l.isPlaywright ? path.join(o.runDir, l.layer === "api" ? "junit.xml" : `junit-${l.layer}.xml`) : c.verification.junitPath ? path.resolve(cwd, c.verification.junitPath) : undefined;
-    if (junit && fs.existsSync(junit)) fs.rmSync(junit);
-    const env = { ...o.env, ...(l.isPlaywright && junit ? { PLAYWRIGHT_JUNIT_OUTPUT_NAME: junit } : {}) };
-    const cmd = `${l.runCommand} ${layerSpecs.map(shq).join(" ")}${l.isPlaywright ? " --reporter=line,junit" : ""}`;
-    const r = await runProcess(cmd, [], { cwd, env, timeoutMs, shell: true });
-    const mine = (junit && fs.existsSync(junit) ? parseJUnit(fs.readFileSync(junit, "utf8")) : []).map((x) => ({ ...x, layer: l.layer }));
+    // API keeps junit.xml (what pipelines built for v0.4 collect); other layers get junit-<layer>.xml (or a folder).
+    const junit = l.isPlaywright
+      ? path.join(o.runDir, l.layer === "api" ? "junit.xml" : `junit-${l.layer}.xml`)
+      : l.junitDirEnv
+        ? path.join(o.runDir, `junit-${l.layer}`)
+        : c.verification.junitPath
+          ? path.resolve(cwd, c.verification.junitPath)
+          : undefined;
+    if (junit && fs.existsSync(junit)) fs.rmSync(junit, { recursive: true, force: true });
+    const env = {
+      ...o.env,
+      ...(l.isPlaywright && junit ? { PLAYWRIGHT_JUNIT_OUTPUT_NAME: junit } : {}),
+      ...(l.junitDirEnv && junit ? { [l.junitDirEnv]: junit } : {}),
+      ...(l.resultsDirEnv ? { [l.resultsDirEnv]: path.join(o.runDir, `results-${l.layer}`) } : {}),
+      ...(!o.env[l.baseUrlEnv] && l.defaultBaseUrl ? { [l.baseUrlEnv]: l.defaultBaseUrl } : {}),
+    };
+    const runArgs = (files: string[]) => `${l.runCommand} ${specArgs(l, files, shq)}${l.isPlaywright ? " --reporter=line,junit" : ""}`;
+    const cmd = runArgs(layerSpecs);
+    let r = await runProcess(cmd, [], { cwd, env, timeoutMs, shell: true });
+    let mine = readJUnitAt(junit).map((x) => ({ ...x, layer: l.layer }));
+    // One retry of the failed specs before calling it a failure: a test that passes on retry is flaky, not a bug.
+    const firstFailed = mine.filter((x) => x.status === "failed" && !ENV_ERROR.test(x.message ?? ""));
+    if (c.verification.retryFailed && firstFailed.length && !r.timedOut && junit) {
+      const retrySpecs = layerSpecs.filter((sp) => firstFailed.some((f) => f.file && (sp.endsWith(f.file) || f.file.endsWith(sp))));
+      if (retrySpecs.length) {
+        fs.rmSync(junit, { recursive: true, force: true });
+        const r2 = await runProcess(runArgs(retrySpecs), [], { cwd, env, timeoutMs, shell: true });
+        const again = readJUnitAt(junit);
+        // Same test = same file and name: two specs may hold tests with the same title.
+        const key = (x: TestCase) => `${x.file ?? ""}::${x.name}`;
+        const passedAgain = new Set(again.filter((a) => a.status === "passed").map(key));
+        const healed = firstFailed.filter((f) => passedAgain.has(key(f)));
+        if (healed.length) {
+          flaky.push(...healed.map((f) => f.name));
+          const healedKeys = new Set(healed.map(key));
+          mine = mine.map((x) => (x.status === "failed" && healedKeys.has(key(x)) ? { ...x, status: "passed" as const, message: "passed on retry (flaky)" } : x));
+          if (mine.every((x) => x.status !== "failed")) r = { ...r2, code: 0 };
+        }
+      }
+    }
     cases = cases.concat(mine);
     const failed = mine.filter((x) => x.status === "failed");
     const envFailures = failed.length > 0 && failed.every((x) => ENV_ERROR.test(x.message ?? ""));
@@ -163,7 +223,7 @@ export async function verifyChanges(o: VerifyOptions): Promise<VerificationRepor
     else if (junit && mine.length === 0) [status, detail] = [r.code === 0 ? "not-run" : "failed", `no test results produced (exit ${r.code})${r.code ? `: ${tail(r.stdout + r.stderr)}` : ""}`];
     else if (envFailures) [status, detail] = ["blocked", `environment errors: ${failed[0].message}`];
     else if (r.code !== 0 || failed.length) [status, detail] = ["failed", `${failed.length} failed${failed[0] ? `: ${failed[0].name}` : `, exit ${r.code}`}`];
-    else [status, detail] = ["passed", mine.length ? `${mine.filter((x) => x.status === "passed").length} passed, ${mine.filter((x) => x.status === "skipped").length} skipped` : "exit 0 (no JUnit report configured)"];
+    else [status, detail] = ["passed", mine.length ? `${mine.filter((x) => x.status === "passed").length} passed, ${mine.filter((x) => x.status === "skipped").length} skipped${flaky.length ? `, ${flaky.length} only on retry (flaky)` : ""}` : "exit 0 (no JUnit report configured)"];
     checks.push({ name: "tests", ...(specsByLayer.size > 1 || l.layer !== "api" ? { layer: l.layer } : {}), status, detail, durationMs: r.durationMs });
     outputs.push(`### ${l.layer}: ${cmd}\n${r.stdout}\n${r.stderr}`);
   }
@@ -171,6 +231,7 @@ export async function verifyChanges(o: VerifyOptions): Promise<VerificationRepor
 
   const report: VerificationReport = {
     status: overallStatus(checks),
+    ...(flaky.length ? { flaky } : {}),
     checks,
     specs,
     cases,
@@ -248,5 +309,6 @@ export function verificationMarkdown(r: VerificationReport): string {
     ...rows,
     ...(r.counts.total ? ["", `Tests: ${r.counts.passed} passed · ${r.counts.failed} failed · ${r.counts.skipped} skipped (of ${r.counts.total}).`] : []),
     ...(failed.length ? ["", "Failed:", ...failed.map((f) => `- \`${f.name}\` – ${f.message ?? ""}`)] : []),
+    ...(r.flaky?.length ? ["", `⚠️ Flaky (failed once, passed on the automatic retry; make them deterministic before merging): ${r.flaky.map((f) => `\`${f}\``).join(", ")}`] : []),
   ].join("\n");
 }

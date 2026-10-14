@@ -1,3 +1,4 @@
+import { requirementItems } from "../requirements.js";
 import fs from "node:fs";
 import path from "node:path";
 import { loadConfig } from "../config.js";
@@ -16,9 +17,15 @@ import { oracleOf, planChange } from "../plan/planner.js";
 import { renderGapReport } from "../plan/render.js";
 import { gapSummary } from "../reporting/jiraSummary.js";
 import { indexTests, readTestMap, traceMarkdown, traceStory } from "../analysis/testIndex.js";
-import { regressionCommands, regressionMarkdown, selectRegression } from "../analysis/regression.js";
+import { mergeSelections, regressionCommands, regressionMarkdown, selectRegression } from "../analysis/regression.js";
 import { contractDiffMarkdown } from "../analysis/contractDiff.js";
 import { log } from "../log.js";
+import { bugsFromPlan, fileBugs } from "../bugs/bugs.js";
+import { jiraContext } from "../scm/jira.js";
+import type { ServiceConfig } from "../config.js";
+import type { ChangeSet } from "../git.js";
+import { type StoryPart, combinedChange, storyParts } from "../story.js";
+import { atLeast } from "../git.js";
 
 export interface GapReportOptions {
   cwd: string;
@@ -28,6 +35,8 @@ export interface GapReportOptions {
   head?: string;
   checkout?: boolean;
   storyFile?: string;
+  /** Story mode: analyse everything this story changed, across all its service repos. */
+  story?: string;
   out?: string;
   post?: boolean;
   dryRun?: boolean;
@@ -36,15 +45,27 @@ export interface GapReportOptions {
 export async function gapReportCommand(o: GapReportOptions): Promise<{ report: string; skipped: boolean; exitCode: number }> {
   const cwd = path.resolve(o.cwd);
   const c = loadConfig(cwd);
-  const service = findService(c, o.service, cwd, o.servicePath);
-  const repo = path.resolve(cwd, service.path);
-  if (!isGitRepo(repo)) throw new Error(`${repo} is not a git repository`);
-
   const mr = gitlabMrFromEnv();
-  const cs = changeSet(repo, o.base ?? mr.base ?? `origin/${c.ci.targetBranch}`, o.head ?? "HEAD");
-  // The agent reads the working tree, so it must be exactly the commit whose diff it analyses.
-  ensureAtCommit(repo, cs.head, Boolean(o.checkout));
-  const relevant = cs.files.filter((f) => !matchesAny(f, c.agent.skipPaths));
+  let service: ServiceConfig, repo: string, cs: ChangeSet, relevant: string[];
+  let parts: StoryPart[] | undefined;
+  if (o.story) {
+    const sp = await storyParts({ c, cwd, story: o.story });
+    sp.notes.forEach((n) => log.warn(n));
+    if (!sp.parts.length) throw new Error(`No service changes found for ${o.story}: no branch or commit message mentions it in the service repos`);
+    parts = sp.parts;
+    for (const p of parts) atLeast(p.repo, p.cs.head, Boolean(o.checkout));
+    ({ service, cs, relevant } = combinedChange(o.story, parts));
+    repo = parts[0].repo;
+    log.step(`story ${o.story}: ${parts.map((p) => `${p.service.name} (${p.relevant.length} file(s)${p.merged ? "" : ", not merged"})`).join(", ")}`);
+  } else {
+    service = findService(c, o.service, cwd, o.servicePath);
+    repo = path.resolve(cwd, service.path);
+    if (!isGitRepo(repo)) throw new Error(`${repo} is not a git repository`);
+    cs = changeSet(repo, o.base ?? mr.base ?? `origin/${c.ci.targetBranch}`, o.head ?? "HEAD");
+    // The agent reads the working tree, so it must be exactly the commit whose diff it analyses.
+    ensureAtCommit(repo, cs.head, Boolean(o.checkout));
+    relevant = cs.files.filter((f) => !matchesAny(f, c.agent.skipPaths));
+  }
 
   const out = path.resolve(cwd, o.out ?? "qa-gap-report.md");
   if (relevant.length === 0) {
@@ -57,19 +78,20 @@ export async function gapReportCommand(o: GapReportOptions): Promise<{ report: s
   const req = await resolveRequirements(c, {
     storyFile: o.storyFile,
     mr: { title: mr.title, description: mr.description, url: mr.url, sourceBranch: mr.sourceBranch },
-    keyHints: [mr.sourceBranch, ...commitMessages(repo, cs.base, cs.head)],
+    keyHints: o.story ? [o.story] : [mr.sourceBranch, ...commitMessages(repo, cs.base, cs.head)],
   });
   const run = createRunDir(cwd, `gap-${service.name}`);
   fs.writeFileSync(path.join(run.dir, "change.diff"), cs.diff);
   fs.writeFileSync(path.join(run.dir, "story.md"), storyMarkdown(req));
   fs.writeFileSync(path.join(run.dir, "requirements.json"), JSON.stringify(req, null, 2));
   const manifest = startManifest(cwd, c, run, "gap-report", { service, base: cs.base, head: cs.head, changedFiles: relevant }, req);
-  log.step(`${service.name}@${cs.head.slice(0, 8)}: ${relevant.length} relevant file(s) changed; planning`);
+  log.step(`${o.story ? `story ${o.story}` : `${service.name}@${cs.head.slice(0, 8)}`}: ${relevant.length} relevant file(s) changed; planning`);
 
   const testBefore = snapshotTree(cwd);
-  const serviceBefore = snapshotTree(repo);
+  const repos = parts ? parts.map((p) => ({ name: p.service.name, repo: p.repo })) : [{ name: service.name, repo }];
+  const before = repos.map((r) => ({ ...r, snap: snapshotTree(r.repo) }));
   const engine = engineFor(c);
-  const outcome = await planChange({ cwd, c, service, repo, cs, relevant, req, run, engine, dryRun: o.dryRun, context: { kind: "gap-report" } });
+  const outcome = await planChange({ cwd, c, service, repo, cs, relevant, req, run, engine, dryRun: o.dryRun, context: { kind: "gap-report" }, parts });
   const usage = addUsage(...outcome.runs);
   const denials = outcome.runs.flatMap((r) => r.denials ?? []);
   manifest.agent = { status: outcome.runs.at(-1)?.status ?? "not-run", ...usage, deniedToolCalls: denials.length };
@@ -77,7 +99,7 @@ export async function gapReportCommand(o: GapReportOptions): Promise<{ report: s
 
   // Read-only means read-only: nothing outside the run directory may change, in either repo.
   const findings: Finding[] = [
-    ...checkServiceUntouched(repo, service.name, serviceBefore),
+    ...before.flatMap((b) => checkServiceUntouched(b.repo, b.name, b.snap)),
     ...diffSnapshots(testBefore, snapshotTree(cwd))
       .filter((p) => !matchesAny(p, ARTIFACT_GLOBS))
       .map((p) => ({ level: "violation" as const, rule: "outside-allowed" as const, file: p, message: "gap reports must not modify the test repo" })),
@@ -107,15 +129,17 @@ export async function gapReportCommand(o: GapReportOptions): Promise<{ report: s
   if (outcome.status === "valid" && outcome.plan && outcome.risked) {
     // Facts computed in code from the test repo: which existing tests to run, and what already proves the story.
     const index = indexTests(cwd, c);
-    const selection = selectRegression({ c, service: service.name, plan: outcome.plan, risked: outcome.risked.changes, contract: outcome.contract, index, map: readTestMap(cwd) });
+    const select = (svc: string) => selectRegression({ c, service: svc, plan: outcome.plan!, risked: outcome.risked!.changes, contract: outcome.contract, index, map: readTestMap(cwd) });
+    // Story mode: each service's own fallbacks and consumers count, merged into one selection.
+    const selection = parts ? mergeSelections(parts.map((p) => select(p.service.name))) : select(service.name);
     fs.writeFileSync(path.join(run.dir, "regression.json"), JSON.stringify(selection, null, 2));
     fs.writeFileSync(path.join(path.dirname(out), "qa-regression.txt"), selection.runFullSuite ? "" : selection.args.join("\n") + "\n");
-    const trace = traceStory(index, req.storyKey, req.acceptanceCriteria);
+    const trace = traceStory(index, req.storyKey, requirementItems(req));
     const traced = trace.acs.some((r) => r.status !== "not-traced");
     log.step(`regression selection: ${selection.runFullSuite ? "full suite" : `${selection.tests.length} test(s)`}`);
     report =
       renderGapReport({
-        service: service.name,
+        service: parts ? `story ${o.story} (${parts.map((p) => p.service.name).join(", ")})` : service.name,
         plan: outcome.plan,
         risked: outcome.risked,
         contract: outcome.contract,
@@ -126,14 +150,17 @@ export async function gapReportCommand(o: GapReportOptions): Promise<{ report: s
         oracle: oracleOf(req),
         regression: regressionMarkdown(selection, regressionCommands(c, selection)),
         rules: outcome.validation?.rules,
+        items: requirementItems(req),
         traceability: traced ? traceMarkdown(req.storyKey, trace) : undefined,
       }) + `\n\n${footer}`;
     // The same story in other services (one feature, many services): say so, so nobody tests half a feature.
     let featureLine = "";
-    if (req.storyKey) {
+    const featureServices: string[] = [];
+    if (req.storyKey && !o.story) {
       try {
         const m = await assembleFeature({ c, cwd, story: req.storyKey, gitlab: c.workspace.services.some((x) => x.gitlabProject) ? gitlabContext(c.ci.gitlabUrl) : undefined });
         const others = m.parts.filter((p) => p.service !== service.name);
+        featureServices.push(...others.map((p) => p.service));
         if (others.length) {
           featureLine = `**Feature ${req.storyKey} also changes:** ${others.map((p) => `${p.service} (${p.mr ? `[!${p.mr.iid}](${p.mr.url}), ` : ""}${p.merged ? "merged" : "not merged yet"})`).join(", ")}. Acceptance criteria that need several services are checked with \`qa-sentinel feature ${req.storyKey}\` once every part is deployed.`;
           report = report.replace(footer, `${featureLine}\n\n${footer}`);
@@ -152,6 +179,14 @@ export async function gapReportCommand(o: GapReportOptions): Promise<{ report: s
       regressionTests: selection.runFullSuite ? undefined : selection.tests.length,
     });
     if (featureLine) jiraSummary += `\n\n${featureLine}`;
+    // The story names services (tech notes) that have no change for it: not started, or commits without the key.
+    const changedServices = parts ? parts.map((p) => p.service.name) : [service.name, ...featureServices];
+    const silent = (req.servicesNamed ?? []).filter((n) => !changedServices.includes(n));
+    if (silent.length) {
+      const line = `**The story names ${silent.join(", ")}${o.story ? "" : " too"}, but no change for ${req.storyKey ?? "it"} was found there** (not started yet, or its commits and branch don't carry the story key).`;
+      report = report.replace(footer, `${line}\n\n${footer}`);
+      jiraSummary += `\n\n${line}`;
+    }
     fs.writeFileSync(path.join(run.dir, "jira-summary.md"), jiraSummary);
     manifest.outcome = "reported";
     log.ok(`plan valid · ${outcome.risked.overall} risk · ${outcome.plan.decisions.length} decision(s)`);
@@ -179,5 +214,14 @@ export async function gapReportCommand(o: GapReportOptions): Promise<{ report: s
   log.ok(`report written to ${path.relative(cwd, out)}${u ? ` (${u})` : ""}`);
 
   if (o.post) await publish(c, { report, jiraSummary, service: service.name, storyKey: req.storyKey, mr });
+  // Story mode with every part merged: requirements nothing builds (or builds differently) become (suspected) bugs.
+  if (o.post && parts && parts.every((p) => p.merged) && c.bugs.mode !== "off" && req.storyKey && outcome.plan) {
+    const jira = jiraContext(c.requirements.jira.baseUrl);
+    if (jira) {
+      const r = await fileBugs(jira, c, req.storyKey, bugsFromPlan(req.storyKey, requirementItems(req), outcome.plan)).catch((e) => (log.warn(`bugs: ${(e as Error).message}`), undefined));
+      if (r?.created.length) log.ok(`bug(s) raised on ${req.storyKey}: ${r.created.join(", ")}`);
+      if (r?.suggested) log.ok(`${r.suggested} bug(s) proposed on ${req.storyKey}`);
+    }
+  }
   return { report, skipped: false, exitCode };
 }

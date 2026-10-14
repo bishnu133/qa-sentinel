@@ -10,6 +10,7 @@
 //   node sandbox/shoplite/local.mjs run SHOP-106 --change-only    # just make the developer change (no agent, no cost)
 //   node sandbox/shoplite/local.mjs merge SHOP-106                 # merge a scenario's branch into main (like merging the MR)
 //   node sandbox/shoplite/local.mjs feature SHOP-106 [--run]       # one story across services: merged? deployed? AC tests? (then run them)
+//   node sandbox/shoplite/local.mjs story SHOP-106 [--generate]    # one gap report (and one test branch) for the whole story, all services
 //   node sandbox/shoplite/local.mjs reset                          # every service back to main, env stopped
 //   node sandbox/shoplite/local.mjs env start|stop
 import fs from "node:fs";
@@ -47,6 +48,23 @@ function storyKeyOf(id) {
 /** Requirements: from Jira in Jira mode, else the local story file. */
 const storyArgs = (file) => (JIRA ? [] : ["--story-file", file]);
 
+/**
+ * Put qa-tests back on main without losing the user's config edits (bugs.mode, showcase.notify, …): a forced
+ * checkout would silently discard them. Edits to qa-sentinel.config.yaml are carried over and committed on main.
+ */
+function testsToMain() {
+  const cfg = path.join(tests, "qa-sentinel.config.yaml");
+  const dirty = spawnSync("git", ["diff", "--quiet", "HEAD", "--", "qa-sentinel.config.yaml"], { cwd: tests }).status === 1;
+  const edited = dirty ? fs.readFileSync(cfg, "utf8") : undefined;
+  git(tests, "checkout", "-q", "-f", "main");
+  if (edited !== undefined && edited !== fs.readFileSync(cfg, "utf8")) {
+    fs.writeFileSync(cfg, edited);
+    git(tests, "add", "qa-sentinel.config.yaml");
+    git(tests, "-c", "user.name=sandbox", "-c", "user.email=sandbox@shoplite.test", "commit", "-q", "-m", "config: your edits (kept by local.mjs)");
+    log("kept your qa-sentinel.config.yaml edits (committed on main)");
+  }
+}
+
 function envStart() {
   envStop(true);
   const code = run("bash", ["-c", `source "${path.join(tests, "qa-env/start.sh")}"`], {
@@ -80,7 +98,7 @@ switch (cmd) {
   case "reset":
     envStop(true);
     for (const svc of SERVICES) if (fs.existsSync(path.join(work, svc))) git(path.join(work, svc), "checkout", "-q", "-f", "main");
-    git(tests, "checkout", "-q", "-f", "main");
+    testsToMain();
     log("all repos back on main; environment stopped");
     break;
   case "merge": {
@@ -109,6 +127,27 @@ switch (cmd) {
     process.exitCode = code;
     break;
   }
+  case "story": {
+    // One analysis (and with --generate one test branch) for everything a story changed, across services.
+    const id = String(arg ?? "").toUpperCase();
+    if (!id) die("usage: local.mjs story SHOP-106 [--generate]");
+    const key = storyKeyOf(id);
+    for (const svc of SERVICES) if (fs.existsSync(path.join(work, svc))) git(path.join(work, svc), "checkout", "-q", "-f", "main");
+    testsToMain();
+    const storyFile = path.join(work, "stories", `${id}.md`);
+    const gap = run("node", [CLI, "gap-report", "--story", key, "--checkout", ...(fs.existsSync(storyFile) ? storyArgs(storyFile) : []), ...(JIRA ? ["--post"] : []), "-o", `../${id}-story-gap-report.md`], { cwd: tests });
+    if (gap === 3) noClaude();
+    log(`story gap report: ${path.join(work, `${id}-story-gap-report.md`)}`);
+    if (f.generate) {
+      envStart();
+      const code = run("node", [CLI, "generate", "--story", key, "--checkout", ...(fs.existsSync(storyFile) ? storyArgs(storyFile) : [])], { cwd: tests, env: { ...process.env, ...QA_URLS } });
+      envStop(true);
+      if (code === 3) noClaude();
+      log(`generation exit ${code}; branch: ${git(tests, "branch", "--show-current")}`);
+      process.exitCode = code;
+    } else process.exitCode = gap;
+    break;
+  }
   case "run": {
     if (!fs.existsSync(tests)) die(`no sandbox in ${work}; run: node sandbox/shoplite/local.mjs setup`);
     const s = scenario(arg);
@@ -116,7 +155,7 @@ switch (cmd) {
     for (const svc of SERVICES) if (fs.existsSync(path.join(work, svc))) git(path.join(work, svc), "checkout", "-q", "-f", "main");
     const prev = git(tests, "branch", "--show-current");
     if (prev.startsWith("qa-sentinel/")) log(`generated tests stay on branch ${prev} (review: git -C ${tests} diff main ${prev})`);
-    git(tests, "checkout", "-q", "-f", "main");
+    testsToMain();
     const key = storyKeyOf(s.storyKey ?? s.id);
     log(`${s.id}${key !== s.id ? ` (Jira ${key})` : ""}: developer change on ${s.service} (${s.branch})`);
     // The commit message carries the story key, as a developer's would: that's how qa-sentinel finds the story.
@@ -151,10 +190,11 @@ switch (cmd) {
       if (f.showcase) {
         // Showcase: run the whole suite on the generated branch (json reporter keeps evidence), then attach evidence
         // for the story if every acceptance criterion passed. Without JIRA_* it only assesses (--dry-run).
+        // The environment stays up for the showcase: it re-records the chosen web tests in showcase mode.
         envStart();
         run("npx", ["playwright", "test", "--project=api", "--project=web"], { cwd: tests, env: { ...process.env, ...QA_URLS } });
+        run("node", [CLI, "showcase", "--story", key, ...storyArgs(story), ...(JIRA ? [] : ["--dry-run"]), "-o", `../${s.id}-showcase.md`], { cwd: tests, env: { ...process.env, ...QA_URLS } });
         envStop(true);
-        run("node", [CLI, "showcase", "--story", key, ...storyArgs(story), ...(JIRA ? [] : ["--dry-run"]), "-o", `../${s.id}-showcase.md`], { cwd: tests });
         log(`showcase summary: ${path.join(work, `${s.id}-showcase.md`)}`);
       }
       log(`generation exit ${code}; MR description: ${path.join(tests, "qa-sentinel-summary.md")}; branch: ${branch}`);

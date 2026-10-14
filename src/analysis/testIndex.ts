@@ -56,7 +56,8 @@ export function parseTags(raw: string): Pick<IndexedTest, "services" | "endpoint
     const vals = (v ?? "").split(",").filter(Boolean);
     if (k === "service") out.services.push(...vals);
     else if (k === "endpoint") out.endpoints.push(...vals.map(endpointFromTag));
-    else if (k === "page") out.pages.push(...vals.map(normPage));
+    // Mobile tests tag the screen (@screen:orders/new); it is indexed like a page (same matching and screens map).
+    else if (k === "page" || k === "screen") out.pages.push(...vals.map(normPage));
     else if (k === "story") out.stories.push(...vals);
     else if (k === "ac") {
       // "@ac:none" says on purpose that no acceptance criterion covers this test (e.g. contract-only behaviour).
@@ -210,7 +211,7 @@ export function checkNewTests(index: IndexedTest[], changedFiles: string[], stor
   const out: TraceFinding[] = [];
   const known = new Set(acIds.map((a) => a.toUpperCase()));
   for (const t of index.filter((x) => changedFiles.includes(x.file))) {
-    if (!t.endpoints.length && !t.pages.length) out.push({ level: "warning", file: t.id, message: `"${t.title}" has no @endpoint (API) or @page (web) tag` });
+    if (!t.endpoints.length && !t.pages.length) out.push({ level: "warning", file: t.id, message: `"${t.title}" has no @endpoint (API), @page (web) or @screen (mobile) tag` });
     if (storyKey && !t.stories.length && !t.acs.length) continue; // pre-existing style tests: not this change's concern
     for (const ac of t.acs) if (known.size && !known.has(ac)) out.push({ level: "warning", file: t.id, message: `"${t.title}" references ${ac}, which is not in ${storyKey ?? "the story"}` });
   }

@@ -1,0 +1,12 @@
+import { expect } from "@wdio/globals";
+import { useMobile } from "../../../src/fixtures/mobile";
+import { HomeScreen } from "../../../src/screens/home-screen";
+
+describe("app home", () => {
+  const t = useMobile();
+
+  it("opens on the home screen @service:app @screen:home @ac:none", async () => {
+    const home = await new HomeScreen(t.ui).waitForOpen();
+    await expect(home.menuButton).toBeDisplayed();
+  });
+});

@@ -26,19 +26,25 @@ export const TEST_FILE = /\.(spec|test)\.(ts|tsx|js|mjs|cjs)$/;
  * them (QA_HEALING=off must mean "no healing"), so the agent may never change them.
  */
 export const PROTECTED_WEB_FILES = ["src/web/healing.ts", "src/web/ui.ts", "src/fixtures/web.ts"];
+/** Mobile scaffold files that produce the evidence and pick the device: the agent may not change them either. */
+export const PROTECTED_MOBILE_FILES = ["wdio.conf.ts", "src/mobile/evidence.ts", "src/mobile/ui.ts", "src/fixtures/mobile.ts"];
 
 export function generatePolicy(c: Config): WritePolicy {
   const derived = [...layers(c).flatMap((t) => [`${t.dir}/**`, `${t.helpersDir}/**`, ...t.extraWritePaths]), "test-map.yaml"];
   return {
     allowed: c.guardrails.allowedWritePaths.length ? c.guardrails.allowedWritePaths : derived,
-    blocked: [...c.guardrails.blockedWritePaths, ...(c.tests.web.enabled ? PROTECTED_WEB_FILES : [])],
+    blocked: [...c.guardrails.blockedWritePaths, ...(c.tests.web.enabled ? PROTECTED_WEB_FILES : []), ...(c.tests.mobile.enabled ? PROTECTED_MOBILE_FILES : [])],
   };
 }
 
 /** `learn` may only touch the three knowledge files it is responsible for. */
 export const LEARN_FILES = [".claude/skills/write-api-test/SKILL.md", "test-map.yaml", ".claude/qa-sentinel.md"];
-export function learnPolicy(): WritePolicy {
-  return { allowed: LEARN_FILES, blocked: [] };
+/** With the web layer on, `learn` also writes the web conventions into the write-web-test skill. */
+export function learnPolicy(c?: Config): WritePolicy {
+  return {
+    allowed: [...LEARN_FILES, ...(c?.tests.web.enabled ? [".claude/skills/write-web-test/SKILL.md"] : []), ...(c?.tests.mobile.enabled ? [".claude/skills/write-mobile-test/SKILL.md"] : [])],
+    blocked: [],
+  };
 }
 
 /** Path rules: blocked always wins; everything else must be allowed. Deletions and both sides of renames count. */

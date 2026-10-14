@@ -28,10 +28,12 @@ export interface JiraIssue {
   status: string;
   url: string;
   updated?: string;
+  /** Extra fields asked for (scope fields), as text. */
+  extra?: Record<string, string>;
 }
 
-export async function fetchIssue(ctx: JiraContext, key: string, acField?: string): Promise<JiraIssue> {
-  const fields = ["summary", "description", "status", "updated", ...(acField ? [acField] : [])].join(",");
+export async function fetchIssue(ctx: JiraContext, key: string, acField?: string, extraFields: string[] = []): Promise<JiraIssue> {
+  const fields = ["summary", "description", "status", "updated", ...(acField ? [acField] : []), ...extraFields].join(",");
   const res = await netFetch(`${ctx.baseUrl}/rest/api/2/issue/${encodeURIComponent(key)}?fields=${fields}`, {
     headers: { Authorization: ctx.authHeader, Accept: "application/json" },
   });
@@ -46,6 +48,7 @@ export async function fetchIssue(ctx: JiraContext, key: string, acField?: string
     status: String(f.status?.name ?? ""),
     url: `${ctx.baseUrl}/browse/${j.key ?? key}`,
     updated: f.updated,
+    extra: Object.fromEntries(extraFields.map((x) => [x, toText(f[x])]).filter(([, v]) => v)),
   };
 }
 
@@ -61,30 +64,52 @@ export function wikiToMarkdown(s: string): string {
   return s
     .split(/\r?\n/)
     .map((l) => {
-      const h = l.match(/^h([1-6])\.\s+(.*)$/);
+      const h = l.match(/^\s*h([1-6])\.\s+(.*)$/);
       if (h) return `${"#".repeat(Number(h[1]))} ${h[2]}`;
-      return l.replace(/^#+\s+/, "1. ").replace(/^\*+\s+/, "- "); // wiki numbered / bulleted lists
+      // Wiki lists: ** / ## mark the depth; keep it as indentation so sub-points stay with their parent.
+      const b = l.match(/^\s*([*#]+)\s+(.*)$/);
+      if (b && !/^\*[^*\s].*\*$/.test(l.trim())) return `${"  ".repeat(b[1].length - 1)}${b[1].endsWith("#") ? "1." : "-"} ${b[2]}`;
+      return l;
     })
     .join("\n");
 }
 
+/** Atlassian Document Format → markdown: headings, nested lists (indented), tables (| a | b |), panels, code. */
 function adfToText(node: any, depth = 0): string {
   if (!node) return "";
-  if (node.type === "text") return node.text ?? "";
-  const inner = (node.content ?? []).map((c: any) => adfToText(c, depth + 1)).join("");
+  const kids = (n: any, d = depth) => (n.content ?? []).map((c: any) => adfToText(c, d)).join("");
   switch (node.type) {
-    case "paragraph":
-      return inner + "\n";
-    case "heading":
-      return `${"#".repeat(node.attrs?.level ?? 2)} ${inner}\n`;
-    case "listItem":
-      return `- ${inner.trim()}\n`;
-    case "orderedList":
-      return (node.content ?? []).map((c: any, i: number) => `${i + 1}. ${adfToText(c, depth + 1).replace(/^- /, "").trim()}\n`).join("");
+    case "text":
+      return node.text ?? "";
     case "hardBreak":
       return "\n";
+    case "paragraph":
+      return `${kids(node)}\n`;
+    case "heading":
+      return `${"#".repeat(node.attrs?.level ?? 2)} ${kids(node)}\n`;
+    case "bulletList":
+    case "orderedList":
+      return (node.content ?? [])
+        .map((li: any, i: number) => {
+          const marker = node.type === "orderedList" ? `${i + 1}.` : "-";
+          const parts = (li.content ?? []).map((c: any) => (c.type === "bulletList" || c.type === "orderedList" ? adfToText(c, depth + 1) : adfToText(c, depth).replace(/\n+$/, " ")));
+          const [first, ...rest] = parts;
+          return `${"  ".repeat(depth)}${marker} ${(first ?? "").trim()}\n${rest.join("")}`;
+        })
+        .join("");
+    case "table":
+      return (
+        (node.content ?? [])
+          .map((row: any, i: number) => {
+            const cells = (row.content ?? []).map((cell: any) => kids(cell, 0).replace(/\s*\n\s*/g, " ").replace(/\|/g, "/").trim());
+            const line = `| ${cells.join(" | ")} |`;
+            const header = i === 0 && (row.content ?? []).every((c: any) => c.type === "tableHeader");
+            return header ? `${line}\n|${cells.map(() => " --- ").join("|")}|` : line;
+          })
+          .join("\n") + "\n\n"
+      );
     default:
-      return inner;
+      return kids(node);
   }
 }
 
@@ -244,4 +269,55 @@ export async function attachFile(ctx: JiraContext, key: string, fileName: string
 
 export async function deleteAttachment(ctx: JiraContext, id: string): Promise<void> {
   await jiraCall(ctx, "DELETE", `/rest/api/2/attachment/${encodeURIComponent(id)}`);
+}
+
+// ---------------------------------------------------------------------------------------------
+// Bugs: create, link to the story, comment.
+
+export async function projectIssueTypes(ctx: JiraContext, projectKey: string): Promise<string[]> {
+  const j = await jiraCall(ctx, "GET", `/rest/api/2/project/${encodeURIComponent(projectKey)}`);
+  return (j.issueTypes ?? []).filter((t: any) => !t.subtask).map((t: any) => String(t.name));
+}
+
+export async function createIssue(ctx: JiraContext, fields: { project: string; issueType: string; summary: string; description: string; labels?: string[]; priority?: string }): Promise<{ key: string; url: string }> {
+  const j = await jiraCall(ctx, "POST", "/rest/api/2/issue", {
+    fields: {
+      project: { key: fields.project },
+      issuetype: { name: fields.issueType },
+      summary: fields.summary.slice(0, 250),
+      description: fields.description,
+      ...(fields.labels?.length ? { labels: fields.labels } : {}),
+      ...(fields.priority ? { priority: { name: fields.priority } } : {}),
+    },
+  });
+  return { key: j.key, url: `${ctx.baseUrl}/browse/${j.key}` };
+}
+
+export async function linkIssues(ctx: JiraContext, from: string, to: string, type = "Relates"): Promise<void> {
+  await jiraCall(ctx, "POST", "/rest/api/2/issueLink", { type: { name: type }, inwardIssue: { key: from }, outwardIssue: { key: to } });
+}
+
+export async function addComment(ctx: JiraContext, key: string, body: string): Promise<void> {
+  await jiraCall(ctx, "POST", `/rest/api/2/issue/${encodeURIComponent(key)}/comment`, { body });
+}
+
+export async function issueStatus(ctx: JiraContext, key: string): Promise<{ status: string; category?: string }> {
+  const j = await jiraCall(ctx, "GET", `/rest/api/2/issue/${encodeURIComponent(key)}?fields=status`);
+  return { status: String(j.fields?.status?.name ?? ""), category: j.fields?.status?.statusCategory?.key };
+}
+
+/**
+ * Every non-empty field of an issue with its display name (onboarding: find the custom field that holds the
+ * acceptance criteria or the tech scope, e.g. customfield_10045 "Acceptance Criteria").
+ */
+export async function issueFields(ctx: JiraContext, key: string): Promise<{ id: string; name: string; preview: string }[]> {
+  const j = await jiraCall(ctx, "GET", `/rest/api/2/issue/${encodeURIComponent(key)}?expand=names`);
+  const names: Record<string, string> = j.names ?? {};
+  const out: { id: string; name: string; preview: string }[] = [];
+  for (const [id, v] of Object.entries<any>(j.fields ?? {})) {
+    if (v == null || v === "" || (Array.isArray(v) && !v.length)) continue;
+    const text = typeof v === "string" || v?.type === "doc" ? toText(v) : typeof v === "object" ? (v.name ?? v.value ?? v.displayName ?? JSON.stringify(v)) : String(v);
+    out.push({ id, name: names[id] ?? id, preview: String(text).replace(/\s+/g, " ").trim().slice(0, 90) });
+  }
+  return out.sort((a, b) => Number(b.id.startsWith("customfield_")) - Number(a.id.startsWith("customfield_")) || a.name.localeCompare(b.name));
 }

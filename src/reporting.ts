@@ -15,6 +15,8 @@ export interface MrDescriptionInput {
   environment?: string;
   service: string;
   sha: string;
+  /** Overrides "service@sha" in the heading (story mode: "story SHOP-12 (orders-service, storefront)"). */
+  subject?: string;
   version: string;
   requirements: RequirementSnapshot;
   verification: VerificationReport;
@@ -38,7 +40,7 @@ export interface MrDescriptionInput {
 export function mrDescription(i: MrDescriptionInput): string {
   const warnings = i.findings.filter((f) => f.level === "warning");
   const parts = [
-    `## QA agent: ${i.service}@${i.sha.slice(0, 8)} · ${STATUS_BADGE[i.verification.status]}${i.plan ? ` · ${RISK_BADGE[i.plan.risked.overall]} risk` : ""}`,
+    `## QA agent: ${i.subject ?? `${i.service}@${i.sha.slice(0, 8)}`} · ${STATUS_BADGE[i.verification.status]}${i.plan ? ` · ${RISK_BADGE[i.plan.risked.overall]} risk` : ""}`,
     "",
     requirementsLine(i.requirements),
     "",

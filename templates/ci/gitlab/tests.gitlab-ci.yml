@@ -4,7 +4,7 @@
 #   include:
 #     - local: "ci/qa-sentinel/tests.gitlab-ci.yml"
 #
-# CI/CD variables: ANTHROPIC_API_KEY, QA_SENTINEL_GITLAB_TOKEN (api + write_repository), {{baseUrlEnv}}{{#if webEnabled}}, {{webBaseUrlEnv}}{{/if}} (web)
+# CI/CD variables: ANTHROPIC_API_KEY, QA_SENTINEL_GITLAB_TOKEN (api + write_repository), {{baseUrlEnv}}{{#if webEnabled}}, {{webBaseUrlEnv}} (web){{/if}}{{#if mobileEnabled}}, QA_APPIUM_URL + QA_APP or QA_APP_PACKAGE/QA_BUNDLE_ID + QA_MOBILE_PLATFORM (mobile){{/if}}
 # Allow this project's CI_JOB_TOKEN to read the service repos (Settings › CI/CD › Job token permissions).
 #
 # Security notes:
@@ -14,7 +14,7 @@
 #   the QA environment. Generated tests are code; isolate where they run.
 
 variables:
-  QA_SENTINEL_VERSION: "0.5.0"
+  QA_SENTINEL_VERSION: "0.6.0"
   # Where to install qa-sentinel from: set QA_SENTINEL_PACKAGE as a group/project CI/CD variable, e.g.
   # "github:bishnu133/qa-sentinel#main" until it is on npm. Default: qa-sentinel@$QA_SENTINEL_VERSION.
   # (Not defined here on purpose: trigger jobs forward YAML variables downstream, where they override CI/CD variables.)
@@ -89,6 +89,22 @@ qa-generate:
     expire_in: 2 weeks
 
 {{/if}}
+# Story review before development: start a pipeline with QA_STORY_REVIEW_KEY=SHOP-12 (e.g. from a Jira Automation
+# rule "when an issue moves to Ready for Dev → send web request" to this project's pipeline trigger URL).
+qa-story-review:
+  extends: .qa-node
+  stage: test
+  rules:
+    - if: $QA_STORY_REVIEW_KEY
+  script:
+    - npm i -g --no-audit --no-fund --loglevel=error @anthropic-ai/claude-code
+    - !reference [.qa-sentinel-install, script]
+    - qa-sentinel review-story --story "$QA_STORY_REVIEW_KEY" --post
+  artifacts:
+    when: always
+    paths: [qa-story-review.md, .qa-sentinel/runs/]
+    expire_in: 2 weeks
+
 # Blocking gate for agent MRs (and any MR touching tests): the same independent checks qa-sentinel runs after
 # generation – write policy, type-check, changed specs with JUnit. Fails unless VERIFIED.
 qa-agent-mr-checks:
@@ -100,7 +116,7 @@ qa-agent-mr-checks:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event" && $CI_MERGE_REQUEST_SOURCE_BRANCH_NAME =~ /^qa-sentinel\//
       variables: { QA_VERIFY_POLICY: "--policy" }
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
-      changes: ["{{apiDir}}/**/*"{{#if webEnabled}}, "{{webDir}}/**/*", "{{pagesDir}}/**/*"{{/if}}]
+      changes: ["{{apiDir}}/**/*"{{#if webEnabled}}, "{{webDir}}/**/*", "{{pagesDir}}/**/*"{{/if}}{{#if mobileEnabled}}, "{{mobileDir}}/**/*", "{{screensDir}}/**/*"{{/if}}]
   script:
     - !reference [.qa-sentinel-install, script]
     # Optional ephemeral QA environment (e.g. start the services under test). Set QA_ENV_START in your
@@ -110,7 +126,7 @@ qa-agent-mr-checks:
   artifacts:
     when: always
     reports:
-      junit: .qa-sentinel/runs/*/junit*.xml
+      junit: [.qa-sentinel/runs/*/junit*.xml{{#if mobileEnabled}}, .qa-sentinel/runs/*/junit-mobile/*.xml{{/if}}]
     paths: [qa-verify.md, .qa-sentinel/runs/, playwright-report/]
     expire_in: 2 weeks
 
@@ -125,6 +141,8 @@ api-tests:
     QA_HEALING: "{{healingVar}}"
 {{/if}}
   rules:
+    - if: $QA_STORY_REVIEW_KEY   # a story-review pipeline runs only that job
+      when: never
     - if: $CI_PIPELINE_SOURCE == "schedule"
     - if: $CI_PIPELINE_SOURCE == "trigger" || $CI_PIPELINE_SOURCE == "api"
     - if: $CI_COMMIT_BRANCH == "{{targetBranch}}"
@@ -144,6 +162,31 @@ api-tests:
     paths: [playwright-report/, test-results/]
     expire_in: 2 weeks
 
+{{#if mobileEnabled}}
+# The mobile suite (WebdriverIO + Appium) needs a device: it runs when QA_APPIUM_URL points at an Appium server
+# (a device farm, or a runner with an emulator). Set QA_APP (or QA_APP_PACKAGE / QA_BUNDLE_ID) and QA_MOBILE_PLATFORM too.
+mobile-tests:
+  extends: .qa-node
+  stage: test
+  rules:
+    - if: $QA_STORY_REVIEW_KEY
+      when: never
+    - if: $QA_APPIUM_URL == null || $QA_APPIUM_URL == ""
+      when: never
+    - if: $CI_PIPELINE_SOURCE == "schedule"
+    - if: $CI_PIPELINE_SOURCE == "trigger" || $CI_PIPELINE_SOURCE == "api"
+    - if: $CI_COMMIT_BRANCH == "{{targetBranch}}"
+  script:
+    - if [ -n "$QA_ENV_START" ]; then eval "$QA_ENV_START"; fi
+    - {{mobileRunCommand}} ${QA_MOBILE_TEST_ARGS}
+  artifacts:
+    when: always
+    reports:
+      junit: test-results/mobile/junit/*.xml
+    paths: [test-results/mobile/]
+    expire_in: 2 weeks
+
+{{/if}}
 {{#if healingBubblegum}}
 # Healed steps from the run above: page-object fixes to make (qa-healed.md); fails when tests.web.bubblegum.failOnHeal.
 qa-healed:
@@ -151,6 +194,8 @@ qa-healed:
   stage: test
   needs: [api-tests]
   rules:
+    - if: $QA_STORY_REVIEW_KEY   # a story-review pipeline runs only that job
+      when: never
     # Also (especially) when tests failed: a step Bubblegum could not heal is listed too.
     - if: $CI_PIPELINE_SOURCE == "schedule" || $CI_PIPELINE_SOURCE == "trigger" || $CI_PIPELINE_SOURCE == "api" || $CI_COMMIT_BRANCH == "{{targetBranch}}"
       when: always
@@ -169,13 +214,19 @@ qa-healed:
 qa-showcase:
   extends: .qa-node
   stage: test
-  needs: [api-tests]
+  needs: [api-tests{{#if mobileEnabled}}, { job: mobile-tests, optional: true }{{/if}}]
   rules:
+    - if: $QA_STORY_REVIEW_KEY   # a story-review pipeline runs only that job
+      when: never
     - if: $QA_SHOWCASE == "true" && ($CI_PIPELINE_SOURCE == "schedule" || $CI_PIPELINE_SOURCE == "trigger" || $CI_PIPELINE_SOURCE == "api" || $CI_COMMIT_BRANCH == "{{targetBranch}}")
   script:
     - !reference [.qa-sentinel-install, script]
+    # A full ffmpeg builds the single showcase video (title cards + the recorded tests).
+    - command -v ffmpeg >/dev/null || (apt-get update -qq && apt-get install -y -qq ffmpeg >/dev/null)
+    # The showcase re-records the chosen web{{#if mobileEnabled}} and mobile{{/if}} tests slowly, so the environment must be up{{#if mobileEnabled}} (and Appium, for the app){{/if}}.
+    - if [ -n "$QA_ENV_START" ]; then eval "$QA_ENV_START"; fi
     - qa-sentinel showcase ${QA_ENVIRONMENT:+--env "$QA_ENVIRONMENT"}
   artifacts:
     when: always
-    paths: [qa-showcase.md, qa-showcase/]
+    paths: [qa-showcase.md, qa-showcase/, .qa-sentinel/showcase/]
     expire_in: 2 weeks

@@ -1,8 +1,13 @@
 #!/usr/bin/env node
 import { ClaudeAccessError } from "./claude.js";
 import { Command, Option } from "commander";
-import { addWebCommand, initCommand } from "./commands/init.js";
+import { addMobileCommand, addWebCommand, initCommand, upgradeCommand } from "./commands/init.js";
 import { healedCommand } from "./commands/healed.js";
+import { reviewStoryCommand } from "./commands/reviewStoryCmd.js";
+import { bugsCommand } from "./commands/bugs.js";
+import { tagCommand } from "./commands/tag.js";
+import { metricsCommand } from "./commands/metrics.js";
+import { storyCheckCommand } from "./commands/storyCheck.js";
 import { learnCommand } from "./commands/learn.js";
 import { doctorCommand } from "./commands/doctor.js";
 import { gapReportCommand } from "./commands/gapReport.js";
@@ -23,6 +28,11 @@ program
   .option("-C, --cwd <dir>", "test repository root", process.cwd());
 
 const cwd = () => program.opts().cwd as string;
+/** gap-report/generate need either a service or --story. */
+function needService<T extends { service?: string; story?: string }>(o: T): T & { service: string } {
+  if (!o.service && !o.story) throw new Error("pass --service <name> (one service change) or --story <KEY> (everything a story changed)");
+  return { ...o, service: o.service ?? "" };
+}
 const wrap =
   <A extends unknown[]>(fn: (...args: A) => Promise<unknown> | unknown) =>
   async (...args: A) => {
@@ -46,6 +56,12 @@ program
   .option("--workspace <dir>", "folder containing the service repos", "..")
   .option("--name <name>", "project name")
   .option("--web", "also set up web (Playwright UI) tests: page objects, ui helper, fixtures")
+  .option("--mobile", "also set up mobile (WebdriverIO + Appium) tests: screen objects, ui helper, evidence hooks")
+  .addOption(new Option("--requirements <source>", "where stories come from").choices(["jira", "mr-description", "none"]))
+  .option("--jira-url <url>", "Jira site, e.g. https://yourco.atlassian.net")
+  .option("--jira-projects <keys>", "Jira project keys this repo covers, comma-separated (PAY,CARD)", (v) => v.split(/[\s,]+/).map((k) => k.trim().toUpperCase()).filter(Boolean))
+  .option("--gitlab-url <url>", "GitLab URL (self-hosted or https://gitlab.com)")
+  .option("--test-repo-project <path>", "this test repo's GitLab project path, e.g. group/qa-tests")
   .option("-y, --yes", "accept detected defaults, no prompts")
   .option("--force", "overwrite generated files")
   .action(
@@ -55,10 +71,67 @@ program
   );
 
 program
+  .command("upgrade")
+  .description("after updating qa-sentinel: refresh its agents, skills, CI templates and project context (keeps your learned conventions)")
+  .action(wrap(async () => upgradeCommand({ cwd: cwd() })));
+
+program
   .command("add-web")
   .description("add the web (Playwright UI) test layer to an existing qa-sentinel project")
   .addOption(new Option("--healing <mode>", "none | bubblegum (runtime locator healing in scheduled runs)").choices(["none", "bubblegum"]))
   .action(wrap(async (o) => void addWebCommand({ cwd: cwd(), healing: o.healing })));
+
+program
+  .command("add-mobile")
+  .description("add the mobile (WebdriverIO + Appium) test layer to an existing qa-sentinel project")
+  .addOption(new Option("--platform <platform>", "android | ios (default when QA_MOBILE_PLATFORM is not set)").choices(["android", "ios"]))
+  .action(wrap(async (o) => void addMobileCommand({ cwd: cwd(), platform: o.platform })));
+
+program
+  .command("review-story")
+  .description("review a story before development: ambiguous ACs, missing negative/edge cases, scope without an AC")
+  .option("--story <key>", "Jira story key")
+  .option("--story-file <path>", "story as a markdown file")
+  .option("--post", "post the review as a comment on the Jira story (updated in place)")
+  .option("-o, --out <file>", "markdown output", "qa-story-review.md")
+  .option("--dry-run", "prepare the inputs without calling the agent")
+  .action(wrap(async (o) => reviewStoryCommand({ cwd: cwd(), story: o.story, storyFile: o.storyFile, post: o.post, out: o.out, dryRun: o.dryRun })));
+
+program
+  .command("bugs")
+  .description("after a suite run: raise a bug per story requirement whose tests fail (bugs.mode), once; note fixes on earlier bugs")
+  .option("--story <key...>", "only these stories")
+  .option("--results <file>", "Playwright JSON report", "test-results/results.json")
+  .option("--env <name>", "environment the run used")
+  .option("--dry-run", "list what would be raised")
+  .action(wrap(async (o) => bugsCommand({ cwd: cwd(), story: o.story, results: o.results, env: o.env, dryRun: o.dryRun })));
+
+program
+  .command("tag")
+  .description("one-off: add @service/@endpoint/@page tags to existing tests (only titles change; checked) on a branch")
+  .option("--push", "push the branch and open a merge request")
+  .option("--limit <n>", "at most this many tests", (v) => Number(v))
+  .option("--dry-run", "list the untagged tests")
+  .action(wrap(async (o) => tagCommand({ cwd: cwd(), push: o.push, limit: o.limit, dryRun: o.dryRun })));
+
+program
+  .command("story-check")
+  .description("onboarding: how qa-sentinel reads one of your stories (ACs, scope, out of scope, context) and what to configure")
+  .option("--story <key>", "Jira story key")
+  .option("--story-file <path>", "story as a markdown or text file")
+  .option("--fields", "also list the Jira issue's fields with their ids (to find the AC / tech-scope custom fields)")
+  .option("--json", "print the parsed story as JSON")
+  .option("-o, --out <file>", "markdown output", "qa-story-check.md")
+  .action(wrap(async (o) => storyCheckCommand({ cwd: cwd(), story: o.story, storyFile: o.storyFile, fields: o.fields, json: o.json, out: o.out })));
+
+program
+  .command("metrics")
+  .description("how the agents are doing: verification rate, merged-without-edits rate, cost, plan repairs (qa-metrics.md)")
+  .option("--runs <dir...>", "extra folders with run manifests (e.g. downloaded CI artifacts)")
+  .option("--since <when>", "30d, 12w or a date")
+  .option("-o, --out <file>", "markdown output", "qa-metrics.md")
+  .option("--json", "print the numbers as JSON instead")
+  .action(wrap(async (o) => metricsCommand({ cwd: cwd(), runs: o.runs, since: o.since, out: o.out, json: o.json })));
 
 program
   .command("healed")
@@ -82,8 +155,9 @@ program
 
 program
   .command("gap-report")
-  .description("Phase 1: analyse a service change and report impacted tests, gaps and AC mismatches")
-  .requiredOption("-s, --service <name|path>", "service name from the config, or a path to its repo")
+  .description("Phase 1: analyse a service change (or a whole story across services) and report impacted tests, gaps and AC mismatches")
+  .option("-s, --service <name|path>", "service name from the config, or a path to its repo")
+  .option("--story <key>", "story mode: analyse everything this story changed, across all its service repos")
   .option("--service-path <dir>", "override where the service repo is checked out (useful in CI)")
   .option("--base <ref>", "base ref (default: MR diff base in CI, else origin/<targetBranch>)")
   .option("--head <ref>", "head ref", "HEAD")
@@ -92,12 +166,13 @@ program
   .option("-o, --out <file>", "where to write the report", "qa-gap-report.md")
   .option("--post", "post or update the report as a GitLab MR comment")
   .option("--dry-run", "do everything except call Claude")
-  .action(wrap(async (o) => (await gapReportCommand({ cwd: cwd(), ...o })).exitCode));
+  .action(wrap(async (o) => (await gapReportCommand({ cwd: cwd(), ...needService(o) })).exitCode));
 
 program
   .command("generate")
-  .description("Phase 2: add or update API tests for a service change and commit them on a branch")
-  .requiredOption("-s, --service <name|path>", "service name from the config, or a path to its repo")
+  .description("Phase 2: add or update tests for a service change (or a whole story across services) and commit them on a branch")
+  .option("-s, --service <name|path>", "service name from the config, or a path to its repo")
+  .option("--story <key>", "story mode: one plan and one branch/MR for everything this story changed, across all its service repos")
   .option("--service-path <dir>", "override where the service repo is checked out (useful in CI)")
   .option("--base <ref>", "base ref in the service repo", "HEAD~1")
   .option("--head <ref>", "head ref in the service repo", "HEAD")
@@ -106,7 +181,7 @@ program
   .option("--push", "push the branch and open a GitLab merge request")
   .option("--env <name>", "run the tests against this environment from `environments:` (e.g. dev, sit) before pushing")
   .option("--dry-run", "do everything except call Claude and commit")
-  .action(wrap(async (o) => generateCommand({ cwd: cwd(), ...o })));
+  .action(wrap(async (o) => generateCommand({ cwd: cwd(), ...needService(o) })));
 
 program
   .command("trace")
@@ -133,6 +208,7 @@ program
   .option("--story <key...>", "only these stories (default: every story tagged in the tests)")
   .option("--story-file <file>", "acceptance criteria from a file instead of Jira (one story)")
   .option("--results <file>", "test results with attachments (default: test-results/results.json, else junit.xml)")
+  .option("--mobile-results <dir>", "mobile result files (default: test-results/mobile, when the mobile layer is on)")
   .option("--env <name>", "environment the run used, shown on the story")
   .option("--force", "attach again even if this story was already showcased")
   .option("--dry-run", "assess and list the files, attach nothing")

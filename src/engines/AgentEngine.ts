@@ -6,7 +6,7 @@ import type { WritePolicy } from "../guardrails.js";
  * (Agent SDK, another model provider) only has to implement this interface.
  */
 export interface AgentTask {
-  kind: "plan" | "repair-plan" | "author" | "learn" | "review";
+  kind: "plan" | "repair-plan" | "author" | "learn" | "review" | "story-review" | "tag";
   cwd: string;
   prompt: string;
   /** Directories the agent may read but never change (service repos). */

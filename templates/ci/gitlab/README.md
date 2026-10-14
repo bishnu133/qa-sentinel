@@ -29,4 +29,8 @@ Two files, two repos:
 - [ ] (optional) Showcase: `QA_SHOWCASE: "true"` in this repo's variables, Jira configured, and `reporting.targets` including `jira`. The job attaches evidence to the story once all ACs pass.
 - [ ] (web) `{{webBaseUrlEnv}}` in this repo's variables (or exported by `QA_ENV_START`): the front end the web tests open. The suite job installs Chromium; videos are recorded for the showcase.
 - [ ] (web, optional) Runtime healing: `tests.web.healing: bubblegum` in the config, `npm i -D @bubblegum-ai/node` in this repo. The suite job installs the Python engine and runs with `QA_HEALING=bubblegum`; `qa-healed` lists what was healed. Never used for agent MRs.
+- [ ] (showcase) `QA_SHOWCASE=true`, Jira credentials, and `showcase.environments` / `showcase.notify` in the config. The job installs ffmpeg for the single showcase video.
+{{#if mobileEnabled}}
+- [ ] (mobile) `QA_APPIUM_URL` (an Appium server with a device, or a device farm's `https://user:key@…/wd/hub`, masked), `QA_APP` (or `QA_APP_PACKAGE` + `QA_APP_ACTIVITY` / `QA_BUNDLE_ID`) and `QA_MOBILE_PLATFORM`. Without `QA_APPIUM_URL` the `mobile-tests` job doesn't run, and agent MRs with mobile specs are verified as BLOCKED.
+{{/if}}
 - [ ] Run `qa-sentinel doctor --online` locally first

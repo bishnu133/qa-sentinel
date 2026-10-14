@@ -10,6 +10,8 @@ const launchOptions = process.env.QA_BROWSER_PATH
   : process.env.QA_BROWSER_CHANNEL
     ? { channel: process.env.QA_BROWSER_CHANNEL }
     : {};
+// Showcase mode (qa-sentinel showcase records the Biz video): slowed down, fixed size, always recorded.
+const showcase = Boolean(process.env.QA_SHOWCASE_MODE);
 // baseURL must end with "/" so pages resolve under a path prefix too (page objects open routes relative to it).
 const webBaseURL = process.env.{{webBaseUrlEnv}} ? process.env.{{webBaseUrlEnv}}.replace(/\/?$/, "/") : undefined;
 {{/if}}
@@ -33,9 +35,10 @@ export default defineConfig({
       use: {
         baseURL: webBaseURL,
         headless: !process.env.QA_HEADED,
-        launchOptions,
+        launchOptions: { ...launchOptions, ...(showcase ? { slowMo: Number(process.env.QA_SHOWCASE_SLOWMO ?? 500) } : {}) },
+        viewport: { width: 1280, height: 720 },
         // Evidence for qa-sentinel's showcase stage (attached to the story once every AC passes).
-        video: (process.env.QA_VIDEO as "on" | "off" | "retain-on-failure" | undefined) ?? "on",
+        video: showcase ? { mode: "on", size: { width: 1280, height: 720 } } : ((process.env.QA_VIDEO as "on" | "off" | "retain-on-failure" | undefined) ?? "on"),
         screenshot: "on",
         trace: "retain-on-failure",
       },

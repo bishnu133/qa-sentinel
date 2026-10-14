@@ -106,7 +106,7 @@ export async function reviewTests(i: {
       return undefined;
     }
   };
-  const acIds = i.req.acceptanceCriteria.map((a) => a.id);
+  const acIds = [...i.req.acceptanceCriteria, ...(i.req.scopeItems ?? [])].map((a) => a.id);
   const first = await ask();
   runs.push(first);
   if (!first.ok) return { status: "agent-failed", errors: [first.status], runs };

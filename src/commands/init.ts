@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import YAML from "yaml";
 import { KB_README } from "../kb.js";
-import { confirm, input, select } from "@inquirer/prompts";
+import { checkbox, confirm, input, select } from "@inquirer/prompts";
 import { CONFIG_FILE, type Config, ConfigSchema, configPath, loadConfig, writeConfig } from "../config.js";
 import { defaultRunCommand, detectProject, discoverServices, type Detection } from "../detect.js";
 import { ensureDir, readJson, writeFileSafe } from "../fsutil.js";
@@ -20,6 +20,18 @@ export interface InitOptions {
   name?: string;
   /** Also set up the web (Playwright UI) layer: config, page objects, ui helper, fixtures, example spec. */
   web?: boolean;
+  /** Also set up the mobile (WebdriverIO + Appium) layer: config, screen objects, ui helper, evidence hooks, example spec. */
+  mobile?: boolean;
+  /** Where stories come from: jira | mr-description | none. */
+  requirements?: "jira" | "mr-description" | "none";
+  /** Jira site, e.g. https://yourco.atlassian.net (or a Server/DC URL). */
+  jiraUrl?: string;
+  /** Jira project keys whose stories this test repo covers, e.g. ["PAY", "CARD"]. */
+  jiraProjects?: string[];
+  /** GitLab URL (self-hosted or gitlab.com). */
+  gitlabUrl?: string;
+  /** This test repo's GitLab project path, e.g. group/qa-tests. */
+  testRepoProject?: string;
   yes?: boolean;
   force?: boolean;
 }
@@ -107,6 +119,54 @@ export async function initCommand(opts: InitOptions): Promise<Config> {
         ? "jenkins"
         : "gitlab");
 
+  // 5. Test layers (API is always on).
+  let web = Boolean(opts.web);
+  let mobile = Boolean(opts.mobile);
+  if (interactive && opts.web === undefined && opts.mobile === undefined) {
+    const picked = await checkbox({
+      message: "Test layers besides API",
+      choices: [
+        { name: "Web UI (Playwright, page objects)", value: "web", checked: web },
+        { name: "Mobile app (WebdriverIO + Appium, screen objects)", value: "mobile", checked: mobile },
+      ],
+    });
+    web = picked.includes("web");
+    mobile = picked.includes("mobile");
+  }
+
+  // 6. Where stories (acceptance criteria) come from, and where the code lives.
+  const reqSource =
+    opts.requirements ??
+    (opts.jiraUrl
+      ? "jira"
+      : interactive
+        ? await select({
+            message: "Where are your stories and acceptance criteria?",
+            default: "jira" as const,
+            choices: [
+              { name: "Jira", value: "jira" as const },
+              { name: "In the merge request description", value: "mr-description" as const },
+              { name: "Nowhere yet (tests are checked against the API contract and code only)", value: "none" as const },
+            ],
+          })
+        : "mr-description");
+  let jiraUrl = opts.jiraUrl;
+  let jiraProjects = opts.jiraProjects ?? [];
+  if (reqSource === "jira" && interactive) {
+    jiraUrl ??= (await input({ message: "Jira URL (e.g. https://yourco.atlassian.net)", validate: (v) => /^https?:\/\/\S+$/.test(v.trim()) || "a URL starting with https://" })).trim();
+    if (!jiraProjects.length)
+      jiraProjects = (await input({ message: "Jira project keys this test repo covers (comma-separated, e.g. PAY,CARD)" }))
+        .split(/[\s,]+/)
+        .map((k) => k.trim().toUpperCase())
+        .filter(Boolean);
+  }
+  let gitlabUrl = opts.gitlabUrl;
+  let testRepoProject = opts.testRepoProject;
+  if (ci === "gitlab" && interactive) {
+    gitlabUrl ??= (await input({ message: "GitLab URL", default: "https://gitlab.com" })).trim();
+    testRepoProject ??= (await input({ message: "This test repo's GitLab project path (e.g. group/qa-tests; empty to fill in later)" })).trim() || undefined;
+  }
+
   const projectName =
     opts.name ??
     (interactive
@@ -133,9 +193,15 @@ export async function initCommand(opts: InitOptions): Promise<Config> {
         baseUrlEnv: "QA_BASE_URL",
         extraWritePaths: mode === "scratch" ? ["src/fixtures/**", "src/data/**", "src/schemas/**"] : guessExtraWritePaths(cwd),
       },
-      web: { enabled: Boolean(opts.web) },
+      web: { enabled: web },
+      mobile: { enabled: mobile },
     },
-    ci: { platform: ci },
+    requirements: {
+      source: reqSource,
+      ...(jiraProjects.length ? { storyKeyPattern: `(?:${jiraProjects.join("|")})-\\d+` } : {}),
+      jira: { ...(jiraUrl ? { baseUrl: jiraUrl.replace(/\/+$/, "") } : {}), projectKeys: jiraProjects },
+    },
+    ci: { platform: ci, ...(gitlabUrl ? { gitlabUrl: gitlabUrl.replace(/\/+$/, "") } : {}), ...(testRepoProject ? { testRepoProject } : {}) },
   });
 
   writeConfig(cwd, config);
@@ -152,7 +218,8 @@ export async function initCommand(opts: InitOptions): Promise<Config> {
 
   writeKbReadme(cwd, config);
   ensureGitignore(cwd);
-  if (mode === "scratch") mergePackageJson(cwd, config.tests.web.enabled);
+  if (mode === "scratch") mergePackageJson(cwd, config.tests.web.enabled, config.tests.mobile.enabled);
+  else addLayerDependencies(cwd, config);
 
   printNextSteps(config);
   return config;
@@ -206,11 +273,18 @@ export function templateVars(c: Config): TemplateVars {
     webRunCommand: c.tests.web.runCommand,
     webBaseUrlEnv: c.tests.web.baseUrlEnv,
     healing: c.tests.web.healing,
+    a11y: c.tests.web.accessibility !== "off",
     healingBubblegum: c.tests.web.enabled && c.tests.web.healing === "bubblegum",
     healingVar: c.tests.web.healing === "bubblegum" ? "bubblegum" : "off",
     suiteRunCommand: suiteRunCommand(c),
     cdpPort: c.tests.web.bubblegum.cdpPort,
     bubblegumPackage: c.tests.web.bubblegum.package,
+    mobileEnabled: c.tests.mobile.enabled,
+    mobileDir: c.tests.mobile.dir,
+    screensDir: c.tests.mobile.screensDir,
+    mobileRunCommand: c.tests.mobile.runCommand,
+    mobilePlatform: c.tests.mobile.platform,
+    appiumUrl: c.tests.mobile.appiumUrl,
     serviceList: c.workspace.services.map((s) => `- **${s.name}** – \`${s.path}\`${s.openapi ? ` (OpenAPI: \`${s.openapi}\`)` : ""}`).join("\n") || "- _(none yet – add them to qa-sentinel.config.yaml)_",
   };
 }
@@ -224,7 +298,7 @@ export function writeTemplates(cwd: string, c: Config, vars: TemplateVars, force
 
   for (const f of listTemplateDir("agents")) put(`.claude/agents/${f}`, render(readTemplate(`agents/${f}`), vars));
   for (const f of listTemplateDir("skills")) {
-    if (f.startsWith("write-web-test/") && !c.tests.web.enabled) continue;
+    if (!skillWanted(c, f)) continue;
     put(`.claude/skills/${f}`, render(readTemplate(`skills/${f}`), vars));
   }
 
@@ -252,6 +326,47 @@ export function writeTemplates(cwd: string, c: Config, vars: TemplateVars, force
     }
   }
   if (c.tests.web.enabled) results.push(...writeWebScaffold(cwd, c, vars));
+  if (c.tests.mobile.enabled) results.push(...writeMobileScaffold(cwd, c, vars));
+  return results;
+}
+
+/**
+ * Relative imports between scaffold files, rewritten for where the files actually go: each import is resolved
+ * at the template's default location, moved with the same mapping as the files, and made relative again.
+ */
+export function rebaseImports(content: string, defaultFile: string, actualFile: string, move: (f: string) => string): string {
+  return content.replace(/(from\s+["'])(\.{1,2}\/[^"']+)(["'])/g, (_m, pre: string, spec: string, post: string) => {
+    const defaultTarget = path.posix.normalize(path.posix.join(path.posix.dirname(defaultFile), spec));
+    const actualTarget = move(`${defaultTarget}.ts`).replace(/\.ts$/, "");
+    let rel = path.posix.relative(path.posix.dirname(actualFile), actualTarget);
+    if (!rel.startsWith(".")) rel = `./${rel}`;
+    return `${pre}${rel}${post}`;
+  });
+}
+
+/** Layer skills are only installed when their layer is on. */
+function skillWanted(c: Config, f: string): boolean {
+  if (f.startsWith("write-web-test/")) return c.tests.web.enabled;
+  if (f.startsWith("write-mobile-test/")) return c.tests.mobile.enabled;
+  return true;
+}
+
+/**
+ * Mobile layer files: wdio.conf.ts, the ui helper, evidence hooks (recording, screenshot, results for qa-sentinel),
+ * screen objects base, fixture, example spec. Never overwrites; paths follow tests.mobile (dir, screensDir).
+ */
+export function writeMobileScaffold(cwd: string, c: Config, vars: TemplateVars): [string, string][] {
+  const results: [string, string][] = [];
+  const target = (f: string) =>
+    f
+      .replace(/\.tmpl$/, "")
+      .replace(/^src\/screens\//, `${c.tests.mobile.screensDir}/`)
+      .replace(/^tests\/mobile\//, `${c.tests.mobile.dir}/`);
+  for (const f of listTemplateDir("scaffold/wdio-mobile")) {
+    const rel = target(f);
+    const content = rebaseImports(render(readTemplate(`scaffold/wdio-mobile/${f}`), vars), f.replace(/\.tmpl$/, ""), rel, target);
+    results.push([rel, writeFileSafe(path.join(cwd, rel), content, false)]);
+  }
   return results;
 }
 
@@ -268,8 +383,8 @@ export function writeWebScaffold(cwd: string, c: Config, vars: TemplateVars): [s
       .replace(/^tests\/web\//, `${c.tests.web.dir}/`);
   for (const f of listTemplateDir("scaffold/playwright-web")) {
     const rel = target(f);
-    // Relative imports in the templates assume the default layout (src/pages, tests/web/<area>/).
-    const content = render(readTemplate(`scaffold/playwright-web/${f}`), vars);
+    // The templates import each other assuming the default layout; follow pagesDir / dir when they differ.
+    const content = rebaseImports(render(readTemplate(`scaffold/playwright-web/${f}`), vars), f.replace(/\.tmpl$/, ""), rel, target);
     results.push([rel, writeFileSafe(path.join(cwd, rel), content, false)]);
   }
   return results;
@@ -308,20 +423,57 @@ function writeKbReadme(cwd: string, c: Config) {
 
 function ensureGitignore(cwd: string) {
   const file = path.join(cwd, ".gitignore");
-  const wanted = [".qa-sentinel/runs/", "qa-sentinel-summary.md", "qa-gap-report.md", "qa-regression.txt", "qa-feature-*", "qa-showcase.md", "qa-showcase/", "qa-verify.md", "test-results/", "playwright-report/", "node_modules/", ".env"];
+  const wanted = [".qa-sentinel/runs/", "qa-sentinel-summary.md", "qa-gap-report.md", "qa-regression.txt", "qa-feature-*", "qa-showcase.md", "qa-showcase/", "qa-verify.md", "qa-healed.md", "qa-healed.json", "qa-story-review.md", "qa-story-check.md", "qa-metrics.md", "test-results/", "playwright-report/", "node_modules/", ".env"];
   const current = fs.existsSync(file) ? fs.readFileSync(file, "utf8") : "";
   const have = new Set(current.split(/\r?\n/).map((l) => l.trim()));
   const missing = wanted.filter((l) => !have.has(l));
   if (missing.length) fs.writeFileSync(file, current + (current && !current.endsWith("\n") ? "\n" : "") + missing.join("\n") + "\n");
 }
 
-function mergePackageJson(cwd: string, web = false) {
+export const MOBILE_DEV_DEPENDENCIES: Record<string, string> = {
+  "@wdio/cli": "^9.5.0",
+  "@wdio/local-runner": "^9.5.0",
+  "@wdio/mocha-framework": "^9.5.0",
+  "@wdio/spec-reporter": "^9.5.0",
+  "@wdio/junit-reporter": "^9.5.0",
+  "@wdio/globals": "^9.5.0",
+  webdriverio: "^9.5.0",
+  "@types/mocha": "^10.0.10",
+};
+
+/** Existing projects: add only the packages the web/mobile scaffold imports (never touching versions already there). */
+export function addLayerDependencies(cwd: string, c: Config): string[] {
+  const file = path.join(cwd, "package.json");
+  if (!fs.existsSync(file)) return [];
+  const pkg = readJson<any>(file);
+  if (!pkg) return [];
+  pkg.devDependencies ??= {};
+  const want: Record<string, string> = {
+    ...(c.tests.web.enabled && c.tests.web.accessibility !== "off" ? { "@axe-core/playwright": "^4.10.0" } : {}),
+    ...(c.tests.mobile.enabled ? MOBILE_DEV_DEPENDENCIES : {}),
+  };
+  const added = Object.keys(want).filter((k) => !pkg.devDependencies[k] && !pkg.dependencies?.[k]);
+  if (!added.length) return [];
+  for (const k of added) pkg.devDependencies[k] = want[k];
+  fs.writeFileSync(file, JSON.stringify(pkg, null, 2) + "\n");
+  log.dim(`  updated  package.json (added ${added.join(", ")}; run npm install)`);
+  return added;
+}
+
+export function mergePackageJson(cwd: string, web = false, mobile = false) {
   const file = path.join(cwd, "package.json");
   const fragment = JSON.parse(readTemplate("scaffold/playwright-api/package.fragment.json"));
   const pkg = readJson<any>(file) ?? { name: path.basename(cwd), version: "0.1.0", private: true };
   pkg.scripts = { ...fragment.scripts, ...(pkg.scripts ?? {}) };
-  if (web) pkg.scripts["test:web"] ??= "playwright test --project=web";
   pkg.devDependencies = { ...fragment.devDependencies, ...(pkg.devDependencies ?? {}) };
+  if (web) {
+    pkg.scripts["test:web"] ??= "playwright test --project=web";
+    pkg.devDependencies["@axe-core/playwright"] ??= "^4.10.0";
+  }
+  if (mobile) {
+    pkg.scripts["test:mobile"] ??= "wdio run wdio.conf.ts";
+    for (const [k, v] of Object.entries(MOBILE_DEV_DEPENDENCIES)) pkg.devDependencies[k] ??= v;
+  }
   ensureDir(cwd);
   fs.writeFileSync(file, JSON.stringify(pkg, null, 2) + "\n");
   log.dim("  updated  package.json (scripts, devDependencies)");
@@ -337,7 +489,11 @@ function printNextSteps(c: Config) {
   const steps = [
     c.mode === "scratch" ? "npm install && npx playwright install --with-deps chromium" : undefined,
     c.tests.web.enabled ? `Set ${c.tests.web.baseUrlEnv} to your front end (no browser download? QA_BROWSER_CHANNEL=chrome uses installed Chrome)` : undefined,
-    "Review qa-sentinel.config.yaml (services, run command, GitLab project)",
+    c.tests.mobile.enabled ? `Mobile: start Appium (npx appium, with the uiautomator2/xcuitest driver) and a device, then set QA_APP (or QA_APP_PACKAGE/QA_BUNDLE_ID) and QA_MOBILE_PLATFORM` : undefined,
+    "Review qa-sentinel.config.yaml (services and their kind: api | web | mobile, run commands, GitLab project)",
+    c.requirements.source === "jira"
+      ? "qa-sentinel story-check --story <KEY> --fields   # how your stories are read; set the AC field and story template (docs/ONBOARDING.md)"
+      : undefined,
     c.mode === "existing"
       ? "qa-sentinel learn   # agent drafts your conventions + test-map.yaml; review the diff"
       : "qa-sentinel learn   # agent fills test-map.yaml from your service specs",
@@ -375,6 +531,7 @@ export function addWebCommand(o: { cwd: string; healing?: "none" | "bubblegum" }
     results.push([`ci/qa-sentinel/${f}`, writeFileSafe(path.join(cwd, "ci/qa-sentinel", f), render(readTemplate(`${ciDir}/${f}`), vars), true)]);
   }
   for (const [f, status] of results) log.dim(`  ${status === "skipped" ? "kept    " : status.padEnd(8)} ${f}`);
+  addLayerDependencies(cwd, c);
   log.ok("web layer enabled in qa-sentinel.config.yaml");
   log.title("Add this project to playwright.config.ts");
   log.info(
@@ -395,4 +552,126 @@ export function addWebCommand(o: { cwd: string; healing?: "none" | "bubblegum" }
   log.info(`Then: npx playwright install chromium (or QA_BROWSER_CHANNEL=chrome), set ${c.tests.web.baseUrlEnv}, and run qa-sentinel doctor.`);
   if (c.tests.web.healing === "bubblegum") log.info(`Healing: npm i -D ${c.tests.web.bubblegum.package} && pip install "bubblegum-ai[web]".`);
   return c;
+}
+
+/**
+ * Upgrades: write agents and skills a newer qa-sentinel ships but this repo doesn't have yet (never overwrites a
+ * team's edited copy). Called by the commands that rely on them.
+ */
+export function ensureAgentFiles(cwd: string, c: Config): string[] {
+  const vars = templateVars(c);
+  const added: string[] = [];
+  const put = (rel: string, tpl: string) => {
+    if (fs.existsSync(path.join(cwd, rel))) return;
+    fs.mkdirSync(path.dirname(path.join(cwd, rel)), { recursive: true });
+    fs.writeFileSync(path.join(cwd, rel), render(readTemplate(tpl), vars));
+    added.push(rel);
+  };
+  for (const f of listTemplateDir("agents")) put(`.claude/agents/${f}`, `agents/${f}`);
+  for (const f of listTemplateDir("skills")) {
+    if (!skillWanted(c, f)) continue;
+    put(`.claude/skills/${f}`, `skills/${f}`);
+  }
+  if (added.length) log.dim(`  added ${added.join(", ")} (new in this qa-sentinel version)`);
+  return added;
+}
+
+/**
+ * `qa-sentinel upgrade`: refresh the files qa-sentinel owns after updating the package: agents, skills (except the
+ * write-*-test skills, which hold your learned conventions; those are only added when missing), the CI templates
+ * in ci/qa-sentinel/ and .claude/qa-sentinel.md. Review with git diff and commit.
+ */
+export function upgradeCommand(o: { cwd: string }): number {
+  const cwd = path.resolve(o.cwd);
+  const c = loadConfig(cwd);
+  const vars = templateVars(c);
+  const changed: string[] = [];
+  const write = (rel: string, content: string, overwrite: boolean) => {
+    const abs = path.join(cwd, rel);
+    const before = fs.existsSync(abs) ? fs.readFileSync(abs, "utf8") : undefined;
+    if (before !== undefined && (!overwrite || before === content)) return;
+    fs.mkdirSync(path.dirname(abs), { recursive: true });
+    fs.writeFileSync(abs, content);
+    changed.push(`${before === undefined ? "added  " : "updated"} ${rel}`);
+  };
+  for (const f of listTemplateDir("agents")) write(`.claude/agents/${f}`, render(readTemplate(`agents/${f}`), vars), true);
+  for (const f of listTemplateDir("skills")) {
+    if (!skillWanted(c, f)) continue;
+    write(`.claude/skills/${f}`, render(readTemplate(`skills/${f}`), vars), !/^write-(api|web|mobile)-test\//.test(f));
+  }
+  write(".claude/qa-sentinel.md", render(readTemplate("claude/qa-sentinel.md"), vars), true);
+  const ciDir = `ci/${c.ci.platform}`;
+  for (const f of listTemplateDir(ciDir)) {
+    if (c.level === "intelligence" && f === "Jenkinsfile.generate") continue;
+    write(`ci/qa-sentinel/${f}`, render(readTemplate(`${ciDir}/${f}`), vars), true);
+  }
+  ensureGitignore(cwd);
+  if (!changed.length) log.ok("everything qa-sentinel owns is up to date");
+  else {
+    changed.forEach((x) => log.dim(`  ${x}`));
+    log.ok(`${changed.length} file(s) refreshed. Review with git diff, then commit. Your write-*-test skills (learned conventions) were kept.`);
+  }
+  return 0;
+}
+
+/**
+ * Add the mobile layer (WebdriverIO + Appium) to a project that already runs qa-sentinel: turns tests.mobile on,
+ * writes the mobile scaffold and the write-mobile-test skill, refreshes the project context and CI templates, and
+ * adds the WebdriverIO packages to package.json.
+ */
+export function addMobileCommand(o: { cwd: string; platform?: "android" | "ios" }): Config {
+  const cwd = path.resolve(o.cwd);
+  const file = configPath(cwd);
+  const doc = YAML.parseDocument(fs.readFileSync(file, "utf8"));
+  doc.setIn(["tests", "mobile", "enabled"], true);
+  if (o.platform) doc.setIn(["tests", "mobile", "platform"], o.platform);
+  fs.writeFileSync(file, doc.toString());
+  const c = loadConfig(cwd);
+  const vars = templateVars(c);
+  const results = writeMobileScaffold(cwd, c, vars);
+  for (const f of listTemplateDir("skills")) {
+    if (f.startsWith("write-mobile-test/")) results.push([`.claude/skills/${f}`, writeFileSafe(path.join(cwd, ".claude/skills", f), render(readTemplate(`skills/${f}`), vars), false)]);
+  }
+  results.push([".claude/qa-sentinel.md", writeFileSafe(path.join(cwd, ".claude/qa-sentinel.md"), render(readTemplate("claude/qa-sentinel.md"), vars), true)]);
+  const ciDir = `ci/${c.ci.platform}`;
+  for (const f of listTemplateDir(ciDir)) {
+    if (c.level === "intelligence" && f === "Jenkinsfile.generate") continue;
+    results.push([`ci/qa-sentinel/${f}`, writeFileSafe(path.join(cwd, "ci/qa-sentinel", f), render(readTemplate(`${ciDir}/${f}`), vars), true)]);
+  }
+  if (addLayerDependencies(cwd, c).length) results.push(["package.json", "updated"]);
+  const tsc = includeInTsconfig(cwd, "wdio.conf.ts");
+  if (tsc) results.push(["tsconfig.json", tsc]);
+  for (const [f, status] of results) log.dim(`  ${status === "skipped" ? "kept    " : status.padEnd(8)} ${f}`);
+  log.ok("mobile layer enabled in qa-sentinel.config.yaml");
+  log.info(
+    [
+      "Next:",
+      "  - npm install",
+      ...(tsc === "manual" ? ["  - Add wdio.conf.ts to tsconfig.json's include (it has comments, so qa-sentinel didn't rewrite it)"] : []),
+      "  - Start Appium (npm i -g appium && appium driver install uiautomator2 | xcuitest; appium) and an emulator or device",
+      "  - Set QA_APP (or QA_APP_PACKAGE + QA_APP_ACTIVITY / QA_BUNDLE_ID), QA_MOBILE_PLATFORM, and QA_APPIUM_URL if not local",
+      `  - ${c.tests.mobile.runCommand} --spec ${c.tests.mobile.dir}/example/home.spec.ts, then qa-sentinel doctor`,
+    ].join("\n"),
+  );
+  return c;
+}
+
+/**
+ * Add a file to tsconfig.json's "include" so the type-check covers it. Returns "updated", "kept" (already there or no
+ * include list), "manual" (the file has comments or isn't plain JSON: say so instead of rewriting it), or undefined
+ * when there is no tsconfig.json.
+ */
+export function includeInTsconfig(cwd: string, file: string): "updated" | "kept" | "manual" | undefined {
+  const p = path.join(cwd, "tsconfig.json");
+  if (!fs.existsSync(p)) return undefined;
+  let j: any;
+  try {
+    j = JSON.parse(fs.readFileSync(p, "utf8"));
+  } catch {
+    return "manual";
+  }
+  if (!Array.isArray(j.include) || j.include.includes(file)) return "kept";
+  j.include.push(file);
+  fs.writeFileSync(p, JSON.stringify(j, null, 2) + "\n");
+  return "updated";
 }
