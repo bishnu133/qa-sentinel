@@ -1,6 +1,7 @@
 import type { Config } from "../config.js";
 import type { ContractDiff } from "./contractDiff.js";
-import type { IndexedTest } from "./testIndex.js";
+import { type IndexedTest, normPage } from "./testIndex.js";
+import { runCommandsFor } from "../layers.js";
 import type { TestPlan } from "../plan/schema.js";
 import type { RiskedChange } from "../plan/risk.js";
 
@@ -15,7 +16,7 @@ import type { RiskedChange } from "../plan/risk.js";
  * Every selected test carries its reasons, so a reviewer can see why it is in the list.
  */
 
-export type SelectionReason = "named-by-plan" | "changed-endpoint" | "test-map" | "consumer" | "service-wide";
+export type SelectionReason = "named-by-plan" | "changed-endpoint" | "changed-page" | "test-map" | "consumer" | "service-wide";
 
 export interface SelectedTest {
   test: IndexedTest;
@@ -40,7 +41,7 @@ export const normEndpoint = (e: string) => {
   return `${m[1].toUpperCase()} ${m[2].replace(/\{[^}]*\}/g, "{}").replace(/\/+$/, "") || "/"}`;
 };
 
-type MapLike = { services?: Record<string, { endpoints?: Record<string, string[]> }> } | undefined;
+type MapLike = { services?: Record<string, { endpoints?: Record<string, string[]>; screens?: Record<string, string[]> }> } | undefined;
 
 export function selectRegression(i: {
   c: Config;
@@ -65,7 +66,7 @@ export function selectRegression(i: {
     return i.index.filter((t) => t.file === file && (!line || t.line === Number(line)));
   };
   const serviceTests = (svc: string) => {
-    const mapped = new Set(Object.values(i.map?.services?.[svc]?.endpoints ?? {}).flat());
+    const mapped = new Set([...Object.values(i.map?.services?.[svc]?.endpoints ?? {}), ...Object.values(i.map?.services?.[svc]?.screens ?? {})].flat());
     return i.index.filter((t) => t.services.includes(svc) || mapped.has(t.file));
   };
 
@@ -88,6 +89,16 @@ export function selectRegression(i: {
       if (normEndpoint(mapped) === ep) for (const f of files) for (const t of i.index.filter((x) => x.file === f && !x.endpoints.length)) add(t, "test-map", ep);
   }
 
+  // 2b. Changed pages (front ends): web tests tagged with the page or mapped to it under screens.
+  const pages = new Set<string>();
+  for (const ch of i.plan?.changes ?? []) if (ch.page && ch.type !== "suspicious-instruction") pages.add(normPage(ch.page));
+  const screens = i.map?.services?.[i.service]?.screens ?? {};
+  for (const pg of pages) {
+    for (const t of i.index) if (t.pages.includes(pg)) add(t, "changed-page", pg);
+    for (const [mapped, files] of Object.entries(screens))
+      if (normPage(mapped) === pg) for (const f of files) for (const t of i.index.filter((x) => x.file === f && !x.pages.length)) add(t, "test-map", pg);
+  }
+
   // 3. Consumers of a breaking or cross-service change.
   const crossService = (i.risked ?? []).some((r) => r.factors?.includes("breaking-contract") || r.factors?.includes("cross-service")) || (i.contract?.changes ?? []).some((c) => c.breaking);
   if (crossService) {
@@ -97,12 +108,12 @@ export function selectRegression(i: {
   }
 
   // 4. Changes we can't pin to an endpoint → the service's whole suite.
-  const unpinned = (i.plan?.changes ?? []).filter((ch) => ch.type !== "suspicious-instruction" && !ch.endpoint);
+  const unpinned = (i.plan?.changes ?? []).filter((ch) => ch.type !== "suspicious-instruction" && !ch.endpoint && !ch.page);
   let serviceWide = false;
-  if (unpinned.length || (!picked.size && !endpoints.size)) {
+  if (unpinned.length || (!picked.size && !endpoints.size && !pages.size)) {
     serviceWide = true;
-    for (const t of serviceTests(i.service)) add(t, "service-wide", unpinned.length ? `${unpinned.map((u) => u.id).join(", ")}: not tied to one endpoint` : "no endpoint-level signal");
-    notes.push(unpinned.length ? `${unpinned.length} change(s) not tied to an endpoint: ran selection over the whole ${i.service} suite` : "no endpoint-level signal: selected the whole service suite");
+    for (const t of serviceTests(i.service)) add(t, "service-wide", unpinned.length ? `${unpinned.map((u) => u.id).join(", ")}: not tied to one endpoint or page` : "no endpoint- or page-level signal");
+    notes.push(unpinned.length ? `${unpinned.length} change(s) not tied to an endpoint or page: ran selection over the whole ${i.service} suite` : "no endpoint- or page-level signal: selected the whole service suite");
   }
 
   const tests = [...picked.values()].sort((a, b) => a.test.file.localeCompare(b.test.file) || a.test.line - b.test.line);
@@ -114,13 +125,20 @@ export function selectRegression(i: {
 const REASON_LABEL: Record<SelectionReason, string> = {
   "named-by-plan": "named by the plan",
   "changed-endpoint": "changed endpoint",
+  "changed-page": "changed page",
   "test-map": "test-map.yaml",
   consumer: "consumer service",
   "service-wide": "service-wide",
 };
 
-export function regressionMarkdown(sel: RegressionSelection, runCommand?: string): string {
-  if (sel.runFullSuite) return "**Regression selection:** no precise signal; run the full API suite.";
+/** Runner commands for a selection, one per layer (each layer has its own command, e.g. --project=api / web). */
+export function regressionCommands(c: Config, sel: RegressionSelection): string[] {
+  return runCommandsFor(c, sel.args);
+}
+
+export function regressionMarkdown(sel: RegressionSelection, runCommand?: string | string[]): string {
+  if (sel.runFullSuite) return "**Regression selection:** no precise signal; run the full suite.";
+  const commands = Array.isArray(runCommand) ? runCommand : runCommand ? [`${runCommand} ${sel.args.join(" ")}`] : [];
   const files = new Set(sel.tests.map((s) => s.test.file)).size;
   const lines = [
     `**Regression selection** (computed by qa-sentinel): ${sel.tests.length} existing test(s) in ${files} file(s)${sel.serviceWide ? ", including the service-wide fallback" : ""}`,
@@ -131,7 +149,7 @@ export function regressionMarkdown(sel: RegressionSelection, runCommand?: string
     "| --- | --- |",
     ...sel.tests.map((s) => `| \`${s.test.file}:${s.test.line}\` ${s.test.title.replace(/\|/g, "\\|")} | ${s.reasons.map((r) => REASON_LABEL[r]).join(", ")}: ${s.detail.join("; ").replace(/\|/g, "\\|")} |`),
     "",
-    ...(runCommand ? ["```", `${runCommand} ${sel.args.join(" ")}`, "```", ""] : []),
+    ...(commands.length ? ["```", ...commands, "```", ""] : []),
     ...sel.notes.map((n) => `- ${n}`),
     "</details>",
   ];

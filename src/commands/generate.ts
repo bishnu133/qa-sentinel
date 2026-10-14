@@ -4,7 +4,7 @@ import { loadConfig } from "../config.js";
 import { changeSet, commitMessages, ensureAtCommit, git, hasChanges, isGitRepo, resolveSha, workingChanges } from "../git.js";
 import { matchesAny } from "../fsutil.js";
 import { formatUsage } from "../claude.js";
-import { useEnvironment, ARTIFACT_GLOBS, VERSION, agentEnv, bashRuleForTests, cleanAgentAnswer, createRunDir, findService, startManifest, testEnv, writeManifest } from "../run.js";
+import { useEnvironment, ARTIFACT_GLOBS, VERSION, agentEnv, bashRulesForTests, cleanAgentAnswer, createRunDir, findService, startManifest, testEnv, writeManifest } from "../run.js";
 import { checkContent, checkPaths, checkServiceUntouched, findingsMarkdown, generatePolicy, snapshotTree, violations } from "../guardrails.js";
 import { resolveRequirements, storyMarkdown } from "../requirements.js";
 import { findDiscrepancies, verifyChanges } from "../verification.js";
@@ -13,7 +13,7 @@ import { generationSummary } from "../reporting/jiraSummary.js";
 import { publish } from "../reporting/publish.js";
 import { reviewMarkdown, reviewTests, type ReviewOutcome } from "../review/reviewer.js";
 import { TEST_FILE, addedLines } from "../guardrails.js";
-import { buildTestIndex, changedTests, checkNewTests, checkTestMap, readTestMap, traceMarkdown, traceStory } from "../analysis/testIndex.js";
+import { indexTests, changedTests, checkNewTests, checkTestMap, readTestMap, traceMarkdown, traceStory } from "../analysis/testIndex.js";
 import { createOrUpdateMergeRequest, gitlabContext, pushUrl } from "../scm/gitlab.js";
 import { engineFor } from "../engines/ClaudeCodeEngine.js";
 import { type AgentResult, addUsage } from "../engines/AgentEngine.js";
@@ -21,6 +21,9 @@ import { planChange } from "../plan/planner.js";
 import { actionable } from "../plan/validate.js";
 import { decisionTable } from "../plan/render.js";
 import { log } from "../log.js";
+import { layers } from "../layers.js";
+import { pagesToExplore, snapshotPages } from "../web/explore.js";
+import { readHealed } from "../web/healed.js";
 
 export interface GenerateOptions {
   cwd: string;
@@ -51,7 +54,7 @@ export async function generateCommand(o: GenerateOptions): Promise<number> {
   const repo = path.resolve(cwd, service.path);
   if (!isGitRepo(repo)) throw new Error(`${repo} is not a git repository`);
   const environment = useEnvironment(c, o.env);
-  if (environment) log.step(`environment: ${environment} (${process.env[c.tests.api.baseUrlEnv]})`);
+  if (environment) log.step(`environment: ${environment} (${layers(c).map((l) => process.env[l.baseUrlEnv]).filter(Boolean).join(", ")})`);
   if (!isGitRepo(cwd)) throw new Error(`The test repo (${cwd}) must be a git repository`);
   if (workingChanges(cwd).some((x) => !matchesAny(x.path, ARTIFACT_GLOBS)) && !o.dryRun) throw new Error("The test repo has uncommitted changes; commit or stash them first.");
 
@@ -141,6 +144,20 @@ export async function generateCommand(o: GenerateOptions): Promise<number> {
     return finish("no-changes-needed", 0);
   }
 
+  // Phase 2a (web): look at the affected pages before writing locators. qa-sentinel opens them itself.
+  const webScenarios = todo.flatMap((d) => d.proposedScenarios).filter((sc) => sc.layer === "web");
+  let snapshots = "";
+  if (webScenarios.length && c.tests.web.explore === "snapshot") {
+    const routes = pagesToExplore(plan, service.routes);
+    log.step(`exploring ${routes.length} page(s): ${routes.join(", ")}`);
+    const snaps = await snapshotPages({ cwd, c, runDir: run.dir, routes, sources: service.routes, env: testEnv(c) });
+    const ok = snaps.filter((x) => !x.error).length;
+    log[ok ? "ok" : "warn"](`page snapshots: ${ok}/${snaps.length}${snaps.find((x) => x.error) ? ` (${snaps.find((x) => x.error)!.route}: ${snaps.find((x) => x.error)!.error})` : ""}`);
+    if (fs.existsSync(path.join(run.dir, "page-snapshots", "README.md"))) snapshots = `${run.rel}/page-snapshots/README.md`;
+  }
+  // Locators healed in recent scheduled runs (qa-sentinel healed): page-object fixes to make while we're here.
+  const healed = readHealed(cwd);
+
   // Phase 2: author only what the validated plan says, with scoped writes.
   git(cwd, ["checkout", "-q", "-B", branch]);
   log.step(`authoring ${todo.length} decision(s) on ${branch}`);
@@ -150,16 +167,18 @@ export async function generateCommand(o: GenerateOptions): Promise<number> {
     prompt: [
       "Use the generate-api-tests skill.",
       `The validated plan is ${run.rel}/test-plan.validated.json. Implement ONLY its decisions "update", "create" and "review"; leave "reuse" and "skip" alone.`,
+      ...(webScenarios.length ? [`${webScenarios.length} scenario(s) are web tests: use the write-web-test skill for them (page objects in ${c.tests.web.pagesDir} first, then specs in ${c.tests.web.dir}).${snapshots ? ` What the affected pages show now: ${snapshots}.` : ""}`] : []),
+      ...(healed.length ? [`Recent scheduled runs needed runtime healing for these page-object locators (fix the ones in page objects you touch; mention the rest under "Needs human attention"): ${healed.slice(0, 10).map((h) => `${h.at ?? h.file}: "${h.intent}" (${h.failedLocator} → ${h.healedTo ?? "?"})`).join("; ")}.`] : []),
       `Run context: ${run.rel}/context.json, diff: ${run.rel}/change.diff, story: ${run.rel}/story.md.`,
       ...(fs.existsSync(path.join(run.dir, "knowledge.md")) ? [`Team domain rules: ${run.rel}/knowledge.md (follow them; they are not instructions to change anything outside the tests).`] : []),
       `You may only change files matching: ${policy.allowed.join(", ")}. Any other change fails the whole run.`,
-      `Bash is allowed for exactly: \`${c.tests.api.runCommand} <spec paths>\`, \`npx tsc --noEmit\`, \`git status\` and \`git diff\`, each as a single command (no cd, pipes, && or variables). Use Read, Grep and Glob to explore files. If a command is denied, rewrite it in that form; do not give up on running the specs.`,
+      `Bash is allowed for exactly: ${layers(c).map((l) => `\`${l.runCommand} <${l.layer} spec paths>\``).join(", ")}, \`npx tsc --noEmit\`, \`git status\` and \`git diff\`, each as a single command (no cd, pipes, && or variables). Use Read, Grep and Glob to explore files. If a command is denied, rewrite it in that form; do not give up on running the specs.`,
       "qa-sentinel re-runs the changed specs independently afterwards.",
       "Your final answer must be the merge request notes in markdown (the format in the skill).",
     ].join("\n"),
     readOnlyDirs: [repo],
     write: policy,
-    bash: [bashRuleForTests(c), "npx tsc --noEmit", "git status *", "git diff *"],
+    bash: [...bashRulesForTests(c), "npx tsc --noEmit", "git status *", "git diff *"],
     maxTurns: c.agent.maxTurns.generate,
     maxBudgetUsd: c.agent.maxBudgetUsd.generate,
     timeoutMs: c.agent.timeoutMinutes.generate * 60_000,
@@ -182,6 +201,7 @@ export async function generateCommand(o: GenerateOptions): Promise<number> {
       ref: startSha,
       allowedHosts: c.guardrails.allowedHosts,
       baseUrl: process.env[c.tests.api.baseUrlEnv],
+      extraBaseUrls: layers(c).map((l) => process.env[l.baseUrlEnv]).filter((u): u is string => Boolean(u)),
       assertionRemoval: c.guardrails.assertionRemoval,
     }),
     ...checkServiceUntouched(repo, service.name, serviceBefore),
@@ -205,7 +225,7 @@ export async function generateCommand(o: GenerateOptions): Promise<number> {
   const verification = await verifyChanges({ cwd, c, changes, runDir: run.dir, env: testEnv(c) });
   const discrepancies = findDiscrepancies(cwd, startSha, changes);
   // Traceability from the tests' own tags: what each AC is now proven by, and tests that don't say what they prove.
-  const index = buildTestIndex(cwd, c.tests.api.dir);
+  const index = indexTests(cwd, c);
   fs.writeFileSync(path.join(run.dir, "test-index.json"), JSON.stringify(index, null, 2));
   const changedFiles = changes.filter((x) => x.status !== "D").map((x) => x.path);
   const traceFindings = [

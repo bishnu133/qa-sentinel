@@ -67,6 +67,28 @@ For a single-line or trivial diff you may do steps 2 and 3 yourself, but the rul
 }
 ```
 
+### Web front ends and test workflows
+`context.json` lists the repo's `testLayers` (api, and web when enabled) and the `serviceLayer` this service is tested on first (web for a front end).
+
+- A front-end change: `"type": "ui-change"` (or business-rule / validation-change when the UI enforces a rule), with `"page": "/orders/:id"` (the route, `:param` style; `serviceRoutes` in context.json lists known routes). Risk factors: `user-journey` for core journeys (sign-in, checkout, payment, submitting a form that writes data), `ui-visible` for other visible changes, plus the usual ones (`money` for prices and totals on screen).
+- Every scenario may set `"layer": "api"` or `"web"` (default: `serviceLayer`) and, for web, `"page"`. Prove business rules at the API layer when the API enforces them; use web scenarios for what the user sees and does.
+- `setup` is the scenario's workflow: preconditions as steps with dependencies. Test data is created **through the API** (or a test-data service), never through UI steps; a `"via": "ui"` step needs a `why` and only a web scenario may have one; `"db-helper"` needs a `why` (isolated environments only).
+
+```json
+{
+  "title": "order page shows the authorised payment",
+  "requirementIds": ["AC-1"],
+  "layer": "web",
+  "page": "/orders/:id",
+  "setup": [
+    { "id": "s1", "via": "api", "action": "create an order for 2 books at 12.50 SGD", "helper": "api.post('/orders')", "dependsOn": [] },
+    { "id": "s2", "via": "api", "action": "read its payment id", "helper": "api.get('/orders/{id}')", "dependsOn": ["s1"] }
+  ],
+  "assertions": ["page shows Payment: authorised", "total shows SGD 25.00"]
+}
+```
+Plain strings in `setup` are still accepted and read as API steps in order.
+
 ### Shapes of the list entries
 - `impactedTests[]`: `{ "file", "reason", "stillValid" }` (all three, nothing else)
 - `acMismatches[]`: `{ "requirementId"?, "requirement", "observed", "evidence": [Evidence] }`
@@ -75,12 +97,13 @@ For a single-line or trivial diff you may do steps 2 and 3 yourself, but the rul
 - Evidence: `{ "source", "file"?, "line"?, "reference" }`
 
 ### Enums
-- `type`: new-endpoint · contract-change · validation-change · business-rule · error-handling · removed · internal · suspicious-instruction
+- `type`: new-endpoint · contract-change · validation-change · business-rule · error-handling · removed · ui-change · internal · suspicious-instruction
 - `oracleStatus`: approved · conflicting · ambiguous · missing
-- `riskFactors`: auth · money · personal-data · business-rule · breaking-contract · write-path-error-handling · cross-service · conflicting-oracle · new-endpoint · validation · non-breaking-contract · read-only · internal
+- `riskFactors`: auth · money · personal-data · business-rule · breaking-contract · write-path-error-handling · cross-service · conflicting-oracle · new-endpoint · validation · non-breaking-contract · read-only · internal · user-journey · ui-visible
 - `coverage`: covered · partial · missing · outdated · unknown
 - `decision`: reuse · update · create · review · skip
-- evidence `source`: requirement · source-code · openapi · contract-diff · existing-test · runtime. Use paths relative to the repo they live in.
+- evidence `source`: requirement · source-code · openapi · contract-diff · domain-rule · existing-test · runtime. Use paths relative to the repo they live in.
+- scenario `layer`: api · web; setup step `via`: api · test-data-service · db-helper · ui
 
 ## Rules qa-sentinel enforces (a violation gets one repair round, then the run fails)
 - Change ids are `c1`, `c2`, …. Every observable change has **exactly one** decision. Every decision points to an existing change.
@@ -88,6 +111,7 @@ For a single-line or trivial diff you may do steps 2 and 3 yourself, but the rul
 - `reuse` needs `coverage: "covered"` and the existing tests to run. `covered` must be `reuse` (or `review`). `unknown` can never be `reuse`.
 - `update` needs the existing spec(s) and at least one proposed scenario. `create` needs at least one scenario. Every scenario names at least one assertion.
 - `existingTests` and `impactedTests` must be real files in the test repo.
+- A scenario's `layer` must be enabled in this repo. A web scenario needs a `page` (or its change's `page`). Setup step ids are `s1`, `s2`, …; `dependsOn` names earlier steps; no cycles; `ui` steps only in web scenarios and only with `why`.
 - `requirementIds` must be ids from `acceptanceCriteriaIds` in `context.json`. When the oracle is `missing`, leave them empty, and no change may be `approved`.
 - A `conflicting` oracle is always turned into `review` by qa-sentinel. Write the decision as `review` yourself.
 - The decision must fit this table (qa-sentinel's decision engine checks it; the safety rows are corrected for you, the others are errors):

@@ -1,6 +1,6 @@
 // Tiny API gateway for the ShopLite QA environment: one base URL, routed by the first path segment.
 const http = require("node:http");
-const routes = { orders: 3001, payments: 3002, notifications: 3003 };
+const routes = { orders: 3001, payments: 3002, notifications: 3003, storefront: 8081 };
 const port = Number(process.env.GATEWAY_PORT || 8080);
 
 http

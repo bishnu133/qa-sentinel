@@ -15,8 +15,8 @@ import { addUsage } from "../engines/AgentEngine.js";
 import { oracleOf, planChange } from "../plan/planner.js";
 import { renderGapReport } from "../plan/render.js";
 import { gapSummary } from "../reporting/jiraSummary.js";
-import { buildTestIndex, readTestMap, traceMarkdown, traceStory } from "../analysis/testIndex.js";
-import { regressionMarkdown, selectRegression } from "../analysis/regression.js";
+import { indexTests, readTestMap, traceMarkdown, traceStory } from "../analysis/testIndex.js";
+import { regressionCommands, regressionMarkdown, selectRegression } from "../analysis/regression.js";
 import { contractDiffMarkdown } from "../analysis/contractDiff.js";
 import { log } from "../log.js";
 
@@ -106,7 +106,7 @@ export async function gapReportCommand(o: GapReportOptions): Promise<{ report: s
   let exitCode = 0;
   if (outcome.status === "valid" && outcome.plan && outcome.risked) {
     // Facts computed in code from the test repo: which existing tests to run, and what already proves the story.
-    const index = buildTestIndex(cwd, c.tests.api.dir);
+    const index = indexTests(cwd, c);
     const selection = selectRegression({ c, service: service.name, plan: outcome.plan, risked: outcome.risked.changes, contract: outcome.contract, index, map: readTestMap(cwd) });
     fs.writeFileSync(path.join(run.dir, "regression.json"), JSON.stringify(selection, null, 2));
     fs.writeFileSync(path.join(path.dirname(out), "qa-regression.txt"), selection.runFullSuite ? "" : selection.args.join("\n") + "\n");
@@ -124,7 +124,7 @@ export async function gapReportCommand(o: GapReportOptions): Promise<{ report: s
         corrections: outcome.validation?.corrections ?? [],
         warnings: outcome.validation?.warnings ?? [],
         oracle: oracleOf(req),
-        regression: regressionMarkdown(selection, c.tests.api.runCommand),
+        regression: regressionMarkdown(selection, regressionCommands(c, selection)),
         rules: outcome.validation?.rules,
         traceability: traced ? traceMarkdown(req.storyKey, trace) : undefined,
       }) + `\n\n${footer}`;

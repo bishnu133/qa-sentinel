@@ -1,5 +1,18 @@
 import { defineConfig } from "@playwright/test";
 import "dotenv/config";
+{{#if webEnabled}}
+
+// Browser for web tests. Default: Playwright's Chromium (npx playwright install chromium).
+// No download possible (proxy, managed laptop)? QA_BROWSER_CHANNEL=chrome uses the installed Google Chrome,
+// or QA_BROWSER_PATH=/path/to/chromium any Chromium binary.
+const launchOptions = process.env.QA_BROWSER_PATH
+  ? { executablePath: process.env.QA_BROWSER_PATH }
+  : process.env.QA_BROWSER_CHANNEL
+    ? { channel: process.env.QA_BROWSER_CHANNEL }
+    : {};
+// baseURL must end with "/" so pages resolve under a path prefix too (page objects open routes relative to it).
+const webBaseURL = process.env.{{webBaseUrlEnv}} ? process.env.{{webBaseUrlEnv}}.replace(/\/?$/, "/") : undefined;
+{{/if}}
 
 export default defineConfig({
   timeout: 30_000,
@@ -7,13 +20,27 @@ export default defineConfig({
   retries: process.env.CI ? 1 : 0,
   // results.json is what qa-sentinel's showcase stage reads (test status + evidence attachments).
   reporter: [["list"], ["html", { open: "never" }], ["junit", { outputFile: "test-results/junit.xml" }], ["json", { outputFile: "test-results/results.json" }]],
-  use: {
-    baseURL: process.env.{{baseUrlEnv}},
-    extraHTTPHeaders: { Accept: "application/json" },
-    // Web/Mobile projects (v0.5) record evidence for showcase with: video: "retain-on-failure" | "on", trace: "on".
-  },
   projects: [
-    { name: "api", testDir: "./{{apiDir}}" },
-    // Web and Mobile projects are added by later qa-sentinel adapters.
+    {
+      name: "api",
+      testDir: "./{{apiDir}}",
+      use: { baseURL: process.env.{{baseUrlEnv}}, extraHTTPHeaders: { Accept: "application/json" } },
+    },
+{{#if webEnabled}}
+    {
+      name: "web",
+      testDir: "./{{webDir}}",
+      use: {
+        baseURL: webBaseURL,
+        headless: !process.env.QA_HEADED,
+        launchOptions,
+        // Evidence for qa-sentinel's showcase stage (attached to the story once every AC passes).
+        video: (process.env.QA_VIDEO as "on" | "off" | "retain-on-failure" | undefined) ?? "on",
+        screenshot: "on",
+        trace: "retain-on-failure",
+      },
+    },
+{{/if}}
+    // Mobile (WebdriverIO + Appium) comes with qa-sentinel v0.6.
   ],
 });

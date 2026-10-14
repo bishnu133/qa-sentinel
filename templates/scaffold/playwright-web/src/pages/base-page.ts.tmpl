@@ -1,0 +1,25 @@
+import type { Page } from "@playwright/test";
+import type { Ui } from "../web/ui";
+
+/**
+ * Page objects own every locator. Specs never call page.locator()/getByRole() directly, so a UI change is fixed
+ * in one place (and that is the first thing the agent updates when a page changes).
+ *
+ * Locators: prefer getByRole/getByLabel/getByTestId over CSS; never positional (nth) selectors.
+ */
+export abstract class BasePage {
+  /** Route of this page, with :params, e.g. "/orders/:id". */
+  abstract readonly path: string;
+
+  constructor(protected readonly page: Page, protected readonly ui: Ui) {}
+
+  /** Open the page; params fill the :placeholders. The base URL comes from the web project's baseURL. */
+  async open(params: Record<string, string | number> = {}): Promise<void> {
+    const route = this.path.replace(/:(\w+)/g, (_m, k: string) => {
+      if (params[k] === undefined) throw new Error(`${this.constructor.name}.open: missing :${k}`);
+      return encodeURIComponent(String(params[k]));
+    });
+    // Relative to baseURL (which ends with "/"), so a site served under a path prefix works too.
+    await this.page.goto(route.replace(/^\//, ""));
+  }
+}

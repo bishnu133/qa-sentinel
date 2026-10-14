@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { type TestPlan, TestPlanSchema } from "./schema.js";
 import { ruleFor } from "./decide.js";
+import { checkWorkflow, normaliseSetup } from "./workflow.js";
 
 export interface PlanContext {
   /** AC ids from the requirement snapshot (AC-1, AC-2, …). Empty when none were parsed. */
@@ -10,6 +11,9 @@ export interface PlanContext {
   requirementsMissing: boolean;
   testRepo: string;
   serviceRepo: string;
+  /** Enabled test layers (default: api only) and the layer scenarios default to (the service's layer). */
+  layers?: ("api" | "web")[];
+  defaultLayer?: "api" | "web";
 }
 
 export interface PlanValidation {
@@ -133,7 +137,22 @@ export function validatePlan(raw: unknown, ctx: PlanContext): PlanValidation {
     }
     if (d.coverage === "unknown" && d.decision === "reuse") errors.push(`${where}: coverage "unknown" cannot be reused; prove coverage or update/create`);
     for (const t of d.existingTests) if (!exists(ctx.testRepo, t)) errors.push(`${where}: existing test not found: ${t}`);
-    d.proposedScenarios.forEach((s, i) => checkReqIds(`${where} scenario ${i + 1}`, s.requirementIds));
+    d.proposedScenarios.forEach((s, i) => {
+      const at = `${where} scenario ${i + 1}`;
+      checkReqIds(at, s.requirementIds);
+      // Workflow planner: the layer that proves it, its page, and its setup graph checked against the data policy.
+      s.layer ??= ctx.defaultLayer ?? "api";
+      if (!(ctx.layers ?? ["api"]).includes(s.layer)) errors.push(`${at}: layer "${s.layer}" is not enabled in this project (enabled: ${(ctx.layers ?? ["api"]).join(", ")})`);
+      if (s.layer === "web") {
+        s.page ??= c.page;
+        if (!s.page) errors.push(`${at}: a web scenario needs the page it opens ("page": "/orders/new")`);
+      }
+      const steps = normaliseSetup(s.setup);
+      const wf = checkWorkflow(steps, s.layer, at);
+      errors.push(...wf.errors);
+      warnings.push(...wf.warnings);
+      s.setup = steps;
+    });
   }
 
   for (const c of plan.changes) {

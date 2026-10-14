@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { loadConfig } from "../config.js";
-import { buildTestIndex, checkTestMap, readTestMap, traceMarkdown, traceStory } from "../analysis/testIndex.js";
+import { indexTests, checkTestMap, readTestMap, traceMarkdown, traceStory } from "../analysis/testIndex.js";
 import { parseAcceptanceCriteria } from "../requirements.js";
 import { log } from "../log.js";
 
@@ -19,7 +19,7 @@ export interface TraceOptions {
 export async function traceCommand(o: TraceOptions): Promise<number> {
   const cwd = path.resolve(o.cwd);
   const c = loadConfig(cwd);
-  const index = buildTestIndex(cwd, c.tests.api.dir);
+  const index = indexTests(cwd, c);
   const mapFindings = checkTestMap(index, readTestMap(cwd), cwd);
   const acs = o.storyFile ? parseAcceptanceCriteria(fs.readFileSync(path.resolve(cwd, o.storyFile), "utf8")) : [];
   const story = o.story ?? (o.storyFile ? fs.readFileSync(path.resolve(cwd, o.storyFile), "utf8").match(new RegExp(c.requirements.storyKeyPattern))?.[0] : undefined);

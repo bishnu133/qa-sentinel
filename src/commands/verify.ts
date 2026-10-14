@@ -7,6 +7,7 @@ import { matchesAny } from "../fsutil.js";
 import { ARTIFACT_GLOBS, createRunDir, testEnv } from "../run.js";
 import { checkContent, checkPaths, findingsMarkdown, generatePolicy, violations } from "../guardrails.js";
 import { findDiscrepancies, verificationMarkdown, verifyChanges } from "../verification.js";
+import { layers } from "../layers.js";
 import { log } from "../log.js";
 
 export interface VerifyOptions {
@@ -41,6 +42,7 @@ export async function verifyCommand(o: VerifyOptions): Promise<number> {
           ref: base,
           allowedHosts: c.guardrails.allowedHosts,
           baseUrl: process.env[c.tests.api.baseUrlEnv],
+          extraBaseUrls: layers(c).map((l) => process.env[l.baseUrlEnv]).filter((u): u is string => Boolean(u)),
           assertionRemoval: c.guardrails.assertionRemoval,
         }),
       ]

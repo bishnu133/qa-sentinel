@@ -1,0 +1,46 @@
+import type { Locator, Page, TestInfo } from "@playwright/test";
+import { healingOn, recoverStep } from "./healing";
+
+/**
+ * Every page-object action goes through `Ui`, named the way a person would say it ("Place order button",
+ * "Quantity"). With healing off this is plain Playwright. With QA_HEALING=bubblegum, a failed action is retried
+ * once by Bubblegum from that intent (see ./healing.ts) and recorded.
+ *
+ * Assertions stay in the specs with Playwright's `expect`; only actions go through here.
+ */
+export class Ui {
+  constructor(readonly page: Page, private readonly testInfo: TestInfo) {}
+
+  /** With healing on, fail fast so the heal starts before the test times out. */
+  private get timeout(): number | undefined {
+    return healingOn() ? Number(process.env.QA_ACTION_TIMEOUT ?? 5_000) : undefined;
+  }
+
+  click(target: Locator, name: string): Promise<void> {
+    return this.act(target, `Click ${name}`, (t) => target.click({ timeout: t }));
+  }
+
+  fill(target: Locator, value: string, field: string): Promise<void> {
+    return this.act(target, `Enter "${value}" into ${field}`, (t) => target.fill(value, { timeout: t }));
+  }
+
+  select(target: Locator, option: string, field: string): Promise<void> {
+    return this.act(target, `Select "${option}" in ${field}`, async (t) => {
+      await target.selectOption({ label: option }, { timeout: t });
+    });
+  }
+
+  check(target: Locator, name: string): Promise<void> {
+    return this.act(target, `Check ${name}`, (t) => target.check({ timeout: t }));
+  }
+
+  private async act(target: Locator, intent: string, run: (timeout?: number) => Promise<unknown>): Promise<void> {
+    try {
+      await run(this.timeout);
+    } catch (e) {
+      if (!healingOn()) throw e;
+      const healed = await recoverStep(this.testInfo, { failedLocator: target.toString(), intent, error: e as Error });
+      if (!healed) throw e;
+    }
+  }
+}

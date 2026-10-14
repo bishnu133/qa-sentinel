@@ -1,0 +1,10 @@
+import { BasePage } from "./base-page";
+
+/** Example page object. Agents copy this structure: locators as getters, actions through `this.ui`. */
+export class HomePage extends BasePage {
+  readonly path = "/";
+
+  get heading() {
+    return this.page.getByRole("heading", { level: 1 });
+  }
+}

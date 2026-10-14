@@ -5,7 +5,7 @@
 //   export JIRA_EMAIL=you@example.com
 //   export JIRA_API_TOKEN=…                  # https://id.atlassian.com/manage-profile/security/api-tokens
 //   export JIRA_PROJECT=SHOP                 # a Scrum or Kanban project you created in the Jira UI
-//   node sandbox/shoplite/jira-seed.mjs [--work ./shoplite-gitlab] [--dry-run]
+//   node sandbox/shoplite/jira-seed.mjs [--work ./shoplite-gitlab | ./shoplite-local] [--dry-run]
 //
 // Writes <work>/.jira-keys.json (SHOP-101 → the real Jira key), used by dev.mjs and setup-gitlab.mjs.
 import fs from "node:fs";
@@ -24,11 +24,22 @@ async function jira(method, route, body) {
     log(`[dry-run] ${method} ${route}`);
     return method === "POST" && route === "/rest/api/2/issue" ? { key: `${project}-?` } : { transitions: [], issueTypes: [] };
   }
-  const res = await fetch(`${base.replace(/\/$/, "")}${route}`, {
-    method,
-    headers: { Authorization: auth, Accept: "application/json", "Content-Type": "application/json" },
-    body: body ? JSON.stringify(body) : undefined,
-  });
+  let res;
+  try {
+    res = await fetch(`${base.replace(/\/$/, "")}${route}`, {
+      method,
+      headers: { Authorization: auth, Accept: "application/json", "Content-Type": "application/json" },
+      body: body ? JSON.stringify(body) : undefined,
+    });
+  } catch (e) {
+    // Node's fetch says only "fetch failed"; the reason is in e.cause.
+    const c = e.cause ?? {};
+    const why = [c.code, c.message].filter(Boolean).join(": ") || e.message;
+    const hint = /CERT|certificate|SELF_SIGNED|UNABLE_TO/i.test(why)
+      ? "\n  This network inspects HTTPS and Node doesn't trust its certificate (curl does). Run with:\n  NODE_OPTIONS=--use-system-ca node sandbox/shoplite/jira-seed.mjs …"
+      : "";
+    throw new Error(`Jira ${method} ${route} failed: ${why}${hint}`);
+  }
   const text = await res.text();
   if (!res.ok) throw new Error(`Jira ${method} ${route}: ${res.status} ${text.slice(0, 300)}`);
   return text ? JSON.parse(text) : {};
@@ -45,7 +56,7 @@ async function main() {
   const meta = await jira("GET", `/rest/api/2/project/${project}`);
   const types = (meta.issueTypes ?? []).map((t) => t.name);
   const issueType = types.includes("Story") ? "Story" : types.includes("Task") ? "Task" : types[0] ?? "Story";
-  log(`project ${project}: creating ${SCENARIOS.length} ${issueType}s`);
+  log(`project ${project}: creating ${SCENARIOS.filter((s) => !s.storyKey).length} ${issueType}s`);
   const keys = fs.existsSync(path.join(work, ".jira-keys.json")) ? JSON.parse(fs.readFileSync(path.join(work, ".jira-keys.json"), "utf8")) : {};
 
   for (const s of SCENARIOS) {
@@ -66,7 +77,7 @@ async function main() {
   }
   fs.mkdirSync(work, { recursive: true });
   fs.writeFileSync(path.join(work, ".jira-keys.json"), JSON.stringify(keys, null, 2));
-  log(`saved ${path.join(work, ".jira-keys.json")}. Re-run setup-gitlab.mjs with the JIRA_* variables set to switch qa-sentinel to Jira.`);
+  log(`saved ${path.join(work, ".jira-keys.json")}. With the JIRA_* variables set, run local.mjs setup (local mode) or setup-gitlab.mjs (GitLab) to switch qa-sentinel to Jira.`);
 }
 
 main().catch((e) => die(e.message));

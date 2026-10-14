@@ -5,12 +5,15 @@ import type { Config } from "./config.js";
 import type { FileChange } from "./git.js";
 import { TEST_FILE, addedLines } from "./guardrails.js";
 import { runProcess } from "./proc.js";
+import { type Layer, type LayerConfig, layerOfFile, layers } from "./layers.js";
 
 export type VerificationStatus = "VERIFIED" | "FAILED" | "BLOCKED" | "NOT_RUN";
 export type CheckStatus = "passed" | "failed" | "blocked" | "not-run" | "skipped";
 
 export interface Check {
   name: "preflight" | "typecheck" | "lint" | "tests";
+  /** Which test layer a preflight or tests check belongs to (api, web). */
+  layer?: Layer;
   status: CheckStatus;
   detail: string;
   durationMs?: number;
@@ -19,6 +22,7 @@ export interface Check {
 export interface TestCase {
   name: string;
   file?: string;
+  layer?: Layer;
   status: "passed" | "failed" | "skipped";
   message?: string;
 }
@@ -62,8 +66,9 @@ const ENV_ERROR = /(ECONNREFUSED|ENOTFOUND|EAI_AGAIN|ETIMEDOUT|ECONNRESET|socket
 export function overallStatus(checks: Check[]): VerificationStatus {
   if (checks.some((c) => c.status === "failed")) return "FAILED";
   if (checks.some((c) => c.status === "blocked")) return "BLOCKED";
-  const tests = checks.find((c) => c.name === "tests");
-  if (!tests || tests.status === "not-run") return "NOT_RUN";
+  const tests = checks.filter((c) => c.name === "tests");
+  if (!tests.length || tests.every((t) => t.status === "not-run")) return "NOT_RUN";
+  if (tests.some((t) => t.status === "not-run")) return "NOT_RUN";
   return "VERIFIED";
 }
 
@@ -86,20 +91,28 @@ export async function verifyChanges(o: VerifyOptions): Promise<VerificationRepor
   const codeFiles = live.map((x) => x.path).filter((p) => /\.(ts|tsx|js|mjs|cjs)$/.test(p));
   const checks: Check[] = [];
 
-  // 1. Preflight: is the environment there at all? Unreachable = BLOCKED, never "passed".
-  if (specs.length && c.verification.preflight) {
-    const baseUrl = o.env[c.tests.api.baseUrlEnv];
-    if (!baseUrl) checks.push({ name: "preflight", status: "blocked", detail: `${c.tests.api.baseUrlEnv} is not set` });
-    else {
+  // 1. Preflight: is each environment there at all? Unreachable = BLOCKED, never "passed".
+  const specsByLayer = new Map<LayerConfig, string[]>();
+  for (const l of layers(c)) {
+    const mine = specs.filter((p) => (layerOfFile(c, p) ?? "api") === l.layer);
+    if (mine.length) specsByLayer.set(l, mine);
+  }
+  if (c.verification.preflight) {
+    for (const l of specsByLayer.keys()) {
+      const baseUrl = o.env[l.baseUrlEnv];
+      if (!baseUrl) {
+        checks.push({ name: "preflight", layer: l.layer, status: "blocked", detail: `${l.baseUrlEnv} is not set` });
+        continue;
+      }
       const t0 = Date.now();
       try {
         const ctrl = new AbortController();
         const timer = setTimeout(() => ctrl.abort(), 10_000);
         const res = await fetch(baseUrl, { method: "GET", signal: ctrl.signal, redirect: "manual" });
         clearTimeout(timer);
-        checks.push({ name: "preflight", status: "passed", detail: `${new URL(baseUrl).host} answered ${res.status}`, durationMs: Date.now() - t0 });
+        checks.push({ name: "preflight", layer: l.layer, status: "passed", detail: `${new URL(baseUrl).host} answered ${res.status}`, durationMs: Date.now() - t0 });
       } catch (e) {
-        checks.push({ name: "preflight", status: "blocked", detail: `${baseUrl} unreachable: ${(e as Error).message}`, durationMs: Date.now() - t0 });
+        checks.push({ name: "preflight", layer: l.layer, status: "blocked", detail: `${baseUrl} unreachable: ${(e as Error).message}`, durationMs: Date.now() - t0 });
       }
     }
   }
@@ -123,33 +136,38 @@ export async function verifyChanges(o: VerifyOptions): Promise<VerificationRepor
     checks.push({ name: "lint", status: r.timedOut ? "blocked" : r.code === 0 ? "passed" : "failed", detail: r.code === 0 ? "clean" : tail(r.stdout + r.stderr), durationMs: r.durationMs });
   }
 
-  // 4. Tests: only the changed specs, with a machine-readable report.
+  // 4. Tests: only the changed specs, per layer (each with its own command and base URL), with a machine-readable report.
   let cases: TestCase[] = [];
-  const preflightBlocked = checks.some((x) => x.name === "preflight" && x.status === "blocked");
+  const outputs: string[] = [];
   if (!specs.length) {
     checks.push({ name: "tests", status: "not-run", detail: codeFiles.length ? "helpers changed but no spec files changed" : "no spec files changed" });
-  } else if (preflightBlocked) {
-    checks.push({ name: "tests", status: "not-run", detail: "skipped because the environment is unreachable" });
-  } else {
-    const isPlaywright = c.tests.api.framework === "playwright";
-    const junit = isPlaywright ? path.join(o.runDir, "junit.xml") : c.verification.junitPath ? path.resolve(cwd, c.verification.junitPath) : undefined;
+  }
+  for (const [l, layerSpecs] of specsByLayer) {
+    if (checks.some((x) => x.name === "preflight" && x.layer === l.layer && x.status === "blocked")) {
+      checks.push({ name: "tests", layer: l.layer, status: "not-run", detail: "skipped because the environment is unreachable" });
+      continue;
+    }
+    // API keeps junit.xml (what pipelines built for v0.4 collect); other layers get junit-<layer>.xml.
+    const junit = l.isPlaywright ? path.join(o.runDir, l.layer === "api" ? "junit.xml" : `junit-${l.layer}.xml`) : c.verification.junitPath ? path.resolve(cwd, c.verification.junitPath) : undefined;
     if (junit && fs.existsSync(junit)) fs.rmSync(junit);
-    const env = { ...o.env, ...(isPlaywright && junit ? { PLAYWRIGHT_JUNIT_OUTPUT_NAME: junit } : {}) };
-    const cmd = `${c.tests.api.runCommand} ${specs.map(shq).join(" ")}${isPlaywright ? " --reporter=line,junit" : ""}`;
+    const env = { ...o.env, ...(l.isPlaywright && junit ? { PLAYWRIGHT_JUNIT_OUTPUT_NAME: junit } : {}) };
+    const cmd = `${l.runCommand} ${layerSpecs.map(shq).join(" ")}${l.isPlaywright ? " --reporter=line,junit" : ""}`;
     const r = await runProcess(cmd, [], { cwd, env, timeoutMs, shell: true });
-    cases = junit && fs.existsSync(junit) ? parseJUnit(fs.readFileSync(junit, "utf8")) : [];
-    const failed = cases.filter((x) => x.status === "failed");
+    const mine = (junit && fs.existsSync(junit) ? parseJUnit(fs.readFileSync(junit, "utf8")) : []).map((x) => ({ ...x, layer: l.layer }));
+    cases = cases.concat(mine);
+    const failed = mine.filter((x) => x.status === "failed");
     const envFailures = failed.length > 0 && failed.every((x) => ENV_ERROR.test(x.message ?? ""));
     let status: CheckStatus;
     let detail: string;
     if (r.timedOut) [status, detail] = ["blocked", `test run exceeded ${c.verification.timeoutMinutes} min`];
-    else if (junit && cases.length === 0) [status, detail] = [r.code === 0 ? "not-run" : "failed", `no test results produced (exit ${r.code})${r.code ? `: ${tail(r.stdout + r.stderr)}` : ""}`];
+    else if (junit && mine.length === 0) [status, detail] = [r.code === 0 ? "not-run" : "failed", `no test results produced (exit ${r.code})${r.code ? `: ${tail(r.stdout + r.stderr)}` : ""}`];
     else if (envFailures) [status, detail] = ["blocked", `environment errors: ${failed[0].message}`];
     else if (r.code !== 0 || failed.length) [status, detail] = ["failed", `${failed.length} failed${failed[0] ? `: ${failed[0].name}` : `, exit ${r.code}`}`];
-    else [status, detail] = ["passed", cases.length ? `${cases.filter((x) => x.status === "passed").length} passed, ${cases.filter((x) => x.status === "skipped").length} skipped` : "exit 0 (no JUnit report configured)"];
-    checks.push({ name: "tests", status, detail, durationMs: r.durationMs });
-    fs.writeFileSync(path.join(o.runDir, "test-output.log"), r.stdout + "\n" + r.stderr);
+    else [status, detail] = ["passed", mine.length ? `${mine.filter((x) => x.status === "passed").length} passed, ${mine.filter((x) => x.status === "skipped").length} skipped` : "exit 0 (no JUnit report configured)"];
+    checks.push({ name: "tests", ...(specsByLayer.size > 1 || l.layer !== "api" ? { layer: l.layer } : {}), status, detail, durationMs: r.durationMs });
+    outputs.push(`### ${l.layer}: ${cmd}\n${r.stdout}\n${r.stderr}`);
   }
+  if (outputs.length) fs.writeFileSync(path.join(o.runDir, "test-output.log"), outputs.join("\n\n"));
 
   const report: VerificationReport = {
     status: overallStatus(checks),
@@ -220,7 +238,7 @@ export const STATUS_BADGE: Record<VerificationStatus, string> = {
 };
 
 export function verificationMarkdown(r: VerificationReport): string {
-  const rows = r.checks.map((c) => `| ${c.name} | ${c.status} | ${c.detail.replace(/\|/g, "\\|")} |`);
+  const rows = r.checks.map((c) => `| ${c.name}${c.layer ? ` (${c.layer})` : ""} | ${c.status} | ${c.detail.replace(/\|/g, "\\|")} |`);
   const failed = r.cases.filter((x) => x.status === "failed").slice(0, 10);
   return [
     `**Verification: ${STATUS_BADGE[r.status]}** (run by qa-sentinel, not reported by the agent)`,

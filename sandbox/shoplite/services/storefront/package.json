@@ -1,0 +1,7 @@
+{
+  "name": "storefront",
+  "version": "1.0.0",
+  "private": true,
+  "description": "ShopLite web front end (no dependencies): order form and order page over the ShopLite APIs.",
+  "scripts": { "start": "node src/server.js" }
+}

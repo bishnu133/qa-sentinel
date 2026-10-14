@@ -1,0 +1,76 @@
+import type { TestInfo } from "@playwright/test";
+
+/**
+ * Optional runtime locator healing with Bubblegum (https://github.com/bishnu133/bubblegum).
+ *
+ * Off unless QA_HEALING=bubblegum. qa-sentinel always runs with QA_HEALING=off when it verifies tests an agent
+ * just wrote, so a broken locator there is fixed in the page object instead of healed around. Scheduled and
+ * post-deploy runs may turn it on: then a failed page-object action asks Bubblegum to find the element by its
+ * intent ("Click Place order") in the same browser, over CDP. A healed step never passes silently: it is
+ * attached to the test ("healed-step") and listed by `qa-sentinel healed` as a page-object fix to make.
+ *
+ * Needs: npm i -D {{bubblegumPackage}} and pip install "bubblegum-ai[web]" on the machine running the tests.
+ */
+
+export interface HealedStep {
+  test: string;
+  file: string;
+  /** Page-object call site (file:line) of the failed action. */
+  at?: string;
+  intent: string;
+  failedLocator: string;
+  status: string;
+  healedTo?: string;
+  resolver?: string;
+  confidence?: number;
+  error: string;
+}
+
+export const healingOn = () => (process.env.QA_HEALING ?? "off").toLowerCase() === "bubblegum";
+
+/** Each Playwright worker's browser listens on its own port: QA_CDP_PORT (default {{cdpPort}}) + parallel index. */
+export const cdpPort = (parallelIndex: number) => Number(process.env.QA_CDP_PORT ?? {{cdpPort}}) + parallelIndex;
+
+/** Where in the page objects the failed action was called from. */
+function callSite(): string | undefined {
+  const frames = (new Error().stack ?? "").split("\n").slice(2);
+  const hit = frames.find((f) => /[\\/]{{pagesDirRe}}[\\/]/.test(f));
+  const m = hit?.match(/\(?([^()\s]+):(\d+):\d+\)?\s*$/);
+  return m ? `${m[1].replace(process.cwd() + "/", "")}:${m[2]}` : undefined;
+}
+
+/**
+ * Ask Bubblegum to perform the step by its intent. Returns true when it did (status "recovered" or "passed").
+ * Attaches per healing event and disconnects afterwards: the browser and page stay the test's own.
+ */
+export async function recoverStep(testInfo: TestInfo, o: { failedLocator: string; intent: string; error: Error }): Promise<boolean> {
+  const pkg = process.env.QA_BUBBLEGUM_PACKAGE ?? "{{bubblegumPackage}}";
+  let mod: { Bubblegum: { attach(opts: { cdpEndpoint: string }): Promise<any> } };
+  try {
+    mod = await import(pkg);
+  } catch {
+    throw new Error(`QA_HEALING=bubblegum but ${pkg} is not installed. Run: npm i -D ${pkg} && pip install "bubblegum-ai[web]" (or set QA_HEALING=off).`);
+  }
+  const bg = await mod.Bubblegum.attach({ cdpEndpoint: `http://127.0.0.1:${cdpPort(testInfo.parallelIndex)}` });
+  try {
+    const r = await bg.recover({ failedSelector: o.failedLocator, intent: o.intent });
+    const healed = r.status === "recovered" || r.status === "passed";
+    const step: HealedStep = {
+      test: testInfo.title,
+      file: testInfo.file.replace(process.cwd() + "/", ""),
+      at: callSite(),
+      intent: o.intent,
+      failedLocator: o.failedLocator,
+      status: r.status,
+      healedTo: r.target?.ref,
+      resolver: r.target?.resolver_name,
+      confidence: r.confidence,
+      error: o.error.message.split("\n")[0].slice(0, 300),
+    };
+    await testInfo.attach("healed-step", { body: JSON.stringify(step, null, 2), contentType: "application/json" });
+    if (healed) testInfo.annotations.push({ type: "healed", description: `${o.intent}: ${o.failedLocator} → ${step.healedTo ?? "?"}` });
+    return healed;
+  } finally {
+    await bg.close().catch(() => undefined);
+  }
+}

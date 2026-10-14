@@ -1,0 +1,12 @@
+import { test, expect } from "../../../src/fixtures/web";
+import { HomePage } from "../../../src/pages/home-page";
+
+// Example web spec. Agents copy this structure: page objects for locators and actions, data through `api`,
+// assertions with expect. Replace "/" with a real page of your front end.
+test.describe("Home page", () => {
+  test("shows the main heading @service:example @page:/", async ({ page, ui }) => {
+    const home = new HomePage(page, ui);
+    await home.open();
+    await expect(home.heading).toBeVisible();
+  });
+});

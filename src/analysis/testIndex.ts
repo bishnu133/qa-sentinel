@@ -1,6 +1,8 @@
 import fs from "node:fs";
 import path from "node:path";
 import YAML from "yaml";
+import type { Config } from "../config.js";
+import { layers } from "../layers.js";
 
 /**
  * Scenario-level traceability, derived from the tests themselves rather than maintained by hand.
@@ -25,6 +27,8 @@ export interface IndexedTest {
   status: TestStatus;
   services: string[];
   endpoints: string[]; // "POST /orders"
+  /** Web tests: the pages they open, "/orders/:id" (tag @page:/orders/:id). */
+  pages: string[];
   stories: string[];
   acs: string[]; // "AC-2"
   tags: string[]; // other bare tags, e.g. "smoke"
@@ -43,12 +47,16 @@ const ASSERT = /\b(expect|expectSchema|assert)\s*[.(]/g;
 export const endpointFromTag = (t: string) => t.replace(/^([A-Z]+)_/, "$1 ");
 export const endpointTag = (e: string) => e.trim().replace(/^([A-Z]+)\s+/, "$1_");
 
-export function parseTags(raw: string): Pick<IndexedTest, "services" | "endpoints" | "stories" | "acs" | "tags"> & { title: string } {
-  const out = { services: [] as string[], endpoints: [] as string[], stories: [] as string[], acs: [] as string[], tags: [] as string[] };
+/** "/orders/{id}/", "orders/:orderId" → "/orders/:id": one spelling per route so tags, plans and maps compare. */
+export const normPage = (p: string) => ("/" + p.trim().replace(/^\/+/, "").replace(/\/+$/, "")).replace(/\{[^}]*\}|:[A-Za-z_]\w*/g, ":id");
+
+export function parseTags(raw: string): Pick<IndexedTest, "services" | "endpoints" | "pages" | "stories" | "acs" | "tags"> & { title: string } {
+  const out = { services: [] as string[], endpoints: [] as string[], pages: [] as string[], stories: [] as string[], acs: [] as string[], tags: [] as string[] };
   const title = raw.replace(/\s*@([\w-]+)(?::(\S+))?/g, (_m, k: string, v?: string) => {
     const vals = (v ?? "").split(",").filter(Boolean);
     if (k === "service") out.services.push(...vals);
     else if (k === "endpoint") out.endpoints.push(...vals.map(endpointFromTag));
+    else if (k === "page") out.pages.push(...vals.map(normPage));
     else if (k === "story") out.stories.push(...vals);
     else if (k === "ac") {
       // "@ac:none" says on purpose that no acceptance criterion covers this test (e.g. contract-only behaviour).
@@ -139,12 +147,15 @@ function walk(dir: string, root: string, out: string[]) {
   }
 }
 
-/** Build the index for every spec under `testDir` (relative to the test repo). */
-export function buildTestIndex(repo: string, testDir: string): IndexedTest[] {
+/** Build the index for every spec under the test directories (relative to the test repo). */
+export function buildTestIndex(repo: string, testDirs: string | string[]): IndexedTest[] {
   const files: string[] = [];
-  walk(path.join(repo, testDir), repo, files);
-  return files.sort().flatMap((f) => indexSource(f, fs.readFileSync(path.join(repo, f), "utf8")));
+  for (const d of new Set(Array.isArray(testDirs) ? testDirs : [testDirs])) walk(path.join(repo, d), repo, files);
+  return [...new Set(files)].sort().flatMap((f) => indexSource(f, fs.readFileSync(path.join(repo, f), "utf8")));
 }
+
+/** Index every enabled layer's tests (API, and web when enabled). */
+export const indexTests = (repo: string, c: Config) => buildTestIndex(repo, layers(c).map((l) => l.dir));
 
 // ---------------------------------------------------------------------------------------------
 // Checks: the index against test-map.yaml, and new tests against the tagging convention.
@@ -155,7 +166,7 @@ export interface TraceFinding {
   message: string;
 }
 
-export function readTestMap(repo: string): { services: Record<string, { endpoints?: Record<string, string[]> }> } | undefined {
+export function readTestMap(repo: string): { services: Record<string, { endpoints?: Record<string, string[]>; screens?: Record<string, string[]> }> } | undefined {
   const f = path.join(repo, "test-map.yaml");
   if (!fs.existsSync(f)) return undefined;
   return YAML.parse(fs.readFileSync(f, "utf8")) ?? undefined;
@@ -183,6 +194,14 @@ export function checkTestMap(index: IndexedTest[], map: ReturnType<typeof readTe
       if (!mapped.get(ep)?.has(t.file)) out.push({ level: "warning", file: t.id, message: `tagged @endpoint:${endpointTag(ep)} but test-map.yaml does not list ${t.file} for ${ep}` });
     }
   }
+  // Web: screens (route → files) against @page tags.
+  const screens = new Map<string, Set<string>>();
+  for (const s of Object.values(map.services)) for (const [pg, files] of Object.entries(s?.screens ?? {})) for (const f of files ?? []) {
+    const set = screens.get(normPage(pg)) ?? new Set();
+    set.add(f);
+    screens.set(normPage(pg), set);
+  }
+  for (const t of index) for (const pg of t.pages) if (screens.size && !screens.get(pg)?.has(t.file)) out.push({ level: "warning", file: t.id, message: `tagged @page:${pg} but test-map.yaml does not list ${t.file} under screens for ${pg}` });
   return dedupe(out);
 }
 
@@ -191,7 +210,7 @@ export function checkNewTests(index: IndexedTest[], changedFiles: string[], stor
   const out: TraceFinding[] = [];
   const known = new Set(acIds.map((a) => a.toUpperCase()));
   for (const t of index.filter((x) => changedFiles.includes(x.file))) {
-    if (!t.endpoints.length) out.push({ level: "warning", file: t.id, message: `"${t.title}" has no @endpoint tag` });
+    if (!t.endpoints.length && !t.pages.length) out.push({ level: "warning", file: t.id, message: `"${t.title}" has no @endpoint (API) or @page (web) tag` });
     if (storyKey && !t.stories.length && !t.acs.length) continue; // pre-existing style tests: not this change's concern
     for (const ac of t.acs) if (known.size && !known.has(ac)) out.push({ level: "warning", file: t.id, message: `"${t.title}" references ${ac}, which is not in ${storyKey ?? "the story"}` });
   }

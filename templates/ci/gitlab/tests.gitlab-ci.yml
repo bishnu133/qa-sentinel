@@ -4,7 +4,7 @@
 #   include:
 #     - local: "ci/qa-sentinel/tests.gitlab-ci.yml"
 #
-# CI/CD variables: ANTHROPIC_API_KEY, QA_SENTINEL_GITLAB_TOKEN (api + write_repository), {{baseUrlEnv}}
+# CI/CD variables: ANTHROPIC_API_KEY, QA_SENTINEL_GITLAB_TOKEN (api + write_repository), {{baseUrlEnv}}{{#if webEnabled}}, {{webBaseUrlEnv}}{{/if}} (web)
 # Allow this project's CI_JOB_TOKEN to read the service repos (Settings › CI/CD › Job token permissions).
 #
 # Security notes:
@@ -14,7 +14,7 @@
 #   the QA environment. Generated tests are code; isolate where they run.
 
 variables:
-  QA_SENTINEL_VERSION: "0.4.0"
+  QA_SENTINEL_VERSION: "0.5.0"
   # Where to install qa-sentinel from: set QA_SENTINEL_PACKAGE as a group/project CI/CD variable, e.g.
   # "github:bishnu133/qa-sentinel#main" until it is on npm. Default: qa-sentinel@$QA_SENTINEL_VERSION.
   # (Not defined here on purpose: trigger jobs forward YAML variables downstream, where they override CI/CD variables.)
@@ -43,6 +43,10 @@ variables:
   image: mcr.microsoft.com/playwright:v1.49.0-noble
   before_script:
     - npm ci
+{{#if webEnabled}}
+    # Browser matching the @playwright/test version in the lockfile (a no-op when the image already has it).
+    - npx playwright install chromium
+{{/if}}
 
 {{#if isMaintenance}}
 # Phase 2: triggered by a service repo after merge. Opens an MR with new/updated API tests.
@@ -66,6 +70,10 @@ qa-generate:
     # .gitlab-ci.yml variables, e.g. "source qa-env/start.sh"; it may export {{baseUrlEnv}}.
     - if [ -n "$QA_ENV_START" ]; then eval "$QA_ENV_START"; fi
     - git remote set-url origin "${CI_SERVER_URL}/${CI_PROJECT_PATH}.git"   # strip the job token GitLab put in .git/config
+{{#if healingBubblegum}}
+    # Locators healed in the latest scheduled run (qa-healed job): the agent fixes the page objects it touches.
+    - 'curl -sfL --header "JOB-TOKEN: $CI_JOB_TOKEN" -o qa-healed.json "$CI_API_V4_URL/projects/$CI_PROJECT_ID/jobs/artifacts/{{targetBranch}}/raw/qa-healed.json?job=qa-healed" || rm -f qa-healed.json'
+{{/if}}
     # A manually started upstream pipeline has no "before" commit (all zeros): compare with the parent instead.
     - |
       QA_BASE="$QA_SERVICE_BEFORE_SHA"
@@ -92,7 +100,7 @@ qa-agent-mr-checks:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event" && $CI_MERGE_REQUEST_SOURCE_BRANCH_NAME =~ /^qa-sentinel\//
       variables: { QA_VERIFY_POLICY: "--policy" }
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
-      changes: ["{{apiDir}}/**/*"]
+      changes: ["{{apiDir}}/**/*"{{#if webEnabled}}, "{{webDir}}/**/*", "{{pagesDir}}/**/*"{{/if}}]
   script:
     - !reference [.qa-sentinel-install, script]
     # Optional ephemeral QA environment (e.g. start the services under test). Set QA_ENV_START in your
@@ -102,14 +110,20 @@ qa-agent-mr-checks:
   artifacts:
     when: always
     reports:
-      junit: .qa-sentinel/runs/*/junit.xml
+      junit: .qa-sentinel/runs/*/junit*.xml
     paths: [qa-verify.md, .qa-sentinel/runs/, playwright-report/]
     expire_in: 2 weeks
 
-# Regular API runs: on schedule, or after a deployment (pass QA_TEST_ARGS, e.g. --grep @service:orders).
+# Regular runs of the whole suite{{#if webEnabled}} (API and web, one report for the showcase stage){{/if}}: on schedule, or after a
+# deployment (pass QA_TEST_ARGS, e.g. --grep @service:orders).
 api-tests:
   extends: .qa-node
   stage: test
+{{#if webEnabled}}
+  variables:
+    # Runtime locator healing for web tests: "bubblegum" or "off". Never used by qa-generate / qa-agent-mr-checks.
+    QA_HEALING: "{{healingVar}}"
+{{/if}}
   rules:
     - if: $CI_PIPELINE_SOURCE == "schedule"
     - if: $CI_PIPELINE_SOURCE == "trigger" || $CI_PIPELINE_SOURCE == "api"
@@ -118,7 +132,11 @@ api-tests:
     # Optional ephemeral QA environment (e.g. start the services under test). Set QA_ENV_START in your
     # .gitlab-ci.yml variables, e.g. "source qa-env/start.sh"; it may export {{baseUrlEnv}}.
     - if [ -n "$QA_ENV_START" ]; then eval "$QA_ENV_START"; fi
-    - {{runCommand}} ${QA_TEST_ARGS}
+{{#if healingBubblegum}}
+    # Bubblegum's engine (Python) for runtime healing; the Node client comes from package.json.
+    - if [ "$QA_HEALING" = "bubblegum" ]; then python3 -m pip install --quiet --break-system-packages "bubblegum-ai[web]" || (apt-get update -qq && apt-get install -y -qq python3-pip >/dev/null && python3 -m pip install --quiet --break-system-packages "bubblegum-ai[web]"); fi
+{{/if}}
+    - {{suiteRunCommand}} ${QA_TEST_ARGS}
   artifacts:
     when: always
     reports:
@@ -126,6 +144,25 @@ api-tests:
     paths: [playwright-report/, test-results/]
     expire_in: 2 weeks
 
+{{#if healingBubblegum}}
+# Healed steps from the run above: page-object fixes to make (qa-healed.md); fails when tests.web.bubblegum.failOnHeal.
+qa-healed:
+  extends: .qa-node
+  stage: test
+  needs: [api-tests]
+  rules:
+    # Also (especially) when tests failed: a step Bubblegum could not heal is listed too.
+    - if: $CI_PIPELINE_SOURCE == "schedule" || $CI_PIPELINE_SOURCE == "trigger" || $CI_PIPELINE_SOURCE == "api" || $CI_COMMIT_BRANCH == "{{targetBranch}}"
+      when: always
+  script:
+    - !reference [.qa-sentinel-install, script]
+    - qa-sentinel healed
+  artifacts:
+    when: always
+    paths: [qa-healed.md, qa-healed.json]
+    expire_in: 4 weeks
+
+{{/if}}
 # Showcase: after a full run of the suite, attach test evidence to every Jira story whose acceptance criteria all
 # passed, once per story (QA can ask again with the "qa-showcase-refresh" label). Turn on with QA_SHOWCASE=true
 # (needs requirements.jira in qa-sentinel.config.yaml and JIRA_EMAIL + JIRA_API_TOKEN, or JIRA_PAT).

@@ -8,7 +8,10 @@ import { SCENARIOS, applyEdits } from "./scenarios.mjs";
 
 export const HERE = path.dirname(fileURLToPath(import.meta.url));
 export const CLI = path.resolve(HERE, "../../dist/cli.js");
-export const SERVICES = ["orders-service", "payments-service", "notifications-service"];
+export const SERVICES = ["orders-service", "payments-service", "notifications-service", "storefront"];
+/** The storefront is a web front end (tested through the UI); the others are APIs. */
+export const WEB_SERVICES = ["storefront"];
+export const STOREFRONT_ROUTES = ["/", "/orders/new", "/orders/:id"];
 export const TEST_REPO = "qa-tests";
 
 export const log = (...a) => console.log("›", ...a);
@@ -139,8 +142,9 @@ export function buildTests(work, o = {}) {
   fs.mkdirSync(dir, { recursive: true });
   if (!fs.existsSync(CLI)) die("qa-sentinel is not built. Run `npm install && npm run build` in the qa-sentinel repo first.");
   log(`${TEST_REPO}: qa-sentinel init (level ${o.level ?? "intelligence"})`);
-  sh("node", [CLI, "init", "--yes", "--mode", "scratch", "--ci", "gitlab", "--level", o.level ?? "intelligence", "--workspace", "..", "--name", "shoplite-tests"], { cwd: dir });
+  sh("node", [CLI, "init", "--yes", "--mode", "scratch", "--web", "--ci", "gitlab", "--level", o.level ?? "intelligence", "--workspace", "..", "--name", "shoplite-tests"], { cwd: dir });
   fs.rmSync(path.join(dir, "tests/api/example"), { recursive: true, force: true });
+  fs.rmSync(path.join(dir, "tests/web/example"), { recursive: true, force: true });
   copyDir(path.join(HERE, "tests-extra"), dir);
   configure(dir, o);
   if (o.group) fs.writeFileSync(path.join(dir, ".gitlab-ci.yml"), testsCi(o.group));
@@ -161,15 +165,20 @@ export function configure(dir, o = {}) {
   c.workspace.services = SERVICES.map((name) => ({
     name,
     path: `../${name}`,
-    openapi: "openapi.yaml",
+    ...(WEB_SERVICES.includes(name) ? { kind: "web", routes: STOREFRONT_ROUTES } : { openapi: "openapi.yaml" }),
     ...(o.group ? { gitlabProject: `${o.group}/${name}` } : {}),
-    dependsOn: name === "orders-service" ? ["payments-service", "notifications-service"] : [],
+    dependsOn: name === "orders-service" ? ["payments-service", "notifications-service"] : name === "storefront" ? ["orders-service", "payments-service"] : [],
     version: { path: `/${name.replace(/-service$/, "")}/version`, field: "commit" },
   }));
   // The local QA environment (qa-env/start.sh); feature readiness checks deployments here.
-  c.environments = { ...(c.environments ?? {}), local: { baseUrl: "http://127.0.0.1:8080", description: "ShopLite started by qa-env/start.sh" } };
+  c.environments = {
+    ...(c.environments ?? {}),
+    local: { baseUrl: "http://127.0.0.1:8080", webUrl: "http://127.0.0.1:8081/", description: "ShopLite started by qa-env/start.sh" },
+  };
+  c.tests.web = { ...(c.tests.web ?? {}), enabled: true, baseUrlEnv: "QA_WEB_URL" };
   c.tests.api.baseUrlEnv = "QA_BASE_URL";
   c.guardrails.allowedHosts = ["localhost", "127.0.0.1", "example.com", "example.test", "shoplite.test"];
+  if (o.healing) c.tests.web.healing = o.healing;
   if (o.group) {
     c.ci.gitlabUrl = o.gitlabUrl ?? "https://gitlab.com";
     c.ci.testRepoProject = `${o.group}/${TEST_REPO}`;
@@ -182,10 +191,8 @@ export function configure(dir, o = {}) {
       projectKeys: [o.jira.project],
       approvedStatuses: ["In Progress", "Selected for Development", "Ready for Development", "Done"],
     };
-    // With Jira connected, publish the gap report on the story too (and keep the MR comment).
-    c.reporting = { ...(c.reporting ?? {}), targets: ["gitlab-mr", "jira"] };
-    // With Jira connected, publish the gap report on the story too (and keep the MR comment).
-    c.reporting = { ...(c.reporting ?? {}), targets: ["gitlab-mr", "jira"] };
+    // With Jira connected, publish the gap report on the story too (and keep the MR comment; local mode has no MR).
+    c.reporting = { ...(c.reporting ?? {}), targets: o.group ? ["gitlab-mr", "jira"] : ["jira"] };
   }
   fs.writeFileSync(file, "# qa-sentinel configuration for the ShopLite sandbox.\n" + YAML.stringify(c, { lineWidth: 100 }));
 }

@@ -4,6 +4,8 @@
  *
  * Auth: Cloud → JIRA_EMAIL + JIRA_API_TOKEN (basic); Server/DC → JIRA_PAT (bearer).
  */
+import { netFetch } from "../net.js";
+
 export interface JiraContext {
   baseUrl: string;
   authHeader: string;
@@ -30,7 +32,7 @@ export interface JiraIssue {
 
 export async function fetchIssue(ctx: JiraContext, key: string, acField?: string): Promise<JiraIssue> {
   const fields = ["summary", "description", "status", "updated", ...(acField ? [acField] : [])].join(",");
-  const res = await fetch(`${ctx.baseUrl}/rest/api/2/issue/${encodeURIComponent(key)}?fields=${fields}`, {
+  const res = await netFetch(`${ctx.baseUrl}/rest/api/2/issue/${encodeURIComponent(key)}?fields=${fields}`, {
     headers: { Authorization: ctx.authHeader, Accept: "application/json" },
   });
   if (!res.ok) throw new Error(`Jira GET ${key} failed: ${res.status} ${(await res.text()).slice(0, 200)}`);
@@ -153,7 +155,7 @@ export function capForJira(wiki: string, maxChars: number, fullReportUrl?: strin
 
 async function jiraCall(ctx: JiraContext, method: string, route: string, body?: unknown): Promise<any> {
   for (let attempt = 1; ; attempt++) {
-    const res = await fetch(`${ctx.baseUrl}${route}`, {
+    const res = await netFetch(`${ctx.baseUrl}${route}`, {
       method,
       headers: { Authorization: ctx.authHeader, Accept: "application/json", "Content-Type": "application/json" },
       body: body ? JSON.stringify(body) : undefined,
@@ -229,7 +231,7 @@ export async function setIssueProperty(ctx: JiraContext, key: string, prop: stri
 export async function attachFile(ctx: JiraContext, key: string, fileName: string, data: Buffer, contentType = "application/octet-stream"): Promise<{ id: string; filename: string }> {
   const form = new FormData();
   form.append("file", new Blob([new Uint8Array(data)], { type: contentType }), fileName);
-  const res = await fetch(`${ctx.baseUrl}/rest/api/2/issue/${encodeURIComponent(key)}/attachments`, {
+  const res = await netFetch(`${ctx.baseUrl}/rest/api/2/issue/${encodeURIComponent(key)}/attachments`, {
     method: "POST",
     headers: { Authorization: ctx.authHeader, Accept: "application/json", "X-Atlassian-Token": "no-check" },
     body: form,

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Start an ephemeral ShopLite QA environment: three services + a gateway on :8080.
+# Start an ephemeral ShopLite QA environment: three services + a gateway on :8080, and the storefront on :8081.
 # Use with `source qa-env/start.sh` so QA_BASE_URL is exported to the calling shell.
 #
 # Where each service's code comes from (first match wins):
@@ -16,21 +16,23 @@ detach() {
   else nohup "${@:1:$n}" </dev/null >"$log" 2>&1 &
   fi
 }
-port_of() { case "$1" in orders-service) echo 3001;; payments-service) echo 3002;; notifications-service) echo 3003;; esac; }
+port_of() { case "$1" in orders-service) echo 3001;; payments-service) echo 3002;; notifications-service) echo 3003;; storefront) echo 8081;; esac; }
 
-for svc in payments-service notifications-service orders-service; do
+for svc in payments-service notifications-service orders-service storefront; do
+  # The storefront is optional (older sandboxes have only the three API services).
+  if [ "$svc" = storefront ] && [ ! -d "/tmp/services/$svc" ] && [ ! -d "${QA_ENV_LOCAL_SERVICES:-/nonexistent}/$svc" ] && [ -z "$CI_JOB_TOKEN" ]; then continue; fi
   if [ -d "/tmp/services/$svc" ]; then dir="/tmp/services/$svc"
   elif [ -n "$QA_ENV_LOCAL_SERVICES" ]; then dir="$QA_ENV_LOCAL_SERVICES/$svc"
   else
     dir="$QA_ENV_DIR/$svc"
     if [ ! -d "$dir" ]; then
-      git clone -q --depth 1 "https://gitlab-ci-token:${CI_JOB_TOKEN}@${CI_SERVER_HOST}/${QA_ENV_GROUP}/$svc.git" "$dir"
+      git clone -q --depth 1 "https://gitlab-ci-token:${CI_JOB_TOKEN}@${CI_SERVER_HOST}/${QA_ENV_GROUP}/$svc.git" "$dir" || { [ "$svc" = storefront ] && continue; }
       git -C "$dir" remote remove origin   # no token left on disk
     fi
   fi
   if [ ! -d "$dir/node_modules" ]; then (cd "$dir" && (npm ci --omit=dev --silent || npm install --omit=dev --silent)); fi
   # Fully detached (own session, no inherited stdin/stdout), so callers reading our output never hang.
-  (cd "$dir" && GIT_SHA="$(git rev-parse HEAD 2>/dev/null || echo unknown)" PORT="$(port_of "$svc")" PAYMENTS_URL=http://127.0.0.1:3002 NOTIFICATIONS_URL=http://127.0.0.1:3003 \
+  (cd "$dir" && GIT_SHA="$(git rev-parse HEAD 2>/dev/null || echo unknown)" PORT="$(port_of "$svc")" PAYMENTS_URL=http://127.0.0.1:3002 NOTIFICATIONS_URL=http://127.0.0.1:3003 API_URL=http://127.0.0.1:8080 \
     detach node src/server.js "$QA_ENV_DIR/logs/$svc.log")
 done
 detach node "$HERE/gateway.js" "$QA_ENV_DIR/logs/gateway.log"
@@ -38,7 +40,12 @@ detach node "$HERE/gateway.js" "$QA_ENV_DIR/logs/gateway.log"
 for i in $(seq 1 30); do
   if node -e 'Promise.all(["orders","payments","notifications"].map(s=>fetch(`http://127.0.0.1:8080/${s}/health`).then(r=>{if(!r.ok)throw 0}))).then(()=>process.exit(0),()=>process.exit(1))'; then
     export QA_BASE_URL="http://127.0.0.1:8080"
-    echo "ShopLite QA environment ready at $QA_BASE_URL"
+    if node -e 'fetch("http://127.0.0.1:8081/health").then(r=>process.exit(r.ok?0:1),()=>process.exit(1))' 2>/dev/null || { sleep 1 && node -e 'fetch("http://127.0.0.1:8081/health").then(r=>process.exit(r.ok?0:1),()=>process.exit(1))' 2>/dev/null; }; then
+      export QA_WEB_URL="http://127.0.0.1:8081/"
+      echo "ShopLite QA environment ready at $QA_BASE_URL (storefront $QA_WEB_URL)"
+    else
+      echo "ShopLite QA environment ready at $QA_BASE_URL"
+    fi
     return 0 2>/dev/null || exit 0
   fi
   sleep 1

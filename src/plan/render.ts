@@ -2,6 +2,7 @@ import type { ContractDiff } from "../analysis/contractDiff.js";
 import { contractDiffMarkdown } from "../analysis/contractDiff.js";
 import type { RiskLevel, TestPlan } from "./schema.js";
 import type { RiskedChange } from "./risk.js";
+import { workflowLine } from "./workflow.js";
 
 export const RISK_BADGE: Record<RiskLevel, string> = {
   critical: "🔴 Critical",
@@ -37,7 +38,7 @@ export function decisionTable(plan: TestPlan, changes: RiskedChange[]): string {
     .filter((c) => c.observable || decisionFor.has(c.id))
     .map((c) => {
       const d = decisionFor.get(c.id);
-      const what = `${c.endpoint ? `${c.endpoint} – ` : ""}${c.summary}`;
+      const what = `${c.endpoint ? `${c.endpoint} – ` : ""}${c.page ? `page ${c.page} – ` : ""}${c.summary}`;
       const req = c.requirementIds.length ? ` (${c.requirementIds.join(", ")})` : "";
       return `| ${esc(what)}${req} | ${RISK_BADGE[c.risk]} | ${c.oracleStatus} | ${d?.coverage ?? "–"} | **${d?.decision ?? "–"}** |`;
     });
@@ -72,7 +73,10 @@ export function renderGapReport(i: RenderInput): string {
   const scenarios = plan.decisions.filter((d) => ["create", "update", "review"].includes(d.decision)).flatMap((d) => d.proposedScenarios.map((s) => ({ d, s })));
   if (scenarios.length) {
     out.push("**Missing or outdated scenarios**");
-    for (const { d, s } of scenarios) out.push(`- ${s.title}${s.requirementIds.length ? ` (${s.requirementIds.join(", ")})` : ""} – ${d.decision}`);
+    for (const { d, s } of scenarios) {
+      const flow = s.setup.length || s.layer === "web" ? workflowLine(s) : "";
+      out.push(`- ${s.layer === "web" ? "🖥️ " : ""}${s.title}${s.requirementIds.length ? ` (${s.requirementIds.join(", ")})` : ""} – ${d.decision}${flow ? `\n  - flow: ${flow}` : ""}`);
+    }
     out.push("");
   }
 
@@ -110,7 +114,7 @@ export function renderGapReport(i: RenderInput): string {
 
   out.push(`<details><summary>Evidence (${risked.changes.length} change${risked.changes.length === 1 ? "" : "s"})</summary>`, "");
   for (const c of risked.changes) {
-    out.push(`- **${c.id}** ${c.type}${c.endpoint ? ` ${c.endpoint}` : ""} – ${c.summary}`);
+    out.push(`- **${c.id}** ${c.type}${c.endpoint ? ` ${c.endpoint}` : ""}${c.page ? ` page ${c.page}` : ""} – ${c.summary}`);
     out.push(`  - risk ${c.risk} from: ${c.factors.join(", ")}`);
     c.evidence.forEach((e) => out.push(`  - ${e.source}: ${cite(e)}`));
   }

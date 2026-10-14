@@ -22,6 +22,10 @@ const ServiceSchema = z.object({
   openapi: z.string().optional().describe("Path to the OpenAPI spec inside the service repo"),
   gitlabProject: z.string().optional().describe("GitLab project path of the service, e.g. group/orders-service"),
   dependsOn: z.array(z.string()).default([]),
+  /** api: a backend service (API tests); web: a front end (web UI tests through page objects, data set up via the API). */
+  kind: z.enum(["api", "web"]).default("api"),
+  /** Web front ends: the routes this service serves (e.g. /orders/new), used when a change doesn't name its page. */
+  routes: z.array(z.string()).default([]),
   /** How to ask a running environment which commit of this service is deployed (for feature readiness). */
   version: z
     .object({
@@ -64,7 +68,28 @@ export const ConfigSchema = z.object({
       .object({
         enabled: z.boolean().default(false),
         framework: z.enum(["playwright"]).default("playwright"),
+        dir: z.string().default("tests/web"),
+        /** Page objects: locators live here and only here; the agent updates them before the specs. */
+        pagesDir: z.string().default("src/pages"),
+        runCommand: z.string().default("npx playwright test --project=web").describe("Command that runs web tests; spec paths are appended"),
+        baseUrlEnv: z.string().default("QA_WEB_URL"),
+        extraWritePaths: z.array(z.string()).default([]),
+        /** Before authoring, qa-sentinel opens the affected pages and saves what is on them (accessibility tree + screenshot) for the agent. */
+        explore: z.enum(["snapshot", "none"]).default("snapshot"),
+        /**
+         * Runtime locator healing. none: plain Playwright. bubblegum: when a page-object action fails, the ui helper asks
+         * Bubblegum (@bubblegum-ai/node) to recover it over CDP. Never used while qa-sentinel verifies agent-written tests.
+         */
         healing: z.enum(["none", "bubblegum"]).default("none"),
+        bubblegum: z
+          .object({
+            package: z.string().default("@bubblegum-ai/node"),
+            /** First remote-debugging port; each Playwright worker uses cdpPort + workerIndex. */
+            cdpPort: z.number().int().min(1024).max(65000).default(9222),
+            /** true: a healed step fails `qa-sentinel healed` (and the CI job running it) even though the test passed. */
+            failOnHeal: z.boolean().default(false),
+          })
+          .default({}),
       })
       .default({}),
     mobile: z
@@ -114,7 +139,7 @@ export const ConfigSchema = z.object({
       replaceOnRefresh: z.boolean().default(true),
       /** Evidence kinds to attach, in order of preference. api-log is folded into the evidence summary file. */
       kinds: z.array(z.enum(["video", "screenshot", "trace", "api-log"])).default(["video", "screenshot", "api-log"]),
-      maxFiles: z.number().int().min(1).max(50).default(10),
+      maxFiles: z.number().int().min(1).max(50).default(20),
       maxFileMb: z.number().positive().max(100).default(10),
       /** A story with a fixme/skip test (known product discrepancy) is not showcased. */
       requireNoPending: z.boolean().default(true),
@@ -183,7 +208,7 @@ export const ConfigSchema = z.object({
     .default({}),
   guardrails: z
     .object({
-      /** Globs the agent may change during `generate`. Empty = derived from tests.api (dir, helpersDir, extraWritePaths, test-map.yaml). */
+      /** Globs the agent may change during `generate`. Empty = derived from tests.api and tests.web (dirs, helpers, page objects, extraWritePaths, test-map.yaml). */
       allowedWritePaths: z.array(z.string()).default([]),
       /** Globs that may never change, even if they match allowedWritePaths. */
       blockedWritePaths: z
@@ -237,6 +262,8 @@ export const ConfigSchema = z.object({
     .record(
       z.object({
         baseUrl: z.string().url(),
+        /** Web front end of this environment (sets tests.web.baseUrlEnv). */
+        webUrl: z.string().url().optional(),
         description: z.string().optional(),
       }),
     )
