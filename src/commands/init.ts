@@ -639,17 +639,39 @@ export function addMobileCommand(o: { cwd: string; platform?: "android" | "ios" 
     results.push([`ci/qa-sentinel/${f}`, writeFileSafe(path.join(cwd, "ci/qa-sentinel", f), render(readTemplate(`${ciDir}/${f}`), vars), true)]);
   }
   if (addLayerDependencies(cwd, c).length) results.push(["package.json", "updated"]);
+  const tsc = includeInTsconfig(cwd, "wdio.conf.ts");
+  if (tsc) results.push(["tsconfig.json", tsc]);
   for (const [f, status] of results) log.dim(`  ${status === "skipped" ? "kept    " : status.padEnd(8)} ${f}`);
   log.ok("mobile layer enabled in qa-sentinel.config.yaml");
   log.info(
     [
       "Next:",
-      "  1. npm install",
-      "  2. Add wdio.conf.ts to tsconfig.json's include (and \"@wdio/globals/types\" is picked up from src/mobile/globals.d.ts)",
-      "  3. Start Appium (npm i -g appium && appium driver install uiautomator2 | xcuitest; appium) and an emulator or device",
-      "  4. Set QA_APP (or QA_APP_PACKAGE + QA_APP_ACTIVITY / QA_BUNDLE_ID), QA_MOBILE_PLATFORM, and QA_APPIUM_URL if not local",
-      `  5. ${c.tests.mobile.runCommand} --spec ${c.tests.mobile.dir}/example/home.spec.ts, then qa-sentinel doctor`,
+      "  - npm install",
+      ...(tsc === "manual" ? ["  - Add wdio.conf.ts to tsconfig.json's include (it has comments, so qa-sentinel didn't rewrite it)"] : []),
+      "  - Start Appium (npm i -g appium && appium driver install uiautomator2 | xcuitest; appium) and an emulator or device",
+      "  - Set QA_APP (or QA_APP_PACKAGE + QA_APP_ACTIVITY / QA_BUNDLE_ID), QA_MOBILE_PLATFORM, and QA_APPIUM_URL if not local",
+      `  - ${c.tests.mobile.runCommand} --spec ${c.tests.mobile.dir}/example/home.spec.ts, then qa-sentinel doctor`,
     ].join("\n"),
   );
   return c;
+}
+
+/**
+ * Add a file to tsconfig.json's "include" so the type-check covers it. Returns "updated", "kept" (already there or no
+ * include list), "manual" (the file has comments or isn't plain JSON: say so instead of rewriting it), or undefined
+ * when there is no tsconfig.json.
+ */
+export function includeInTsconfig(cwd: string, file: string): "updated" | "kept" | "manual" | undefined {
+  const p = path.join(cwd, "tsconfig.json");
+  if (!fs.existsSync(p)) return undefined;
+  let j: any;
+  try {
+    j = JSON.parse(fs.readFileSync(p, "utf8"));
+  } catch {
+    return "manual";
+  }
+  if (!Array.isArray(j.include) || j.include.includes(file)) return "kept";
+  j.include.push(file);
+  fs.writeFileSync(p, JSON.stringify(j, null, 2) + "\n");
+  return "updated";
 }

@@ -78,6 +78,7 @@ describe("mobile layer", () => {
     expect(fs.existsSync(path.join(repo, ".claude/skills/write-mobile-test/SKILL.md"))).toBe(true);
     expect(fs.readFileSync(path.join(repo, "ci/qa-sentinel/Jenkinsfile.tests"), "utf8")).toContain("stage('Mobile tests')");
     expect(JSON.parse(fs.readFileSync(path.join(repo, "package.json"), "utf8")).devDependencies.webdriverio).toBeTruthy();
+    expect(JSON.parse(fs.readFileSync(path.join(repo, "tsconfig.json"), "utf8")).include).toContain("wdio.conf.ts");
     const checks = mobileChecks(repo, c, {});
     expect(checks.find((x) => x.label.startsWith("app under test"))?.level).toBe("warn");
     expect(checks.find((x) => x.label === "wdio.conf.ts present")?.level).toBe("ok");
