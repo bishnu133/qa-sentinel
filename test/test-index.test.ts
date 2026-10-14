@@ -90,3 +90,10 @@ test.fixme(\`zero amount \${t} @ac:none\`, async () => {});`);
     expect(md).toContain("Outside the story's ACs on purpose (`@ac:none`): `r.spec.ts:4` zero amount (fixme)");
   });
 });
+
+describe("tag helpers", () => {
+  it("resolves one-line tag helper functions", () => {
+    const idx = indexSource("o.spec.ts", "const shipTags = (ac: string) => `@service:orders-service @endpoint:PATCH_/orders/{id}/ship @story:SHOP-106 @ac:${ac}`;\ntest(`sends exactly one notification ${shipTags(\"AC-3\")}`, async () => {});");
+    expect(idx[0]).toMatchObject({ title: "sends exactly one notification", stories: ["SHOP-106"], acs: ["AC-3"], endpoints: ["PATCH /orders/{id}/ship"] });
+  });
+});

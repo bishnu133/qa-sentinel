@@ -1,3 +1,4 @@
+import fs from "node:fs";
 import { test as base, expect } from "@playwright/test";
 import { ApiClient } from "../api/client";
 import { DataFactory } from "../data/builders";
@@ -9,8 +10,15 @@ interface Fixtures {
 
 /** Import `test` and `expect` from here in every API spec. */
 export const test = base.extend<Fixtures>({
-  api: async ({ request }, use) => {
-    await use(new ApiClient(request));
+  api: async ({ request }, use, testInfo) => {
+    const api = new ApiClient(request);
+    await use(api);
+    // Evidence for qa-sentinel's showcase stage: the requests this test made and what came back.
+    if (api.calls.length && process.env.QA_API_LOG !== "off") {
+      const file = testInfo.outputPath("api-log.json");
+      fs.writeFileSync(file, JSON.stringify({ test: testInfo.title, status: testInfo.status, calls: api.calls }, null, 2));
+      await testInfo.attach("api-log", { path: file, contentType: "application/json" });
+    }
   },
   data: async ({}, use, testInfo) => {
     await use(new DataFactory(`${testInfo.workerIndex}-${Date.now()}`));

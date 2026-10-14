@@ -5,10 +5,12 @@ export default defineConfig({
   timeout: 30_000,
   fullyParallel: true,
   retries: process.env.CI ? 1 : 0,
-  reporter: [["list"], ["html", { open: "never" }], ["junit", { outputFile: "test-results/junit.xml" }]],
+  // results.json is what qa-sentinel's showcase stage reads (test status + evidence attachments).
+  reporter: [["list"], ["html", { open: "never" }], ["junit", { outputFile: "test-results/junit.xml" }], ["json", { outputFile: "test-results/results.json" }]],
   use: {
     baseURL: process.env.{{baseUrlEnv}},
     extraHTTPHeaders: { Accept: "application/json" },
+    // Web/Mobile projects (v0.5) record evidence for showcase with: video: "retain-on-failure" | "on", trace: "on".
   },
   projects: [
     { name: "api", testDir: "./{{apiDir}}" },

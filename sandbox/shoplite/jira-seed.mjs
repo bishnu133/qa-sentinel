@@ -49,6 +49,7 @@ async function main() {
   const keys = fs.existsSync(path.join(work, ".jira-keys.json")) ? JSON.parse(fs.readFileSync(path.join(work, ".jira-keys.json"), "utf8")) : {};
 
   for (const s of SCENARIOS) {
+    if (s.storyKey) continue; // part 2 of a story: same Jira issue as part 1
     if (keys[s.id] && !f.force) {
       log(`${s.id} already seeded as ${keys[s.id]} (use --force to create again)`);
       continue;

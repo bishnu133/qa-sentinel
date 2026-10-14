@@ -18,7 +18,7 @@ pipeline {
       steps {
         sh '''
           # Install qa-sentinel from QA_SENTINEL_PACKAGE; a GitHub source is cloned, built and packed first.
-          qa_pkg="${QA_SENTINEL_PACKAGE:-qa-sentinel@0.3.0}"
+          qa_pkg="${QA_SENTINEL_PACKAGE:-qa-sentinel@0.4.0}"
           case "$qa_pkg" in
             github:*|git+https://github.com/*|https://github.com/*)
               src="${qa_pkg#github:}"; src="${src#git+}"; src="${src#https://github.com/}"

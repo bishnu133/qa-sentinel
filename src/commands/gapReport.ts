@@ -7,13 +7,14 @@ import { formatUsage } from "../claude.js";
 import { ARTIFACT_GLOBS, createRunDir, findService, startManifest, writeManifest } from "../run.js";
 import { checkServiceUntouched, diffSnapshots, findingsMarkdown, snapshotTree, type Finding } from "../guardrails.js";
 import { requirementsLine, resolveRequirements, storyMarkdown } from "../requirements.js";
-import { gitlabContext, gitlabMrFromEnv, upsertMrNote } from "../scm/gitlab.js";
-import { capForJira, jiraContext, markdownToJiraWiki, upsertIssueComment } from "../scm/jira.js";
-import type { Config } from "../config.js";
+import { gitlabContext, gitlabMrFromEnv } from "../scm/gitlab.js";
+import { assembleFeature } from "../feature/manifest.js";
+import { publish } from "../reporting/publish.js";
 import { engineFor } from "../engines/ClaudeCodeEngine.js";
 import { addUsage } from "../engines/AgentEngine.js";
 import { oracleOf, planChange } from "../plan/planner.js";
 import { renderGapReport } from "../plan/render.js";
+import { gapSummary } from "../reporting/jiraSummary.js";
 import { buildTestIndex, readTestMap, traceMarkdown, traceStory } from "../analysis/testIndex.js";
 import { regressionMarkdown, selectRegression } from "../analysis/regression.js";
 import { contractDiffMarkdown } from "../analysis/contractDiff.js";
@@ -101,6 +102,7 @@ export async function gapReportCommand(o: GapReportOptions): Promise<{ report: s
   const u = formatUsage(usage);
   const footer = `<sub>qa-sentinel ${manifest.qaSentinelVersion} gap report · ${service.name}@${cs.head.slice(0, 8)}${u ? ` · ${u}` : ""}</sub>\n`;
   let report: string;
+  let jiraSummary: string | undefined;
   let exitCode = 0;
   if (outcome.status === "valid" && outcome.plan && outcome.risked) {
     // Facts computed in code from the test repo: which existing tests to run, and what already proves the story.
@@ -126,6 +128,31 @@ export async function gapReportCommand(o: GapReportOptions): Promise<{ report: s
         rules: outcome.validation?.rules,
         traceability: traced ? traceMarkdown(req.storyKey, trace) : undefined,
       }) + `\n\n${footer}`;
+    // The same story in other services (one feature, many services): say so, so nobody tests half a feature.
+    let featureLine = "";
+    if (req.storyKey) {
+      try {
+        const m = await assembleFeature({ c, cwd, story: req.storyKey, gitlab: c.workspace.services.some((x) => x.gitlabProject) ? gitlabContext(c.ci.gitlabUrl) : undefined });
+        const others = m.parts.filter((p) => p.service !== service.name);
+        if (others.length) {
+          featureLine = `**Feature ${req.storyKey} also changes:** ${others.map((p) => `${p.service} (${p.mr ? `[!${p.mr.iid}](${p.mr.url}), ` : ""}${p.merged ? "merged" : "not merged yet"})`).join(", ")}. Acceptance criteria that need several services are checked with \`qa-sentinel feature ${req.storyKey}\` once every part is deployed.`;
+          report = report.replace(footer, `${featureLine}\n\n${footer}`);
+        }
+      } catch (e) {
+        log.dim(`feature lookup skipped: ${(e as Error).message}`);
+      }
+    }
+    jiraSummary = gapSummary({
+      service: service.name,
+      plan: outcome.plan,
+      risk: outcome.risked.overall,
+      req,
+      mrUrl: mr.url,
+      reportUrl: process.env.CI_JOB_URL ? `${process.env.CI_JOB_URL}/artifacts/file/qa-gap-report.md` : undefined,
+      regressionTests: selection.runFullSuite ? undefined : selection.tests.length,
+    });
+    if (featureLine) jiraSummary += `\n\n${featureLine}`;
+    fs.writeFileSync(path.join(run.dir, "jira-summary.md"), jiraSummary);
     manifest.outcome = "reported";
     log.ok(`plan valid · ${outcome.risked.overall} risk · ${outcome.plan.decisions.length} decision(s)`);
   } else {
@@ -151,46 +178,6 @@ export async function gapReportCommand(o: GapReportOptions): Promise<{ report: s
   writeManifest(run, manifest);
   log.ok(`report written to ${path.relative(cwd, out)}${u ? ` (${u})` : ""}`);
 
-  if (o.post) await publish(c, { report, service: service.name, storyKey: req.storyKey, mr });
+  if (o.post) await publish(c, { report, jiraSummary, service: service.name, storyKey: req.storyKey, mr });
   return { report, skipped: false, exitCode };
-}
-
-/**
- * Publish the report to every configured target. Publishing never fails the job: a missing token, MR or
- * story key is a warning, because the report itself is already written and kept as a CI artifact.
- */
-export async function publish(
-  c: Config,
-  i: { report: string; service: string; storyKey?: string; mr: ReturnType<typeof gitlabMrFromEnv> },
-  env: NodeJS.ProcessEnv = process.env,
-): Promise<string[]> {
-  const done: string[] = [];
-  for (const target of c.reporting.targets) {
-    try {
-      if (target === "gitlab-mr") {
-        const ctx = gitlabContext(c.ci.gitlabUrl);
-        if (!ctx) log.warn("--post (gitlab-mr): set QA_SENTINEL_GITLAB_TOKEN (or GITLAB_TOKEN) to comment on the MR");
-        else if (!i.mr.project || !i.mr.mrIid) log.warn("--post (gitlab-mr): no merge request context (CI_PROJECT_ID / CI_MERGE_REQUEST_IID)");
-        else {
-          const r = await upsertMrNote(ctx, i.mr.project, i.mr.mrIid, i.report);
-          log.ok(`MR !${i.mr.mrIid}: comment ${r.action}`);
-          done.push("gitlab-mr");
-        }
-      } else if (target === "jira") {
-        const ctx = jiraContext(c.requirements.jira.baseUrl, env);
-        if (!ctx) log.warn("--post (jira): set requirements.jira.baseUrl and JIRA_EMAIL + JIRA_API_TOKEN (Cloud) or JIRA_PAT (Server/DC)");
-        else if (!i.storyKey) log.warn("--post (jira): no story key found in the MR title, branch or commits; nothing to comment on");
-        else {
-          const artifact = env.CI_JOB_URL ? `${env.CI_JOB_URL}/artifacts/file/qa-gap-report.md` : undefined;
-          const body = capForJira(markdownToJiraWiki(i.report), c.reporting.jira.maxChars, artifact);
-          const r = await upsertIssueComment(ctx, i.storyKey, i.service, body, c.reporting.jira.visibility);
-          log.ok(`Jira ${i.storyKey}: comment ${r.action} (${r.url})`);
-          done.push("jira");
-        }
-      }
-    } catch (e) {
-      log.warn(`--post (${target}) failed: ${(e as Error).message}`);
-    }
-  }
-  return done;
 }

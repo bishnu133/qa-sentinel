@@ -65,7 +65,7 @@ export function makeChange(serviceDir, s, { storyKey } = {}) {
     (f, c) => fs.writeFileSync(path.join(serviceDir, f), c),
     s.edits,
   );
-  commitAll(serviceDir, `${storyKey ?? s.id}: ${s.title.replace(/^SHOP-\d+:\s*/, "")}`);
+  commitAll(serviceDir, `${storyKey ?? s.storyKey ?? s.id}: ${s.title.replace(/^SHOP-\d+:\s*/, "")}`);
 }
 
 export function serviceCi(group) {
@@ -164,7 +164,10 @@ export function configure(dir, o = {}) {
     openapi: "openapi.yaml",
     ...(o.group ? { gitlabProject: `${o.group}/${name}` } : {}),
     dependsOn: name === "orders-service" ? ["payments-service", "notifications-service"] : [],
+    version: { path: `/${name.replace(/-service$/, "")}/version`, field: "commit" },
   }));
+  // The local QA environment (qa-env/start.sh); feature readiness checks deployments here.
+  c.environments = { ...(c.environments ?? {}), local: { baseUrl: "http://127.0.0.1:8080", description: "ShopLite started by qa-env/start.sh" } };
   c.tests.api.baseUrlEnv = "QA_BASE_URL";
   c.guardrails.allowedHosts = ["localhost", "127.0.0.1", "example.com", "example.test", "shoplite.test"];
   if (o.group) {

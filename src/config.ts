@@ -22,6 +22,15 @@ const ServiceSchema = z.object({
   openapi: z.string().optional().describe("Path to the OpenAPI spec inside the service repo"),
   gitlabProject: z.string().optional().describe("GitLab project path of the service, e.g. group/orders-service"),
   dependsOn: z.array(z.string()).default([]),
+  /** How to ask a running environment which commit of this service is deployed (for feature readiness). */
+  version: z
+    .object({
+      /** Path appended to the environment's base URL, e.g. /orders/version or /actuator/info. */
+      path: z.string(),
+      /** Field holding the commit SHA in the JSON response (dot path), e.g. commit or git.commit.id. */
+      field: z.string().default("commit"),
+    })
+    .optional(),
 });
 
 export const ConfigSchema = z.object({
@@ -96,12 +105,29 @@ export const ConfigSchema = z.object({
       enabled: z.boolean().default(true),
     })
     .default({}),
+  /** Showcase stage: attach test evidence to the story once every acceptance criterion has passed. */
+  showcase: z
+    .object({
+      /** QA adds this label to a story to have the evidence attached again (it is removed afterwards). */
+      refreshLabel: z.string().default("qa-showcase-refresh"),
+      /** On refresh, delete the evidence attached last time instead of adding a second copy. */
+      replaceOnRefresh: z.boolean().default(true),
+      /** Evidence kinds to attach, in order of preference. api-log is folded into the evidence summary file. */
+      kinds: z.array(z.enum(["video", "screenshot", "trace", "api-log"])).default(["video", "screenshot", "api-log"]),
+      maxFiles: z.number().int().min(1).max(50).default(10),
+      maxFileMb: z.number().positive().max(100).default(10),
+      /** A story with a fixme/skip test (known product discrepancy) is not showcased. */
+      requireNoPending: z.boolean().default(true),
+    })
+    .default({}),
   /** Where `gap-report --post` publishes. One comment per target, updated in place on every run. */
   reporting: z
     .object({
       targets: z.array(z.enum(["gitlab-mr", "jira"])).min(1).default(["gitlab-mr"]),
       jira: z
         .object({
+          /** summary: plain-language status per acceptance criterion (default); full: the whole technical report. */
+          format: z.enum(["summary", "full"]).default("summary"),
           /** Restrict the Jira comment, e.g. { type: "role", value: "Developers" }. */
           visibility: z.object({ type: z.enum(["role", "group"]), value: z.string() }).optional(),
           /** Jira caps comments at 32,767 characters; longer reports are cut and linked to the CI artifact. */
@@ -200,7 +226,20 @@ export const ConfigSchema = z.object({
       /** Check that the base URL answers before running tests (unreachable = BLOCKED). */
       preflight: z.boolean().default(true),
       timeoutMinutes: z.number().positive().default(15),
+      /** Environment `generate`/`verify` run against when --env is not given (a key of `environments`). */
+      defaultEnvironment: z.string().optional(),
+      /** With --push: keep the branch local unless verification is VERIFIED (no draft MRs). */
+      requireVerifiedToPush: z.boolean().default(false),
     })
+    .default({}),
+  /** Named lower environments the tests can run against before an MR is opened, e.g. dev and sit. */
+  environments: z
+    .record(
+      z.object({
+        baseUrl: z.string().url(),
+        description: z.string().optional(),
+      }),
+    )
     .default({}),
 });
 

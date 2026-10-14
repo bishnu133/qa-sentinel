@@ -6,31 +6,66 @@ interface RequestOptions {
   params?: Record<string, string | number | boolean>;
 }
 
+/** One request/response pair, kept as test evidence (no headers, so tokens never land in reports). */
+export interface ApiCall {
+  method: string;
+  path: string;
+  params?: RequestOptions["params"];
+  request?: unknown;
+  status: number;
+  response?: unknown;
+  ms: number;
+}
+
+const MAX_BODY = 4_000;
+const clip = (v: unknown) => {
+  const s = typeof v === "string" ? v : JSON.stringify(v);
+  return s && s.length > MAX_BODY ? `${s.slice(0, MAX_BODY)}… (${s.length} chars)` : v;
+};
+
 /** Thin typed wrapper over Playwright's request context. All API tests go through this. */
 export class ApiClient {
-  constructor(private readonly request: APIRequestContext, private token?: string) {}
+  /** Every call made in the current test; the `api` fixture attaches it as evidence (api-log.json). */
+  readonly calls: ApiCall[];
+
+  constructor(private readonly request: APIRequestContext, private token?: string, calls: ApiCall[] = []) {
+    this.calls = calls;
+  }
 
   withToken(token: string): ApiClient {
-    return new ApiClient(this.request, token);
+    return new ApiClient(this.request, token, this.calls);
   }
 
   private headers(extra?: Record<string, string>) {
     return { ...(this.token ? { Authorization: `Bearer ${this.token}` } : {}), ...extra };
   }
 
+  private async record(method: string, path: string, o: RequestOptions, data: unknown, send: () => Promise<APIResponse>) {
+    const started = Date.now();
+    const res = await send();
+    let response: unknown;
+    try {
+      response = clip(await res.json());
+    } catch {
+      response = clip(await res.text().catch(() => ""));
+    }
+    this.calls.push({ method, path, params: o.params, request: data === undefined ? undefined : clip(data), status: res.status(), response, ms: Date.now() - started });
+    return res;
+  }
+
   get(path: string, o: RequestOptions = {}): Promise<APIResponse> {
-    return this.request.get(path, { headers: this.headers(o.headers), params: o.params });
+    return this.record("GET", path, o, undefined, () => this.request.get(path, { headers: this.headers(o.headers), params: o.params }));
   }
   post(path: string, data?: Body, o: RequestOptions = {}): Promise<APIResponse> {
-    return this.request.post(path, { data, headers: this.headers(o.headers), params: o.params });
+    return this.record("POST", path, o, data, () => this.request.post(path, { data, headers: this.headers(o.headers), params: o.params }));
   }
   put(path: string, data?: Body, o: RequestOptions = {}): Promise<APIResponse> {
-    return this.request.put(path, { data, headers: this.headers(o.headers), params: o.params });
+    return this.record("PUT", path, o, data, () => this.request.put(path, { data, headers: this.headers(o.headers), params: o.params }));
   }
   patch(path: string, data?: Body, o: RequestOptions = {}): Promise<APIResponse> {
-    return this.request.patch(path, { data, headers: this.headers(o.headers), params: o.params });
+    return this.record("PATCH", path, o, data, () => this.request.patch(path, { data, headers: this.headers(o.headers), params: o.params }));
   }
   delete(path: string, o: RequestOptions = {}): Promise<APIResponse> {
-    return this.request.delete(path, { headers: this.headers(o.headers), params: o.params });
+    return this.record("DELETE", path, o, undefined, () => this.request.delete(path, { headers: this.headers(o.headers), params: o.params }));
   }
 }

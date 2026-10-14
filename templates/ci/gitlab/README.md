@@ -24,4 +24,7 @@ Two files, two repos:
 - [ ] Protect the `{{targetBranch}}` branch: MRs from `qa-sentinel/*` need 1 approval
 - [ ] `gitlabProject` set for each service in `qa-sentinel.config.yaml` (or rely on `QA_SERVICE_PROJECT` from the trigger), so generation can fetch the MR's acceptance criteria
 - [ ] Runners for these jobs have network access only to GitLab, the Anthropic API, your package registry and the QA environment
+- [ ] (optional) Lower environment: add it under `environments:` in `qa-sentinel.config.yaml` and set `QA_ENVIRONMENT` (e.g. `sit`) in this repo's variables. Generation then runs the tests there before opening the MR; with `verification.requireVerifiedToPush: true` it pushes only when they pass.
+- [ ] (optional) Feature manifests: a version endpoint per service (`services[].version: { path, field }`) that returns the deployed git SHA
+- [ ] (optional) Showcase: `QA_SHOWCASE: "true"` in this repo's variables, Jira configured, and `reporting.targets` including `jira`. The job attaches evidence to the story once all ACs pass.
 - [ ] Run `qa-sentinel doctor --online` locally first

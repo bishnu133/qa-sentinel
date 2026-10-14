@@ -8,7 +8,7 @@ import { resolveSha } from "./git.js";
 import { scrubbedEnv } from "./env.js";
 import type { RequirementSnapshot } from "./requirements.js";
 
-export const VERSION = "0.3.0";
+export const VERSION = "0.4.0";
 
 export interface RunDir {
   id: string;
@@ -59,6 +59,11 @@ export const ARTIFACT_GLOBS = [
   ".qa-sentinel/**",
   "qa-sentinel-summary.md",
   "qa-gap-report.md",
+  "qa-regression.txt",
+  "qa-feature-*",
+  "qa-showcase.md",
+  "qa-showcase/**",
+  "qa-verify.md",
   "test-results/**",
   "playwright-report/**",
   "blob-report/**",
@@ -137,4 +142,17 @@ function safeSha(repo: string): string {
   } catch {
     return "unknown";
   }
+}
+
+/**
+ * Point the run at a named environment: sets the base URL variable for the agent, the tests and the preflight.
+ * Returns the environment's name (or undefined when the base URL comes from the shell as before).
+ */
+export function useEnvironment(c: Config, name: string | undefined, env: NodeJS.ProcessEnv = process.env): string | undefined {
+  const chosen = name ?? c.verification.defaultEnvironment;
+  if (!chosen) return undefined;
+  const e = c.environments[chosen];
+  if (!e) throw new Error(`Unknown environment "${chosen}". Configured: ${Object.keys(c.environments).join(", ") || "none (add environments: in qa-sentinel.config.yaml)"}`);
+  env[c.tests.api.baseUrlEnv] = e.baseUrl;
+  return chosen;
 }

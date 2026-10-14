@@ -34,7 +34,7 @@ async function main() {
   if (!group) die("Set GITLAB_GROUP (and GITLAB_TOKEN).");
   const gl = gitlab();
   const s = scenario(id);
-  const key = jiraKeys[s.id];
+  const key = jiraKeys[s.storyKey ?? s.id];
   const title = key ? s.title.replace(/^SHOP-\d+/, key) : s.title;
 
   if (cmd === "open") {

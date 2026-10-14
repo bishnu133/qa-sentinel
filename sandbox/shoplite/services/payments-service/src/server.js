@@ -6,6 +6,8 @@ const CURRENCIES = ["SGD", "USD"];
 const payments = new Map();
 
 app.get("/payments/health", (_req, res) => res.json({ status: "ok", service: "payments" }));
+// Which commit is running (qa-sentinel feature readiness reads this).
+app.get("/payments/version", (_req, res) => res.json({ service: "payments-service", commit: process.env.GIT_SHA || "unknown" }));
 
 // Authorise a payment for an order.
 app.post("/payments/authorize", (req, res) => {

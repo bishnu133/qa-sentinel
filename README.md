@@ -69,6 +69,13 @@ Risk is a fixed rule that you can read: **critical** for auth, money or personal
 - **Knowledge base (`kb/`).** Team-written domain rules and review lessons, read by every agent and citable as `domain-rule` evidence. When a story is silent, a kb rule can be the oracle. Agents can't edit it.
 - **Jira as a report target.** `reporting.targets: [gitlab-mr, jira]` posts the gap report on the story too.
 
+### What's in v0.4
+
+- **Simple Jira comments.** With `reporting.targets` including `jira`, the story gets a short plain-language comment (risk, what changed, what QA will do, a status per acceptance criterion, decisions needed) instead of the technical report, which stays on the MR. After generation, the same comment is updated with the test results per AC. `reporting.jira.format: full` keeps the old behaviour.
+- **Run on a lower environment before the MR.** Named `environments:` (dev, sit, …) with `generate --env sit` and `verify --env sit`. With `verification.requireVerifiedToPush: true`, nothing is pushed unless the tests passed on that environment. The environment is shown on the MR and the story.
+- **Showcase agent: evidence on the story, once.** `qa-sentinel showcase --story SHOP-12` checks that every AC has passing, active tests (none failed, none pending), then attaches the evidence to the Jira story: a Markdown file with the request/response of every call for API tests, plus recordings and screenshots from the run artifacts (Web/Mobile videos in v0.5). It records what it attached on the issue and never attaches again, unless QA adds the `qa-showcase-refresh` label or runs it with `--force`.
+- **Feature manifest across services.** `qa-sentinel feature SHOP-12 --env sit` finds every MR and branch for the story in all services, checks each service's version endpoint to see whether that code is deployed, and says whether the feature is ready for end-to-end tests. `--run` runs the story's tests once it is. Gap reports mention the other services in the same feature.
+
 ## Quick start
 
 ```bash
@@ -96,8 +103,10 @@ Starting from nothing? `qa-sentinel init --mode scratch` scaffolds Playwright AP
 | `generate -s <service>` | Writes and updates tests on a branch. **Rejected with nothing committed** on any guardrail violation. Otherwise independently verified, then committed. `--push` opens or updates a GitLab MR (Draft unless VERIFIED). Exit code 0 only when VERIFIED. |
 | `verify [--policy] [--base <ref>]` | The same independent checks, for any branch. Use it as the blocking CI gate on agent MRs. |
 | `trace [--story KEY] [--story-file f] [--json]` | Requirement traceability from test tags: which tests prove which acceptance criteria, and whether `test-map.yaml` agrees with the tags. |
+| `feature <story> [--env sit] [--run] [--post] [--json]` | Feature manifest: every MR/branch for the story across services, whether each is merged and deployed on the environment (version endpoint), and the overall status. `--run` runs the story's tests when ready; `--post` updates the Jira story. |
+| `showcase [--story KEY] [--results f] [--env sit] [--force] [--dry-run]` | After a passing run, attaches evidence (API call logs, videos, screenshots) to the Jira story once all ACs pass. One time per story; again only with the `qa-showcase-refresh` label or `--force`. Without Jira, or with `--dry-run`, saves it to `qa-showcase/<story>/`. |
 
-Common flags: `--service-path` (where the service is checked out, for CI), `--checkout` (detach the service to the analysed SHA), `--story-file`, `--dry-run` (prints the Claude command instead of running it).
+Common flags: `--env <name>` (generate, verify, feature, showcase: an environment from `environments:`), `--service-path` (where the service is checked out, for CI), `--checkout` (detach the service to the analysed SHA), `--story-file`, `--dry-run` (prints the Claude command instead of running it).
 
 ### Verification statuses
 | Status | Meaning |
@@ -122,6 +131,10 @@ workspace:
       openapi: openapi.yaml          # strongly recommended
       gitlabProject: shop/orders-service   # lets generation fetch the MR's acceptance criteria after merge
       dependsOn: [payments-service]  # also readable by agents for cross-service changes
+      version: { path: /version, field: sha }   # deployed git SHA, used by `feature` for deployment readiness
+environments:                        # lower environments the tests can run against (generate/verify/feature --env)
+  dev: { baseUrl: https://dev.shop.example.test }
+  sit: { baseUrl: https://sit.shop.example.test, description: System integration }
 tests:
   api:
     framework: playwright            # playwright | supertest | axios | pactum | jest | vitest | mocha | other
@@ -143,7 +156,14 @@ requirements:
     approvedStatuses: [Ready for Dev, In Progress, Done]   # these statuses make AC "approved"
 reporting:
   targets: [gitlab-mr]               # where `gap-report --post` publishes: gitlab-mr, jira, or both
-  jira: { maxChars: 30000 }          # optional visibility: { type: role, value: Developers }
+  jira: { format: summary, maxChars: 30000 }   # summary (plain language, default) | full; optional visibility: { type: role, value: Developers }
+showcase:
+  refreshLabel: qa-showcase-refresh  # QA adds this label to attach evidence again
+  replaceOnRefresh: true             # delete the previous evidence when refreshing
+  kinds: [video, screenshot, api-log]   # also: trace
+  maxFiles: 10
+  maxFileMb: 10
+  requireNoPending: true             # a fixme/skip test on an AC blocks the showcase
 ci: { platform: gitlab, testRepoProject: my-group/qa-tests, targetBranch: main }
 agent:
   model: <optional, passed to claude --model>
@@ -158,7 +178,7 @@ guardrails:
   allowedHosts: [localhost, example.test]   # hosts allowed in added test code (+ host of the base URL)
   assertionRemoval: warn             # warn | fail
   passEnv: []                        # extra env vars for tests/agents; credentials are never passed otherwise
-verification: { typecheck: auto, lintCommand: "npx eslint", preflight: true, timeoutMinutes: 15 }
+verification: { typecheck: auto, lintCommand: "npx eslint", preflight: true, timeoutMinutes: 15, defaultEnvironment: sit, requireVerifiedToPush: true }
 ```
 
 ## CI
@@ -207,7 +227,7 @@ The order follows external review #1 ([response](docs/REVIEW-RESPONSE-1.md)):
 | v0.2.x | ShopLite sandbox and historical replay ✅; real GitLab pilot (read-only on historical MRs first) |
 | v0.2.x ✅ | Jira as a report target (`reporting.targets: [gitlab-mr, jira]`): one updated comment per story, Jira formatting, size-capped with a link to the full report |
 | **v0.3** ✅ | Decision engine, requirement traceability from test tags, regression selection, independent AI test review, `kb/` |
-| v0.4 | Multi-service: auto-assembled feature manifests with deployment readiness, contract impact |
+| **v0.4** ✅ | Plain-language Jira comments, lower-environment runs before the MR, Showcase evidence on the story (once), feature manifests with deployment readiness |
 | v0.5 | Web (Playwright, optional [Bubblegum](https://github.com/bishnu133/bubblegum) healing) and Mobile (WebdriverIO + Appium) via a cross-platform workflow planner and shared data layer |
 | Later | Learning from review feedback, mutation checks in the benchmark, alternative engines |
 

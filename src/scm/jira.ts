@@ -176,8 +176,9 @@ export async function upsertIssueComment(
   service: string,
   wikiBody: string,
   visibility?: { type: "role" | "group"; value: string },
+  markerText: string = jiraMarker(service),
 ): Promise<{ action: "created" | "updated"; id: string; url: string }> {
-  const marker = jiraMarker(service);
+  const marker = markerText;
   const base = `/rest/api/2/issue/${encodeURIComponent(key)}/comment`;
   let existing: any;
   for (let startAt = 0; !existing; ) {
@@ -196,4 +197,49 @@ export async function upsertIssueComment(
   }
   const created = await jiraCall(ctx, "POST", base, payload);
   return { action: "created", id: String(created.id), url: `${ctx.baseUrl}/browse/${key}?focusedCommentId=${created.id}` };
+}
+
+// ---------------------------------------------------------------------------------------------
+// Showcase: labels, issue properties (what we attached) and attachments.
+
+export async function issueLabels(ctx: JiraContext, key: string): Promise<string[]> {
+  const j = await jiraCall(ctx, "GET", `/rest/api/2/issue/${encodeURIComponent(key)}?fields=labels`);
+  return j.fields?.labels ?? [];
+}
+
+export async function removeLabel(ctx: JiraContext, key: string, label: string): Promise<void> {
+  await jiraCall(ctx, "PUT", `/rest/api/2/issue/${encodeURIComponent(key)}`, { update: { labels: [{ remove: label }] } });
+}
+
+export async function getIssueProperty<T = unknown>(ctx: JiraContext, key: string, prop: string): Promise<T | undefined> {
+  try {
+    const j = await jiraCall(ctx, "GET", `/rest/api/2/issue/${encodeURIComponent(key)}/properties/${encodeURIComponent(prop)}`);
+    return j.value as T;
+  } catch (e) {
+    if (/: 404 /.test((e as Error).message)) return undefined;
+    throw e;
+  }
+}
+
+export async function setIssueProperty(ctx: JiraContext, key: string, prop: string, value: unknown): Promise<void> {
+  await jiraCall(ctx, "PUT", `/rest/api/2/issue/${encodeURIComponent(key)}/properties/${encodeURIComponent(prop)}`, value);
+}
+
+/** Upload one file as an attachment (multipart; Jira requires the no-check XSRF header). */
+export async function attachFile(ctx: JiraContext, key: string, fileName: string, data: Buffer, contentType = "application/octet-stream"): Promise<{ id: string; filename: string }> {
+  const form = new FormData();
+  form.append("file", new Blob([new Uint8Array(data)], { type: contentType }), fileName);
+  const res = await fetch(`${ctx.baseUrl}/rest/api/2/issue/${encodeURIComponent(key)}/attachments`, {
+    method: "POST",
+    headers: { Authorization: ctx.authHeader, Accept: "application/json", "X-Atlassian-Token": "no-check" },
+    body: form,
+  });
+  const text = await res.text();
+  if (!res.ok) throw new Error(`Jira attach ${fileName} to ${key}: ${res.status} ${text.slice(0, 200)}`);
+  const [a] = JSON.parse(text);
+  return { id: String(a.id), filename: a.filename };
+}
+
+export async function deleteAttachment(ctx: JiraContext, id: string): Promise<void> {
+  await jiraCall(ctx, "DELETE", `/rest/api/2/attachment/${encodeURIComponent(id)}`);
 }

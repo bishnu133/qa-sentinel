@@ -69,7 +69,24 @@ export function parseTags(raw: string): Pick<IndexedTest, "services" | "endpoint
 export function constSubstituter(src: string): (s: string) => string {
   const consts = new Map<string, string>();
   for (const m of src.matchAll(CONST)) consts.set(m[1], m[3]);
-  return (s: string) => s.replace(/\$\{\s*([A-Za-z_$][\w$]*)\s*\}/g, (m, n: string) => consts.get(n) ?? m);
+  // Small tag helpers: const tags = (ac: string) => `@story:S-1 @ac:${ac}`; used as ${tags("AC-3")}.
+  const helpers = new Map<string, { params: string[]; body: string }>();
+  for (const m of src.matchAll(/\bconst\s+([A-Za-z_$][\w$]*)\s*=\s*\(([^)]*)\)\s*(?::\s*\w+\s*)?=>\s*`([^`]*)`/g)) {
+    helpers.set(m[1], { params: m[2].split(",").map((p) => p.split(/[:=]/)[0].trim()).filter(Boolean), body: m[3] });
+  }
+  const call = (name: string, rawArgs: string) => {
+    const h = helpers.get(name);
+    if (!h) return undefined;
+    const args = [...rawArgs.matchAll(/(["'`])((?:\\.|(?!\1).)*)\1/g)].map((a) => a[2]);
+    return h.body.replace(/\$\{\s*([A-Za-z_$][\w$]*)\s*\}/g, (m, n: string) => {
+      const i = h.params.indexOf(n);
+      return i >= 0 && args[i] !== undefined ? args[i] : (consts.get(n) ?? m);
+    });
+  };
+  return (s: string) =>
+    s
+      .replace(/\$\{\s*([A-Za-z_$][\w$]*)\s*\(([^)]*)\)\s*\}/g, (m, n: string, a: string) => call(n, a) ?? m)
+      .replace(/\$\{\s*([A-Za-z_$][\w$]*)\s*\}/g, (m, n: string) => consts.get(n) ?? m);
 }
 
 export function indexSource(file: string, src: string): IndexedTest[] {

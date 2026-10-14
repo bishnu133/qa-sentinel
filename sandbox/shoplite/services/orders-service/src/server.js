@@ -7,6 +7,8 @@ const NOTIFICATIONS_URL = process.env.NOTIFICATIONS_URL || "http://localhost:300
 const orders = new Map();
 
 app.get("/orders/health", (_req, res) => res.json({ status: "ok", service: "orders" }));
+// Which commit is running (qa-sentinel feature readiness reads this).
+app.get("/orders/version", (_req, res) => res.json({ service: "orders-service", commit: process.env.GIT_SHA || "unknown" }));
 
 async function post(url, body) {
   const res = await fetch(url, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });

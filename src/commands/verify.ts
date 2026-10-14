@@ -1,3 +1,4 @@
+import { useEnvironment } from "../run.js";
 import fs from "node:fs";
 import path from "node:path";
 import { loadConfig } from "../config.js";
@@ -14,6 +15,8 @@ export interface VerifyOptions {
   /** Apply the agent write policy (use on qa-sentinel/* branches). */
   policy?: boolean;
   out?: string;
+  /** Named environment from `environments:`. */
+  env?: string;
 }
 
 /**
@@ -23,6 +26,7 @@ export interface VerifyOptions {
 export async function verifyCommand(o: VerifyOptions): Promise<number> {
   const cwd = path.resolve(o.cwd);
   const c = loadConfig(cwd);
+  useEnvironment(c, o.env);
   const baseRef = o.base ?? process.env.CI_MERGE_REQUEST_DIFF_BASE_SHA ?? `origin/${c.ci.targetBranch}`;
   const base = git(cwd, ["merge-base", resolveSha(cwd, baseRef), "HEAD"]);
   const changes = changesSince(cwd, base).filter((x) => !matchesAny(x.path, ARTIFACT_GLOBS));

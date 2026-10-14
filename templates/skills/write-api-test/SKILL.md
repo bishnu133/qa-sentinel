@@ -24,7 +24,8 @@ These conventions ship with the qa-sentinel Playwright scaffold. Change them her
   Use `@ac:none` for a test that deliberately goes beyond the ACs (e.g. contract-only behaviour). Only tag ACs the
   test really proves: an unrelated setup call doesn't count (an independent reviewer checks this).
   qa-sentinel builds the requirement → test matrix in the MR from these tags, so a test without them is invisible
-  to traceability. Tags may come from a `const tags = "…"` in the same file. Use the endpoint exactly as in test-map.yaml
+  to traceability. qa-sentinel reads tags statically: write them as literal text, a string constant (`const tags = "…"`),
+  or a one-line helper (`const tags = (ac: string) => \`… @ac:${ac}\``) in the same file, nothing more dynamic. Use the endpoint exactly as in test-map.yaml
   (`METHOD_/path/{param}`).
 - **Known product bug / AC mismatch:** `test.fixme(...)` with a comment `// QA-AGENT: <mismatch>`.
 - **Example:** `{{apiDir}}/example/health.spec.ts`.

@@ -30,7 +30,7 @@ for svc in payments-service notifications-service orders-service; do
   fi
   if [ ! -d "$dir/node_modules" ]; then (cd "$dir" && (npm ci --omit=dev --silent || npm install --omit=dev --silent)); fi
   # Fully detached (own session, no inherited stdin/stdout), so callers reading our output never hang.
-  (cd "$dir" && PORT="$(port_of "$svc")" PAYMENTS_URL=http://127.0.0.1:3002 NOTIFICATIONS_URL=http://127.0.0.1:3003 \
+  (cd "$dir" && GIT_SHA="$(git rev-parse HEAD 2>/dev/null || echo unknown)" PORT="$(port_of "$svc")" PAYMENTS_URL=http://127.0.0.1:3002 NOTIFICATIONS_URL=http://127.0.0.1:3003 \
     detach node src/server.js "$QA_ENV_DIR/logs/$svc.log")
 done
 detach node "$HERE/gateway.js" "$QA_ENV_DIR/logs/gateway.log"
