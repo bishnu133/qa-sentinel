@@ -258,7 +258,11 @@ function buildApp() {
 
 /** Device and app for the mobile tests: the emulator via Appium, the APK just built. */
 function mobileEnv() {
-  return { QA_MOBILE_PLATFORM: "android", QA_APP: path.join(work, APP, "build/shoplite.apk") };
+  // The sandbox installs and launches its own APK. An installed-app setting left in the shell (e.g. QA_APP_PACKAGE=
+  // com.android.settings from trying the Settings app) would make Appium launch that app instead: blank it out.
+  const stale = ["QA_APP_PACKAGE", "QA_APP_ACTIVITY", "QA_BUNDLE_ID"].filter((k) => process.env[k]);
+  if (stale.length) log(`mobile: ignoring ${stale.map((k) => `${k}=${process.env[k]}`).join(", ")} from your shell (the sandbox uses its own app)`);
+  return { QA_MOBILE_PLATFORM: "android", QA_APP: path.join(work, APP, "build/shoplite.apk"), QA_APP_PACKAGE: "", QA_APP_ACTIVITY: "", QA_BUNDLE_ID: "" };
 }
 
 /** Appium must be up (and an emulator running) before the mobile tests; say so clearly instead of failing later. */
