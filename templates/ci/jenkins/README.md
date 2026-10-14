@@ -11,6 +11,7 @@
 - `qa-sentinel-gitlab-token` – secret text, GitLab token with `api` scope (MR comments, opening MRs)
 - `gitlab-checkout` – username/password for cloning and pushing
 - `qa-base-url` – secret text with the QA environment URL
+- Optional, for Jira requirements: bind `JIRA_EMAIL` + `JIRA_API_TOKEN` (Cloud) or `JIRA_PAT` (Server/DC) with `withCredentials`. The CLI uses them; agents never see them.
 
 ## Notes
 - MR comments use the GitLab API, so repos hosted on GitLab get the same experience as GitLab CI. The gap-report job maps the GitLab plugin's `gitlabMergeRequestIid` / `gitlabMergeRequestTargetProjectId` to what qa-sentinel expects.

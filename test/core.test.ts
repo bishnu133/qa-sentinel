@@ -115,7 +115,7 @@ describe("init", () => {
     for (const f of [
       ".claude/agents/change-analyzer.md",
       ".claude/agents/api-test-author.md",
-      ".claude/skills/qa-gap-report/SKILL.md",
+      ".claude/skills/qa-plan/SKILL.md",
       ".claude/skills/write-api-test/SKILL.md",
       ".claude/qa-sentinel.md",
       "ci/qa-sentinel/Jenkinsfile.gap-report",
@@ -130,6 +130,9 @@ describe("init", () => {
     const map = YAML.parse(fs.readFileSync(path.join(root, "test-map.yaml"), "utf8"));
     expect(map.unmapped).toEqual(["specs/api/orders.test.ts"]);
     expect(fs.existsSync(path.join(root, "playwright.config.ts"))).toBe(false);
+    // Non-interactive init starts at level 1 (read-only): no generation pipeline.
+    expect(cfg.level).toBe("intelligence");
+    expect(fs.existsSync(path.join(root, "ci/qa-sentinel/Jenkinsfile.generate"))).toBe(false);
   });
 
   it("scratch mode scaffolds a Playwright API framework", async () => {

@@ -35,6 +35,7 @@ program
   .description("set up qa-sentinel in this test repo (existing project or from scratch)")
   .addOption(new Option("--mode <mode>", "existing | scratch").choices(["existing", "scratch"]))
   .addOption(new Option("--ci <platform>", "gitlab | jenkins").choices(["gitlab", "jenkins"]))
+  .addOption(new Option("--level <level>", "intelligence (read-only, default) | maintenance (also generate tests)").choices(["intelligence", "maintenance"]))
   .addOption(new Option("--api-framework <name>").choices([...API_FRAMEWORKS]))
   .option("--workspace <dir>", "folder containing the service repos", "..")
   .option("--name <name>", "project name")
@@ -70,7 +71,7 @@ program
   .option("-o, --out <file>", "where to write the report", "qa-gap-report.md")
   .option("--post", "post or update the report as a GitLab MR comment")
   .option("--dry-run", "do everything except call Claude")
-  .action(wrap(async (o) => gapReportCommand({ cwd: cwd(), ...o })));
+  .action(wrap(async (o) => (await gapReportCommand({ cwd: cwd(), ...o })).exitCode));
 
 program
   .command("generate")

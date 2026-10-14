@@ -16,6 +16,7 @@ Two files, two repos:
 ## Setup checklist
 - [ ] Masked variables in both repos (group level is easiest): `ANTHROPIC_API_KEY`, `QA_SENTINEL_GITLAB_TOKEN`
 - [ ] `{{baseUrlEnv}}` in this repo, pointing to the QA environment
+- [ ] Using Jira for requirements: `JIRA_EMAIL` + `JIRA_API_TOKEN` (Cloud) or `JIRA_PAT` (Server/DC) as masked variables in both repos. They are used by the CLI only and never passed to agents.
 - [ ] `QA_TESTS_PROJECT` in each service repo's `variables:`
 - [ ] Job token allowlist: this repo's CI_JOB_TOKEN can read service repos, service repos' tokens can read this repo
 - [ ] `ci.testRepoProject` set in `qa-sentinel.config.yaml`

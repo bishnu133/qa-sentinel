@@ -127,3 +127,17 @@ Legend: ✅ done in v0.1.1 · 🟡 partly done · 📅 planned (release) · ↔�
 4. No benchmark suite yet beyond two scenarios (v0.2).
 5. OS and network isolation of test execution depends on the CI runner's configuration.
 6. Multi-service features, Web and Mobile: v0.4 and v0.5, as above.
+
+## E. Update: v0.2 (built after this response)
+
+| Review item | v0.1.1 status | v0.2 |
+| --- | --- | --- |
+| §6 Structured contracts (Zod TestPlan) | 📅 | ✅ The plan is the only AI→code handoff. Strict schema, cross-field rules, one repair round, conflicting→review correction. Reports and MR descriptions are rendered from it. |
+| §5 Test Decision Engine | 🟡 | 🟡+ Decisions are machine-validated and `generate` acts only on update/create/review. The *judgement* of coverage is still the agent's, checked by rules and the benchmark. |
+| §8 Risk | 🟡 | ✅ Computed in code from evidence-backed factors. The rule is readable and the same everywhere. Facts known to qa-sentinel (breaking contract, conflict, consumers) add factors. |
+| §4 Deterministic contract diff | 📅 | ✅ OpenAPI base→head diff, breaking vs compatible, fed to the agent as fact and shown in reports |
+| §13 Engine interface | 📅 | ✅ `AgentEngine` + `ClaudeCodeEngine` |
+| §15 Benchmark | 📅 | ✅ 8 scenarios covering 8 of the 12 review cases at analysis level (the rest mapped in `bench/README.md`). Real runs: last 3 full runs 100% recall/precision/decision accuracy; the first run (88%) found 4 real defects, which were fixed. |
+| §7 Approval from a tracker | ↔️ | ✅ Jira: approval comes from the issue status (`approvedStatuses`). **Change of plan:** we used Jira REST from the CLI instead of an MCP server inside the agent. It is deterministic, and it keeps tracker credentials away from the model. |
+| §17 Operating levels | 📅 | ✅ `level: intelligence` (default) or `maintenance`. `generate` and the CI templates respect it. |
+| Real GitLab pilot | open | still open: needs a real project (next) |

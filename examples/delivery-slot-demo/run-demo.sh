@@ -19,7 +19,7 @@ npm install --no-audit --no-fund --silent
 
 # 2. Test repo from the scratch scaffold, with one existing orders spec
 mkdir -p "$W/qa-tests" && cd "$W/qa-tests"
-$CLI init --yes --mode scratch --ci gitlab --workspace .. --name shop-tests
+$CLI init --yes --mode scratch --ci gitlab --level maintenance --workspace .. --name shop-tests
 mkdir -p tests/api/orders && cp "$HERE/create-order.spec.before.ts" tests/api/orders/create-order.spec.ts
 cp "$HERE/story-SHOP-42.md" .
 npm install --no-audit --no-fund --silent

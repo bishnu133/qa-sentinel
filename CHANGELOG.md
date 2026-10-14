@@ -1,5 +1,49 @@
 # Changelog
 
+## 0.2.0 — Trusted plans
+
+### Structured plan between AI and code
+- **TestPlan** (Zod, `src/plan/schema.ts`): changes with evidence, oracle status, risk factors, and one decision per change (reuse / update / create / review / skip). It is the only handoff from the agent; prose is never parsed.
+- **Validation in code:** strict schema plus cross-field rules. For example:
+  - `reuse` needs `covered`;
+  - `update` needs an existing spec and scenarios;
+  - `skip` needs evidence and a non-observable change;
+  - AC ids must exist;
+  - test files must exist;
+  - no "approved" oracle without requirements.
+
+  One repair round, then the run fails honestly.
+- **Safety correction:** a conflicting oracle is always forced to `review`.
+- **Risk computed in code** from evidence-backed factors (critical for auth, money or personal data; high for business rules, breaking contracts and similar). `breaking-contract`, `conflicting-oracle` and `cross-service` are derived by qa-sentinel. Non-observable changes are low.
+- **Gap reports are rendered from the validated plan:** same structure every time, plus a computed contract-diff section and an analysis-incomplete fallback.
+- **`generate` is split into plan → validate → author.** The author implements only update/create/review decisions. When every decision is reuse/skip, nothing is generated.
+
+### Deterministic analysis
+- **OpenAPI contract diff** between base and head (`src/analysis/contractDiff.ts`). It resolves local `$ref`s and covers:
+  - operations, params, request and response fields;
+  - required, type, nullability, enums and constraints;
+  - status codes.
+
+  Each change is classified as breaking or compatible, for requests and responses separately.
+
+### Requirements
+- **Jira** (Cloud and Server/DC, REST v2): the story key comes from the MR title, branch or commit messages, limited to `projectKeys`. Acceptance criteria come from a custom field or the description, with wiki markup and ADF normalised. **Approval comes from the issue status** (`approvedStatuses`). Credentials are CLI-only.
+
+### Product
+- **Operating levels:**
+  - `intelligence` (default for new projects): read-only;
+  - `maintenance`: generation enabled.
+
+  CI templates and `generate` respect the level.
+- **`AgentEngine` interface** with `ClaudeCodeEngine`, so other runtimes stay possible.
+- **Benchmark** (`npm run bench`): 8 scenarios from the external review, scored on gap recall, gap precision, decision accuracy and checks, with real runs recorded in `bench/results/`.
+- `doctor` checks the Jira configuration and the operating level.
+
+### Fixed by the benchmark
+- The skill was missing the shapes of some list entries, and the schema rejected `null` for optional fields; both caused avoidable repair rounds.
+- A refactor of validation code was rated medium risk; non-observable changes are now low.
+- Inconsistent `money` tagging is fixed with explicit definitions of the sensitive factors.
+
 ## 0.1.1 — Safety and correctness
 
 Addresses external review #1 (see [docs/REVIEW-RESPONSE-1.md](docs/REVIEW-RESPONSE-1.md)).

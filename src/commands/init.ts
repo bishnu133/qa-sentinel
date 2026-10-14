@@ -11,6 +11,7 @@ import { log } from "../log.js";
 export interface InitOptions {
   cwd: string;
   mode?: "existing" | "scratch";
+  level?: "intelligence" | "maintenance";
   workspace?: string;
   ci?: "gitlab" | "jenkins";
   apiFramework?: Config["tests"]["api"]["framework"];
@@ -73,6 +74,20 @@ export async function initCommand(opts: InitOptions): Promise<Config> {
   if (!services.length) log.warn("No service repos added. Edit workspace.services in the config later.");
 
   // 4. CI
+  // 4b. Operating level: start read-only unless the team opts into generation.
+  const level =
+    opts.level ??
+    (interactive
+      ? await select({
+          message: "Operating level",
+          default: "intelligence" as const,
+          choices: [
+            { name: "1 · QA intelligence – read-only gap reports, risk and requirement conflicts on every MR (recommended start)", value: "intelligence" as const },
+            { name: "2 · Assisted test maintenance – also generate/update API tests through reviewed MRs", value: "maintenance" as const },
+          ],
+        })
+      : "intelligence");
+
   const ci =
     opts.ci ??
     (interactive
@@ -99,6 +114,7 @@ export async function initCommand(opts: InitOptions): Promise<Config> {
   const config: Config = ConfigSchema.parse({
     version: 1,
     mode,
+    level,
     project: { name: projectName },
     workspace: {
       services: services.map((s) => ({ name: s.name, path: s.path, openapi: s.openapi, dependsOn: [] })),
@@ -162,6 +178,8 @@ export function templateVars(c: Config): TemplateVars {
     projectName: c.project.name,
     mode: c.mode,
     isScratch: c.mode === "scratch",
+    level: c.level,
+    isMaintenance: c.level === "maintenance",
     isExisting: c.mode === "existing",
     apiFramework: c.tests.api.framework,
     isPlaywright: c.tests.api.framework === "playwright",
@@ -200,7 +218,10 @@ export function writeTemplates(cwd: string, c: Config, vars: TemplateVars, force
   }
 
   const ciDir = `ci/${c.ci.platform}`;
-  for (const f of listTemplateDir(ciDir)) put(`ci/qa-sentinel/${f}`, render(readTemplate(`${ciDir}/${f}`), vars));
+  for (const f of listTemplateDir(ciDir)) {
+    if (c.level === "intelligence" && f === "Jenkinsfile.generate") continue; // generation is off at level 1
+    put(`ci/qa-sentinel/${f}`, render(readTemplate(`${ciDir}/${f}`), vars));
+  }
 
   if (c.mode === "scratch") {
     for (const f of listTemplateDir("scaffold/playwright-api")) {
@@ -256,6 +277,11 @@ function mergePackageJson(cwd: string) {
 
 function printNextSteps(c: Config) {
   log.title("Next steps");
+  log.info(
+    c.level === "intelligence"
+      ? "  Level 1 (QA intelligence): read-only reports on every MR. Switch to level: maintenance when the team trusts them."
+      : "  Level 2 (assisted test maintenance): reports on every MR, and generated tests through reviewed MRs.",
+  );
   const steps = [
     c.mode === "scratch" ? "npm install && npx playwright install --with-deps chromium" : undefined,
     "Review qa-sentinel.config.yaml (services, run command, GitLab project)",

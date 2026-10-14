@@ -4,6 +4,11 @@ import type { RequirementSnapshot } from "./requirements.js";
 import { requirementsLine } from "./requirements.js";
 import type { Discrepancy, VerificationReport } from "./verification.js";
 import { STATUS_BADGE, verificationMarkdown } from "./verification.js";
+import type { ContractDiff } from "./analysis/contractDiff.js";
+import { contractDiffMarkdown } from "./analysis/contractDiff.js";
+import type { RiskLevel, TestPlan } from "./plan/schema.js";
+import type { RiskedChange } from "./plan/risk.js";
+import { RISK_BADGE, decisionTable } from "./plan/render.js";
 
 export interface MrDescriptionInput {
   service: string;
@@ -16,6 +21,8 @@ export interface MrDescriptionInput {
   agentSummary: string;
   usage: string;
   runId: string;
+  /** The validated plan behind the change (decision table, risk, contract diff). */
+  plan?: { plan: TestPlan; risked: { changes: RiskedChange[]; overall: RiskLevel }; contract: ContractDiff; specPath?: string; corrections: string[] };
 }
 
 /**
@@ -25,12 +32,17 @@ export interface MrDescriptionInput {
 export function mrDescription(i: MrDescriptionInput): string {
   const warnings = i.findings.filter((f) => f.level === "warning");
   const parts = [
-    `## QA agent: ${i.service}@${i.sha.slice(0, 8)} · ${STATUS_BADGE[i.verification.status]}`,
+    `## QA agent: ${i.service}@${i.sha.slice(0, 8)} · ${STATUS_BADGE[i.verification.status]}${i.plan ? ` · ${RISK_BADGE[i.plan.risked.overall]} risk` : ""}`,
     "",
     requirementsLine(i.requirements),
     "",
     verificationMarkdown(i.verification),
   ];
+  if (i.plan) {
+    parts.push("", "### Plan (validated by qa-sentinel)", i.plan.plan.verdict, "", decisionTable(i.plan.plan, i.plan.risked.changes));
+    if (i.plan.corrections.length) parts.push("", ...i.plan.corrections.map((x) => `- correction: ${x}`));
+    parts.push("", contractDiffMarkdown(i.plan.contract, i.plan.specPath));
+  }
   if (i.discrepancies.length) {
     parts.push(
       "",
