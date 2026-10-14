@@ -49,6 +49,14 @@ test("not found @service:storefront @page:/orders/:id", async () => {});`,
     expect(sel.tests[0].reasons).toEqual(["changed-page"]);
     expect(sel.serviceWide).toBe(false);
   });
+
+  it("keeps a changed page to its own service (an app screen and a web route can share a name)", () => {
+    const app = indexSource("tests/mobile/orders/order.spec.ts", `it("shows status @service:shoplite-app @screen:orders/:id", async () => {});`);
+    const c: any = { workspace: { services: [{ name: "storefront", dependsOn: [] }, { name: "shoplite-app", kind: "mobile", dependsOn: [] }] } };
+    const change = { id: "c1", type: "ui-change", page: "orders/:id", summary: "s", observable: true, requirementIds: [], oracleStatus: "approved", riskFactors: ["ui-visible"], evidence: [] };
+    const sel = selectRegression({ c, service: "shoplite-app", plan: { changes: [change], decisions: [], impactedTests: [] } as any, index: [...web, ...app], map: undefined });
+    expect(sel.args).toEqual(["tests/mobile/orders/order.spec.ts:1"]);
+  });
 });
 
 describe("page exploration", () => {
