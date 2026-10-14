@@ -43,7 +43,9 @@ export async function lessonsCommand(o: LessonsOptions): Promise<number> {
     log.ok("nothing new to learn: no agent MR was edited before merge since the last run");
     return 0;
   }
-  if (workingChanges(cwd).some((x) => !matchesAny(x.path, ARTIFACT_GLOBS))) throw new Error("The test repo has uncommitted changes; commit or stash them first.");
+  // qa-sentinel's own agents and skills may be new after an upgrade (not committed yet): not the team's work in progress.
+  const OWN = [".claude/agents/**", ".claude/skills/**"];
+  if (workingChanges(cwd).some((x) => !matchesAny(x.path, [...ARTIFACT_GLOBS, ...OWN]))) throw new Error("The test repo has uncommitted changes; commit or stash them first.");
   const run = createRunDir(cwd, "lessons");
   if (o.dryRun) {
     for (const e of edits) log.info(`  ${e.sha.slice(0, 8)} ${e.subject} (${e.how}; reviewer changed ${e.files.join(", ")})`);
@@ -51,10 +53,12 @@ export async function lessonsCommand(o: LessonsOptions): Promise<number> {
   }
   ensureAgentFiles(cwd, c);
   const start = resolveSha(cwd, "HEAD");
+  // What was already changed before the agent ran (e.g. a skill this version just added) is not the agent's doing.
+  const before = new Set(workingChanges(cwd).map((x) => x.path));
   const r = await learnLessons({ cwd, c, run, engine: o.engine ?? engineFor(c), edits, lessonsPath, existingHeadings: lessonHeadings(current) });
   const usage = formatUsage(addUsage(...r.runs));
   // Read-only agent: nothing in the repo may have changed but its output in the run directory.
-  const touched = workingChanges(cwd).filter((x) => !matchesAny(x.path, ARTIFACT_GLOBS));
+  const touched = workingChanges(cwd).filter((x) => !matchesAny(x.path, ARTIFACT_GLOBS) && !before.has(x.path));
   if (touched.length) {
     log.fail(`the agent changed files it must not touch: ${touched.map((x) => x.path).join(", ")}; nothing proposed`);
     git(cwd, ["checkout", "-q", "-f", start]);
