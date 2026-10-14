@@ -59,6 +59,13 @@ function testsToMain() {
   const dirty = spawnSync("git", ["diff", "--quiet", "HEAD", "--", "qa-sentinel.config.yaml"], { cwd: tests }).status === 1;
   const edited = dirty ? fs.readFileSync(cfg, "utf8") : undefined;
   git(tests, "checkout", "-q", "-f", "main");
+  // Untracked leftovers (e.g. files from an interrupted run) survive a forced checkout and make the next generate
+  // refuse to start ("uncommitted changes"). Stash them rather than delete: `git stash list` / `git stash pop` in qa-tests.
+  const left = spawnSync("git", ["status", "--porcelain"], { cwd: tests, encoding: "utf8" }).stdout.trim();
+  if (left) {
+    git(tests, "-c", "user.name=sandbox", "-c", "user.email=sandbox@shoplite.test", "stash", "push", "-q", "-u", "-m", "local.mjs: leftovers before reset");
+    log(`stashed ${left.split("\n").length} leftover file(s) in qa-tests (see: git -C ${path.relative(process.cwd(), tests) || "."} stash show -u --stat)`);
+  }
   if (edited !== undefined && edited !== fs.readFileSync(cfg, "utf8")) {
     fs.writeFileSync(cfg, edited);
     git(tests, "add", "qa-sentinel.config.yaml");
