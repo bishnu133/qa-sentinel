@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.7.1 — Credentials masked in everything published; fixes from the first macOS run
+
+- **Credentials never published:** before anything goes to GitLab (MR descriptions, notes) or Jira (comments, bug cards, text attachments), the values of credential-like environment variables and the `user:password@` part of any URL are replaced with `[redacted]`. Agents and test runs need some credentials, such as a device farm's key inside `QA_APPIUM_URL`, so agent-written text could otherwise quote one. `doctor` no longer prints the Appium URL's credentials.
+- **AC numbering:** `story-check` warns when a story's ACs aren't numbered (ids by position shift when an AC is inserted or reordered); ONBOARDING step 3d explains why to number them.
+- **macOS:** Finder's `.DS_Store` files (and `Thumbs.db`, `desktop.ini`) no longer count as changes: `lessons` and `generate` refused to run because of them. `init` adds them to `.gitignore`.
+- `lessons`: no "fatal: path … does not exist" on a first run; after a refusal it returns to the starting branch (not a detached HEAD).
+- Sandbox: `build.sh` accepts minor SDK platforms (`android-36.1`); mobile runs ignore `QA_APP_PACKAGE`/`QA_APP_ACTIVITY` left in the shell; `reset` stashes untracked leftovers in qa-tests.
+
 ## 0.7.0 — Learning from review, mobile end to end in the sandbox
 
 ### Learning from review

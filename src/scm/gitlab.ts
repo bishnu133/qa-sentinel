@@ -1,4 +1,5 @@
 /** Thin GitLab REST client: MR notes, MR creation/update, commit→MR lookup. Retries transient failures. */
+import { maskSecrets } from "../secrets.js";
 export interface GitLabContext {
   apiUrl: string; // e.g. https://gitlab.com/api/v4
   token: string;
@@ -34,7 +35,8 @@ export async function call(ctx: GitLabContext, method: string, route: string, bo
       const res = await fetch(`${ctx.apiUrl}${route}`, {
         method,
         headers: { "PRIVATE-TOKEN": ctx.token, "Content-Type": "application/json" },
-        body: body ? JSON.stringify(body) : undefined,
+        // Agent-written text may carry a credential the tests needed: masked before it is published.
+        body: body ? maskSecrets(JSON.stringify(body)) : undefined,
       });
       const text = await res.text();
       if (res.ok) return { data: text ? JSON.parse(text) : undefined, headers: res.headers };

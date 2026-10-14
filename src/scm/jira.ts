@@ -4,6 +4,7 @@
  *
  * Auth: Cloud → JIRA_EMAIL + JIRA_API_TOKEN (basic); Server/DC → JIRA_PAT (bearer).
  */
+import { maskSecrets } from "../secrets.js";
 import { netFetch } from "../net.js";
 
 export interface JiraContext {
@@ -183,7 +184,7 @@ async function jiraCall(ctx: JiraContext, method: string, route: string, body?: 
     const res = await netFetch(`${ctx.baseUrl}${route}`, {
       method,
       headers: { Authorization: ctx.authHeader, Accept: "application/json", "Content-Type": "application/json" },
-      body: body ? JSON.stringify(body) : undefined,
+      body: body ? maskSecrets(JSON.stringify(body)) : undefined,
     });
     if ((res.status === 429 || res.status >= 500) && attempt < 4) {
       const wait = Number(res.headers.get("retry-after")) * 1000 || 500 * 2 ** attempt;
@@ -255,7 +256,9 @@ export async function setIssueProperty(ctx: JiraContext, key: string, prop: stri
 /** Upload one file as an attachment (multipart; Jira requires the no-check XSRF header). */
 export async function attachFile(ctx: JiraContext, key: string, fileName: string, data: Buffer, contentType = "application/octet-stream"): Promise<{ id: string; filename: string }> {
   const form = new FormData();
-  form.append("file", new Blob([new Uint8Array(data)], { type: contentType }), fileName);
+  const isText = /^text\/|json|markdown|xml|yaml/i.test(contentType) || /\.(md|txt|json|log|ya?ml|xml|csv|html?)$/i.test(fileName);
+  const bytes = isText ? Buffer.from(maskSecrets(data.toString("utf8")), "utf8") : data;
+  form.append("file", new Blob([new Uint8Array(bytes)], { type: contentType }), fileName);
   const res = await netFetch(`${ctx.baseUrl}/rest/api/2/issue/${encodeURIComponent(key)}/attachments`, {
     method: "POST",
     headers: { Authorization: ctx.authHeader, Accept: "application/json", "X-Atlassian-Token": "no-check" },
