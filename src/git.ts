@@ -69,7 +69,10 @@ export interface FileChange {
   from?: string;
 }
 
-/** Uncommitted changes (tracked + untracked), parsed from `git status -z` so paths are never mangled. */
+/** Files the OS drops into folders (Finder, Explorer): never anyone's work, so never a change. */
+export const OS_JUNK = /(^|\/)(\.DS_Store|Thumbs\.db|desktop\.ini)$/i;
+
+/** Uncommitted changes (tracked + untracked), parsed from `git status -z` so paths are never mangled. OS junk is skipped. */
 export function workingChanges(repo: string): FileChange[] {
   const raw = execFileSync("git", ["status", "--porcelain=v1", "-z", "--untracked-files=all"], { cwd: repo, encoding: "utf8" });
   const out: FileChange[] = [];
@@ -85,7 +88,7 @@ export function workingChanges(repo: string): FileChange[] {
       out.push({ path: p, status: letter });
     }
   }
-  return out;
+  return out.filter((c) => !OS_JUNK.test(c.path));
 }
 
 /** Paths with uncommitted changes, including both sides of renames. */

@@ -423,7 +423,7 @@ function writeKbReadme(cwd: string, c: Config) {
 
 function ensureGitignore(cwd: string) {
   const file = path.join(cwd, ".gitignore");
-  const wanted = [".qa-sentinel/runs/", "qa-sentinel-summary.md", "qa-gap-report.md", "qa-regression.txt", "qa-feature-*", "qa-showcase.md", "qa-showcase/", "qa-verify.md", "qa-healed.md", "qa-healed.json", "qa-story-review.md", "qa-story-check.md", "qa-metrics.md", "qa-lessons.md", "test-results/", "playwright-report/", "node_modules/", ".env"];
+  const wanted = [".qa-sentinel/runs/", "qa-sentinel-summary.md", "qa-gap-report.md", "qa-regression.txt", "qa-feature-*", "qa-showcase.md", "qa-showcase/", "qa-verify.md", "qa-healed.md", "qa-healed.json", "qa-story-review.md", "qa-story-check.md", "qa-metrics.md", "qa-lessons.md", "test-results/", "playwright-report/", "node_modules/", ".env", ".DS_Store", "Thumbs.db"];
   const current = fs.existsSync(file) ? fs.readFileSync(file, "utf8") : "";
   const have = new Set(current.split(/\r?\n/).map((l) => l.trim()));
   const missing = wanted.filter((l) => !have.has(l));
