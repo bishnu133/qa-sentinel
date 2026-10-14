@@ -148,6 +148,27 @@ cd ../..
 - **Bug cards:** set `bugs: { mode: suggest }` (or `create`) in `shoplite-local/qa-tests/qa-sentinel.config.yaml` and run SHOP-107 with `--generate`: the planted total bug becomes a proposed bug on the story (Jira, Part C), with expected vs actual and the test to reproduce it.
 - **Mobile:** ShopLite has no app, so there is no mobile scenario. To try the layer, `node ../../dist/cli.js add-mobile` in a scratch test repo, then point `QA_APPIUM_URL` at an Appium server with an emulator.
 
+New in v0.7:
+
+```bash
+# Mobile, end to end (an Android emulator and Appium running, see "Mobile prerequisites" below)
+node sandbox/shoplite/local.mjs setup --mobile --level maintenance        # adds the ShopLite Android app and app tests
+node sandbox/shoplite/local.mjs app build                                 # → shoplite-local/shoplite-app/build/shoplite.apk
+node sandbox/shoplite/local.mjs run SHOP-109 --regression --generate --showcase
+
+# Learning from review: edit an agent branch before merging it, then
+cd shoplite-local/qa-tests
+git checkout qa-sentinel/<branch> && $EDITOR tests/...spec.ts && git commit -am "review: …"
+git checkout main && git merge --no-ff qa-sentinel/<branch>
+node ../../dist/cli.js lessons             # → kb/review-lessons.md on branch qa-sentinel/review-lessons
+node ../../dist/cli.js metrics             # merged without edits, by month
+cd ../..
+```
+
+- **SHOP-109 (mobile):** the app's order screen gets a payment status and total, and the "can't be loaded" message becomes "Order not found". The gap report should name the existing app test that breaks (`--regression` shows it failing on the emulator); generation updates `OrderScreen` first, writes app tests that create the order through the API and open it by deep link, and with `--showcase` the video is built from the phone recordings.
+- **Mobile prerequisites:** Android Studio's SDK with an emulator image, one **SDK Platform** and **Build-Tools** (Settings › Languages & Frameworks › Android SDK) for `build.sh`; `npm i -g appium && appium driver install uiautomator2`; then `emulator -avd <name> &` and `appium` in their own terminals. The app talks to the QA environment at `http://10.0.2.2:8080` (the host as seen from the emulator).
+- **Lessons:** the agent reads what the reviewer changed and proposes general rules (one-off fixes are skipped). Merge the branch to teach the agents; edit or drop lessons first if you disagree.
+
 Other commands:
 
 ```bash

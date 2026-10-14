@@ -208,6 +208,27 @@ qa-healed:
     expire_in: 4 weeks
 
 {{/if}}
+{{#if isMaintenance}}
+# Learning from review: weekly, turn what reviewers changed in agent MRs before merging into rules in
+# kb/review-lessons.md, proposed as an MR (a human decides what the agents learn). Turn on with a schedule that sets
+# QA_LESSONS=true.
+qa-lessons:
+  extends: .qa-node
+  stage: test
+  variables:
+    GIT_DEPTH: 0
+  rules:
+    - if: $QA_LESSONS == "true" && $CI_PIPELINE_SOURCE == "schedule"
+  script:
+    - !reference [.qa-sentinel-install, script]
+    - git fetch -q origin "{{targetBranch}}" "+refs/heads/qa-sentinel/*:refs/remotes/origin/qa-sentinel/*" || true
+    - qa-sentinel lessons --since 90d --push
+  artifacts:
+    when: always
+    paths: [qa-lessons.md, .qa-sentinel/runs/]
+    expire_in: 4 weeks
+
+{{/if}}
 # Showcase: after a full run of the suite, attach test evidence to every Jira story whose acceptance criteria all
 # passed, once per story (QA can ask again with the "qa-showcase-refresh" label). Turn on with QA_SHOWCASE=true
 # (needs requirements.jira in qa-sentinel.config.yaml and JIRA_EMAIL + JIRA_API_TOKEN, or JIRA_PAT).

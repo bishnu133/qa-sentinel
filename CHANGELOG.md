@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.7.0 (in progress) — Learning from review, mobile end to end in the sandbox
+
+### Learning from review
+- `qa-sentinel lessons [--since] [--push] [--dry-run]`: for agent commits merged with reviewer edits (merge commit: the MR branch after the agent's commit; squash: the agent's files against the squashed result), an agent (read-only, skill `learn-from-review`) writes general lessons with the commits they come from, or skips one-off fixes; code validates them (known commits only; `updates` must name an existing lesson) and writes `kb/review-lessons.md` on `qa-sentinel/review-lessons` (MR with `--push`). The reviewed commits are recorded in the file, so nothing is learned twice.
+- `metrics`: merged-without-edits by month.
+- GitLab template: scheduled `qa-lessons` job (`QA_LESSONS=true`).
+
+### Mobile end to end in the sandbox
+- `local.mjs setup --mobile`: the ShopLite Android app (`services/shoplite-app`: Java, programmatic UI with accessibility ids, deep links `shoplite://orders/<id>`, built by `build.sh` with javac/d8/aapt2/zipalign/apksigner), screen objects (`HomeScreen`, `NewOrderScreen`, `OrderScreen`) and app tests, the app as a `kind: mobile` service with its screens in `test-map.yaml`.
+- Scenario SHOP-109 (mobile). `local.mjs app build`; `run` builds the app from the developer's change, checks Appium and the emulator, runs selected app tests with `--regression`, and includes the app tests in `--showcase`.
+- GitHub Actions `android-sandbox`: builds the app, runs the app tests and `qa-sentinel verify` on an Android emulator.
+- Mobile scaffold: `openDeepLink` takes the app package from the session (installed APKs); `add-mobile` adds `wdio.conf.ts` to `tsconfig.json`.
+
 ## 0.6.0 — One showcase video per story, Mobile, "is the story built?", story-wide runs, bug cards, metrics
 
 ### Showcase pack (replaces the manual Biz showcase)

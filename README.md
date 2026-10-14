@@ -72,6 +72,11 @@ Risk is a fixed rule that you can read: **critical** for auth, money or personal
 - **Knowledge base (`kb/`).** Team-written domain rules and review lessons, read by every agent and citable as `domain-rule` evidence. When a story is silent, a kb rule can be the oracle. Agents can't edit it.
 - **Jira as a report target.** `reporting.targets: [gitlab-mr, jira]` posts the gap report on the story too.
 
+### What's in v0.7 (in progress)
+
+- **Learning from review.** `qa-sentinel lessons` finds agent MRs a QA engineer edited before merging (merge or squash), shows an agent what the reviewer changed, and proposes short, general rules in `kb/review-lessons.md` through an MR; one-off fixes are skipped, repeated ones strengthen an existing lesson. Every agent reads `kb/` on its next run, so a lesson merged today shapes tomorrow's tests. `metrics` shows merged-without-edits **by month**, the number that should rise. GitLab: a weekly `qa-lessons` job (`QA_LESSONS=true` on a schedule).
+- **Mobile end to end in the sandbox.** `setup --mobile` adds a native ShopLite Android app (plain Java, built with the SDK tools by `build.sh`, no Gradle) with screen objects and app tests, and SHOP-109, a mobile story: new order-screen elements, a changed message that breaks an existing app test, API-created data opened by deep link. A GitHub Actions job builds the app and runs the app tests and `qa-sentinel verify` on an Android emulator for every change.
+
 ### What's in v0.6
 
 - **One showcase video per story.** When every acceptance criterion passed on the agreed environment (`showcase.environments`), qa-sentinel re-records the chosen test for each AC in showcase mode (slowed down, the element being used outlined, a pause on the result) and joins them with title cards into **one `<STORY>-showcase.mp4`**, plus **one evidence PDF** (results per AC, a screenshot per UI test, the API requests and responses, with secrets redacted). Attached once, only after all ACs passed; the people in `showcase.notify` are tagged. This replaces the manual "Biz showcase" session.
@@ -132,6 +137,7 @@ Starting from nothing? `qa-sentinel init --mode scratch` scaffolds Playwright AP
 | `add-mobile [--platform android\|ios]` | Adds the mobile layer (WebdriverIO + Appium): turns `tests.mobile` on, writes `wdio.conf.ts`, screen objects, ui helper, evidence hooks, example spec, the write-mobile-test skill and the WebdriverIO packages. (`init --mobile` for new projects.) |
 | `bugs [--story KEY] [--results f] [--env sit] [--dry-run]` | After a run: raises (or proposes, per `bugs.mode`) a bug card for each AC whose tests failed, and notes "now passes" on earlier bugs. |
 | `tag [--limit n] [--push] [--dry-run]` | One-off: an agent adds traceability tags to existing untagged tests on a branch; qa-sentinel rejects anything but added tags in test titles. |
+| `lessons [--since 90d] [--push] [--dry-run]` | Learning from review: what reviewers changed in agent MRs before merging, turned into rules in `kb/review-lessons.md` on a branch (MR with `--push`). Each MR is learned from once. |
 | `metrics [--since 30d] [--runs dir…] [--json]` | How the agents are doing: verification rate, merged-without-edits rate (merge, squash and fast-forward), cost, plan repairs, guardrail stops (`qa-metrics.md`). |
 | `upgrade` | After updating qa-sentinel: refreshes its agents, skills, CI templates and project context; keeps your learned `write-*-test` conventions. |
 | `add-web [--healing none\|bubblegum]` | Adds the web layer to an existing project: turns `tests.web` on, writes the ui helper, page-object base, web fixtures, example spec and the write-web-test skill, and prints the Playwright project to add. (`init --web` does the same for new projects.) |

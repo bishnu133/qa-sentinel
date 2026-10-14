@@ -120,3 +120,15 @@ describe("metrics", () => {
     expect(() => parseSince("soon")).toThrow(/--since/);
   });
 });
+
+describe("metrics trend", () => {
+  it("shows merged-without-edits by month", () => {
+    const c = (date: string, state: any) => ({ sha: date + state, date, files: [], state });
+    const m = computeMetrics([], [c("2026-08-03T00:00:00Z", "merged-edited"), c("2026-08-20T00:00:00Z", "merged-unedited"), c("2026-09-02T00:00:00Z", "merged-unedited"), c("2026-09-09T00:00:00Z", "open")]);
+    expect(m.byMonth).toEqual([
+      { month: "2026-08", merged: 2, unedited: 1, rate: 50 },
+      { month: "2026-09", merged: 1, unedited: 1, rate: 100 },
+    ]);
+    expect(metricsMarkdown(m)).toContain("| 2026-09 | 1 | 100% (1) |");
+  });
+});

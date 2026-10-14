@@ -32,6 +32,8 @@ export interface Metrics {
   plans: { total: number; repaired: number; repairRate: number | null; invalid: number; risk: Record<string, number> };
   guardrails: { runsWithViolations: number; deniedToolCalls: number };
   mergeRequests: { total: number; mergedUnedited: number; mergedEdited: number; mergedUnknown: number; open: number; notMerged: number; mergedWithoutEditsRate: number | null };
+  /** Merged-without-edits per month of the agent's commit: is the team's review getting lighter as lessons accumulate? */
+  byMonth: { month: string; merged: number; unedited: number; rate: number | null }[];
 }
 
 /** manifest.json files under the given folders (run dirs or downloaded CI artifacts), one per run id. */
@@ -208,6 +210,13 @@ export function computeMetrics(manifests: Manifest[], commits: AgentCommit[], si
       notMerged: count("not-merged"),
       mergedWithoutEditsRate: rate(count("merged-unedited"), merged),
     },
+    byMonth: [...new Set(commits.filter((c) => c.state === "merged-unedited" || c.state === "merged-edited").map((c) => c.date.slice(0, 7)))]
+      .sort()
+      .map((month) => {
+        const inMonth = commits.filter((c) => c.date.slice(0, 7) === month && (c.state === "merged-unedited" || c.state === "merged-edited"));
+        const unedited = inMonth.filter((c) => c.state === "merged-unedited").length;
+        return { month, merged: inMonth.length, unedited, rate: rate(unedited, inMonth.length) };
+      }),
   };
 }
 
@@ -230,6 +239,11 @@ export function metricsMarkdown(m: Metrics): string {
   ];
   if (Object.keys(m.plans.risk).length)
     lines.push(`| Risk of analysed changes | ${["critical", "high", "medium", "low"].filter((r) => m.plans.risk[r]).map((r) => `${r} ${m.plans.risk[r]}`).join(", ")} |`);
+  if (m.byMonth.length > 1) {
+    lines.push("", "## Merged without edits, by month", "", "| Month | Merged | Without edits |", "| --- | --- | --- |");
+    for (const x of m.byMonth) lines.push(`| ${x.month} | ${x.merged} | ${pct(x.rate)} (${x.unedited}) |`);
+    lines.push("", "_A rising rate means reviews are getting lighter; `qa-sentinel lessons` turns reviewer edits into rules the agents follow._");
+  }
   if (Object.keys(m.byKind).length) {
     lines.push("", "## By command", "", "| Command | Runs | Avg cost | Avg agent time | Outcomes |", "| --- | --- | --- | --- | --- |");
     for (const [k, v] of Object.entries(m.byKind))
