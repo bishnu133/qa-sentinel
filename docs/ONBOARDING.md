@@ -138,7 +138,7 @@ Include `ci/qa-sentinel/service.gitlab-ci.yml` from each service repo and `ci/qa
 1. **Level 1 (two weeks):** `level: intelligence`. Gap reports on every service MR; nothing is written. Developers and QA read them; note where they are wrong.
 2. **Story review:** run `review-story --story KEY --post` when stories are refined.
 3. **Level 2:** `level: maintenance` once the reports are trusted. Generated tests arrive as MRs a QA engineer reviews.
-4. **Measure:** `npx qa-sentinel metrics --since 30d` (verification rate, merged-without-edits rate, cost). Expect most agent MRs to need small edits at first.
+4. **Measure and learn:** `npx qa-sentinel metrics --since 30d` (verification rate, merged-without-edits rate by month, cost). Expect most agent MRs to need small edits at first. Run `npx qa-sentinel lessons --push` weekly (or the `qa-lessons` CI schedule): it turns what reviewers changed into rules in `kb/review-lessons.md` that every agent reads, so the edits get smaller.
 5. **Opt in** when ready: `showcase` (`QA_SHOWCASE=true`, `showcase.environments`, `showcase.notify`), bug cards (`bugs.mode: suggest`, later `create`), web/mobile layers (`add-web`, `add-mobile`).
 
 ## What teams usually change

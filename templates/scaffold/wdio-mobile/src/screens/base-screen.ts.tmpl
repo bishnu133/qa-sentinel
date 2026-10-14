@@ -20,7 +20,9 @@ export abstract class BaseScreen {
 
   /** Open a deep link (myapp://orders/new) when the app supports them: faster and steadier than tapping there. */
   async openDeepLink(url: string): Promise<this> {
-    if (driver.isAndroid) await driver.execute("mobile: deepLink", { url, package: process.env.QA_APP_PACKAGE });
+    // The app's package: from the session (an installed APK reports it) or QA_APP_PACKAGE.
+    const pkg = (driver.capabilities as Record<string, unknown>).appPackage ?? process.env.QA_APP_PACKAGE;
+    if (driver.isAndroid) await driver.execute("mobile: deepLink", { url, package: pkg });
     else await driver.url(url);
     return this.waitForOpen();
   }

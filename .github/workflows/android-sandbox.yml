@@ -1,0 +1,62 @@
+name: Android sandbox (mobile layer on an emulator)
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, v0.7]
+    paths: ["sandbox/shoplite/**", "templates/scaffold/wdio-mobile/**", "src/**", ".github/workflows/android-sandbox.yml"]
+  pull_request:
+    paths: ["sandbox/shoplite/**", "templates/scaffold/wdio-mobile/**", "src/layers.ts", "src/verification.ts", "src/showcase/**", ".github/workflows/android-sandbox.yml"]
+
+jobs:
+  mobile-e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    env:
+      PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      - run: npm ci && npm run build
+      - name: Build the ShopLite Android app (plain SDK tools)
+        run: |
+          set -o pipefail
+          ls "$ANDROID_HOME/build-tools" "$ANDROID_HOME/platforms" || true
+          bash sandbox/shoplite/services/shoplite-app/build.sh 2>&1 | tee "$RUNNER_TEMP/app-build.log" || { echo "::error title=app build::$(tail -25 "$RUNNER_TEMP/app-build.log" | sed ':a;N;$!ba;s/\n/%0A/g')"; exit 1; }
+      - name: Sandbox with the mobile layer
+        run: |
+          git config --global user.email ci@shoplite.test && git config --global user.name ci
+          node sandbox/shoplite/local.mjs setup --mobile --level maintenance --work "$RUNNER_TEMP/sl" > "$RUNNER_TEMP/setup.log" 2>&1 || { echo "::error title=sandbox setup::$(tail -25 "$RUNNER_TEMP/setup.log" | sed ':a;N;$!ba;s/\n/%0A/g')"; exit 1; }
+      - name: Appium
+        run: npm i -g appium && appium driver install uiautomator2
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules && sudo udevadm trigger --name-match=kvm
+      - name: App tests on an Android emulator
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 34
+          target: google_apis
+          arch: x86_64
+          disable-animations: true
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim
+          script: bash sandbox/shoplite/ci/mobile-e2e.sh "$RUNNER_TEMP/sl" > "$RUNNER_TEMP/e2e.log" 2>&1 || { echo "::error title=mobile e2e::$(tail -40 "$RUNNER_TEMP/e2e.log" | sed ':a;N;$!ba;s/\n/%0A/g')"; cat "$RUNNER_TEMP/e2e.log"; exit 1; }
+      - name: Evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mobile-evidence
+          path: |
+            ${{ runner.temp }}/sl/qa-tests/test-results/mobile/
+            ${{ runner.temp }}/sl/shoplite-app/build/shoplite.apk
+            ${{ runner.temp }}/sl/appium.log
+            ${{ runner.temp }}/sl/verify.md
+          if-no-files-found: ignore

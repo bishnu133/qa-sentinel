@@ -89,12 +89,13 @@ export function selectRegression(i: {
       if (normEndpoint(mapped) === ep) for (const f of files) for (const t of i.index.filter((x) => x.file === f && !x.endpoints.length)) add(t, "test-map", ep);
   }
 
-  // 2b. Changed pages (front ends): web tests tagged with the page or mapped to it under screens.
+  // 2b. Changed pages and screens (front ends, apps): UI tests tagged with the page or mapped to it under screens.
+  // A page belongs to its service: an app screen "orders/:id" is not the web route /orders/:id of another front end.
   const pages = new Set<string>();
   for (const ch of i.plan?.changes ?? []) if (ch.page && ch.type !== "suspicious-instruction") pages.add(normPage(ch.page));
   const screens = i.map?.services?.[i.service]?.screens ?? {};
   for (const pg of pages) {
-    for (const t of i.index) if (t.pages.includes(pg)) add(t, "changed-page", pg);
+    for (const t of i.index) if (t.pages.includes(pg) && (!t.services.length || t.services.includes(i.service))) add(t, "changed-page", pg);
     for (const [mapped, files] of Object.entries(screens))
       if (normPage(mapped) === pg) for (const f of files) for (const t of i.index.filter((x) => x.file === f && !x.pages.length)) add(t, "test-map", pg);
   }

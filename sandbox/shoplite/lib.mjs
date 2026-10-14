@@ -12,6 +12,10 @@ export const SERVICES = ["orders-service", "payments-service", "notifications-se
 /** The storefront is a web front end (tested through the UI); the others are APIs. */
 export const WEB_SERVICES = ["storefront"];
 export const STOREFRONT_ROUTES = ["/", "/orders/new", "/orders/:id"];
+/** The native Android app (opt-in: `setup --mobile`): tested through WebdriverIO + Appium on an emulator. */
+export const APP = "shoplite-app";
+/** The services present in a work folder: the four always, the app when it was set up. */
+export const servicesIn = (work) => [...SERVICES, APP].filter((s) => fs.existsSync(path.join(work, s, ".git")));
 export const TEST_REPO = "qa-tests";
 
 export const log = (...a) => console.log("›", ...a);
@@ -121,7 +125,16 @@ export function publicLockfile(dir) {
 }
 
 /** Create the three service repos (with lockfiles) in work/. */
-export function buildServices(work, { group } = {}) {
+export function buildServices(work, { group, mobile } = {}) {
+  if (mobile) {
+    // The app has no npm dependencies: it is built with the Android SDK tools (services/shoplite-app/build.sh).
+    const dir = path.join(work, APP);
+    if (fs.existsSync(dir)) fs.rmSync(dir, { recursive: true, force: true });
+    copyDir(path.join(HERE, "services", APP), dir);
+    git(dir, "init", "-q", "-b", "main");
+    commitAll(dir, "ShopLite: initial app");
+    log(`${APP}: Android app (build it with: node sandbox/shoplite/local.mjs app build)`);
+  }
   for (const svc of SERVICES) {
     const dir = path.join(work, svc);
     if (fs.existsSync(dir)) fs.rmSync(dir, { recursive: true, force: true });
@@ -142,10 +155,20 @@ export function buildTests(work, o = {}) {
   fs.mkdirSync(dir, { recursive: true });
   if (!fs.existsSync(CLI)) die("qa-sentinel is not built. Run `npm install && npm run build` in the qa-sentinel repo first.");
   log(`${TEST_REPO}: qa-sentinel init (level ${o.level ?? "intelligence"})`);
-  sh("node", [CLI, "init", "--yes", "--mode", "scratch", "--web", "--ci", "gitlab", "--level", o.level ?? "intelligence", "--workspace", "..", "--name", "shoplite-tests"], { cwd: dir });
-  fs.rmSync(path.join(dir, "tests/api/example"), { recursive: true, force: true });
-  fs.rmSync(path.join(dir, "tests/web/example"), { recursive: true, force: true });
+  sh("node", [CLI, "init", "--yes", "--mode", "scratch", "--web", ...(o.mobile ? ["--mobile"] : []), "--ci", "gitlab", "--level", o.level ?? "intelligence", "--workspace", "..", "--name", "shoplite-tests"], { cwd: dir });
+  for (const ex of ["tests/api/example", "tests/web/example", "tests/mobile/example"]) fs.rmSync(path.join(dir, ex), { recursive: true, force: true });
   copyDir(path.join(HERE, "tests-extra"), dir);
+  if (o.mobile) {
+    copyDir(path.join(HERE, "tests-extra-mobile"), dir);
+    // The app's screens in the traceability map, next to the web pages.
+    const mapFile = path.join(dir, "test-map.yaml");
+    const map = YAML.parseDocument(fs.readFileSync(mapFile, "utf8"));
+    map.setIn(["services", APP], {
+      path: `../${APP}`,
+      screens: { "orders/new": ["tests/mobile/orders/new-order.spec.ts"], "orders/:id": ["tests/mobile/orders/order.spec.ts"] },
+    });
+    fs.writeFileSync(mapFile, map.toString());
+  }
   configure(dir, o);
   if (o.group) fs.writeFileSync(path.join(dir, ".gitlab-ci.yml"), testsCi(o.group));
   log(`${TEST_REPO}: npm install (lockfile)`);
@@ -162,6 +185,7 @@ export function configure(dir, o = {}) {
   const doc = YAML.parseDocument(fs.readFileSync(file, "utf8"));
   const c = doc.toJS();
   c.level = o.level ?? c.level;
+  const mobile = o.mobile ?? Boolean(c.tests?.mobile?.enabled);
   c.workspace.services = SERVICES.map((name) => ({
     name,
     path: `../${name}`,
@@ -170,6 +194,10 @@ export function configure(dir, o = {}) {
     dependsOn: name === "orders-service" ? ["payments-service", "notifications-service"] : name === "storefront" ? ["orders-service", "payments-service"] : [],
     version: { path: `/${name.replace(/-service$/, "")}/version`, field: "commit" },
   }));
+  if (mobile) {
+    c.workspace.services.push({ name: APP, path: `../${APP}`, kind: "mobile", dependsOn: ["orders-service"] });
+    c.tests.mobile = { ...(c.tests.mobile ?? {}), enabled: true, platform: "android" };
+  }
   // The local QA environment (qa-env/start.sh); feature readiness checks deployments here.
   c.environments = {
     ...(c.environments ?? {}),
