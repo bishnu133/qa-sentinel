@@ -20,6 +20,8 @@ async function repoWithReviewedMrs() {
   const repo = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "qas-lessons-")), "qa-tests");
   fs.mkdirSync(repo);
   sh(repo, "init", "-q", "-b", "main");
+  sh(repo, "config", "user.name", "t");
+  sh(repo, "config", "user.email", "t@t");
   await initCommand({ cwd: repo, yes: true, mode: "scratch", ci: "gitlab", level: "maintenance", name: "l" });
   sh(repo, "add", "-A");
   sh(repo, "commit", "-q", "-m", "init");
@@ -142,6 +144,8 @@ describe("learning from review", () => {
     const repo = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "qas-lessons2-")), "qa-tests");
     fs.mkdirSync(repo);
     sh(repo, "init", "-q", "-b", "main");
+    sh(repo, "config", "user.name", "t");
+    sh(repo, "config", "user.email", "t@t");
     write(repo, "t.spec.ts", "line1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\n");
     write(repo, "other.ts", "a\n");
     sh(repo, "add", "-A");
