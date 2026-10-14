@@ -17,6 +17,7 @@ import { BASE_SERVICE, BASE_TESTS, SCENARIOS, type Scenario } from "./scenarios.
 import { initCommand } from "../src/commands/init.js";
 import { gapReportCommand } from "../src/commands/gapReport.js";
 import { normaliseEndpoint } from "../src/plan/risk.js";
+import { quietly } from "./quiet.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const args = process.argv.slice(2);
@@ -81,13 +82,7 @@ async function runScenario(s: Scenario, run: number): Promise<ScenarioResult> {
   }
   commitAll(svc, `${s.id}: developer change`);
 
-  const log = console.log;
-  console.log = () => {};
-  try {
-    await initCommand({ cwd: tests, yes: true, mode: "scratch", ci: "gitlab", workspace: ws, name: "bench" });
-  } finally {
-    console.log = log;
-  }
+  await quietly(() => initCommand({ cwd: tests, yes: true, mode: "scratch", ci: "gitlab", workspace: ws, name: "bench" }));
   write(tests, { ...BASE_TESTS, ...(s.tests ?? {}) });
   if (s.story) write(tests, { "story.md": s.story });
   git(tests, "init", "-q", "-b", "main");
@@ -108,14 +103,10 @@ async function runScenario(s: Scenario, run: number): Promise<ScenarioResult> {
     corrections: 0,
     repairRounds: 0,
   };
-  const quiet = { log: console.log, warn: console.warn };
-  console.log = () => {};
   try {
-    await gapReportCommand({ cwd: tests, service: "orders-service", base: "HEAD~1", head: "HEAD", storyFile: s.story ? path.join(tests, "story.md") : undefined, out: path.join(ws, "report.md") });
+    await quietly(() => gapReportCommand({ cwd: tests, service: "orders-service", base: "HEAD~1", head: "HEAD", storyFile: s.story ? path.join(tests, "story.md") : undefined, out: path.join(ws, "report.md") }));
   } catch (e) {
     base.error = (e as Error).message;
-  } finally {
-    console.log = quiet.log;
   }
   const runDir = fs.readdirSync(path.join(tests, ".qa-sentinel/runs")).map((d) => path.join(tests, ".qa-sentinel/runs", d))[0];
   const manifest = JSON.parse(fs.readFileSync(path.join(runDir, "manifest.json"), "utf8"));

@@ -194,7 +194,12 @@ export function findDiscrepancies(cwd: string, ref: string, changes: FileChange[
       for (let j = i - 1; j >= Math.max(0, i - 4); j--) {
         const n = lines[j].match(/\/\/\s*QA-AGENT:\s*(.*)$/);
         if (n) {
-          note = n[1].trim();
+          // A note may continue on following comment lines, up to the test itself.
+          const more = lines
+            .slice(j + 1, i)
+            .map((l) => l.match(/^\s*\/\/\s?(.*)$/)?.[1]?.trim())
+            .filter((l): l is string => Boolean(l));
+          note = [n[1].trim(), ...more].join(" ").replace(/\|/g, "\\|");
           break;
         }
       }

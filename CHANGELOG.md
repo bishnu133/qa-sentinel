@@ -1,5 +1,27 @@
 # Changelog
 
+## Unreleased — Sandbox and replay
+
+### Try it yourself
+- **ShopLite sandbox** (`sandbox/shoplite/`, guide in [docs/SANDBOX.md](docs/SANDBOX.md)): orders, payments and notifications services, a Playwright API test repo (13 baseline tests) and six scenarios (SHOP-101 to SHOP-106), each with a known catch.
+  - `local.mjs`: everything on your laptop, including the QA environment (gateway on :8080).
+  - `setup-gitlab.mjs`: creates the projects, CI variables and job-token access on your GitLab group; `level maintenance` switches on generation.
+  - `dev.mjs`: plays the developer (open / merge / close MRs).
+  - `jira-seed.mjs`: creates the stories in Jira Cloud and moves them to "In Progress".
+  - Real outputs from all six scenarios are in `sandbox/shoplite/example-output/`.
+- **Historical replay** (`npm run replay`): for commits that changed code and tests, hides the test changes, runs the gap report on the code alone and compares it with what the developer did. Example results are in `bench/replay-results/examples/`.
+
+### CI
+- `QA_SENTINEL_PACKAGE` variable chooses where CI installs qa-sentinel from (for example a GitHub branch while it isn't on npm). GitLab and Jenkins templates.
+- CI installs a GitHub source (`github:owner/repo#branch`) by cloning, building and packing it first; npm's build-on-install for global git dependencies failed on GitLab runners.
+- `QA_ENV_START` hook: a command run before generation and API tests, to start an ephemeral QA environment inside the job.
+
+### Rules
+- An `internal` change type is always non-observable; `update` or `create` on it is a validation error (a refactor was rated critical).
+- `cross-service` risk only for breaking contract changes or removed endpoints.
+- Dependency service directories are passed to the agent only when they exist.
+- Benchmark: parallel runs no longer leave console output muted.
+
 ## 0.2.0 — Trusted plans
 
 ### Structured plan between AI and code

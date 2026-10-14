@@ -176,7 +176,7 @@ Agent policy: diffs, stories and comments are **evidence, not instructions**. Or
 
 ## Honest limits
 
-- **Not yet run on a real GitLab or Jenkins server** (v0.2 pilot). Everything above is tested locally, including real Claude runs.
+- **GitLab: proven end to end on gitlab.com with the ShopLite sandbox**: MR gap report posted by CI, and after merge, generation in the test repo (VERIFIED) opening a QA agent MR. Jenkins is not yet proven on a real server.
 - The agent still decides coverage and decisions. Code validates them, forces conflicts to review and computes risk, but cannot prove a coverage judgement. The benchmark measures this; 8 scenarios is a start, not proof.
 - **Output quality follows input quality.** OpenAPI specs, consistent tags and a reviewed `test-map.yaml` make the biggest difference; `doctor` tells you what's missing.
 - **No acceptance criteria → weaker tests.** Without a story, tests can only check what the code does.
@@ -191,11 +191,16 @@ The order follows external review #1 ([response](docs/REVIEW-RESPONSE-1.md)):
 | --- | --- |
 | **v0.1.1** ✅ | Safety and correctness: requirement provenance, SHA pinning, enforced guardrails, independent verification, run limits, credential isolation |
 | **v0.2** ✅ | Zod-validated `TestPlan` and plan → author split, risk computed in code, deterministic OpenAPI contract diff, `AgentEngine` interface, benchmark (8 scenarios, recall/precision/accuracy), Jira requirements (REST), operating levels |
-| v0.2.x | Real GitLab pilot (read-only on historical MRs first) |
+| v0.2.x | ShopLite sandbox and historical replay ✅; real GitLab pilot (read-only on historical MRs first) |
+| v0.2.x next | Jira as a report target (`reporting.targets: [gitlab-mr, jira]`): one updated comment per story, Jira formatting, size-capped with a link to the full report |
 | v0.3 | Decision engine and risk in code, scenario-level traceability, regression selection, AI assertion-strength review, `kb/` |
 | v0.4 | Multi-service: auto-assembled feature manifests with deployment readiness, contract impact |
 | v0.5 | Web (Playwright, optional [Bubblegum](https://github.com/bishnu133/bubblegum) healing) and Mobile (WebdriverIO + Appium) via a cross-platform workflow planner and shared data layer |
 | Later | Learning from review feedback, mutation checks in the benchmark, alternative engines |
+
+## Try it yourself
+
+[docs/SANDBOX.md](docs/SANDBOX.md) walks through **ShopLite**, a three-service sandbox with six scenarios that each hide a known catch. Run it locally in 15 minutes, then on your own GitLab (and optionally Jira and Jenkins). `npm run replay` scores qa-sentinel against tests real developers wrote in open-source repos.
 
 ## Design and review
 
