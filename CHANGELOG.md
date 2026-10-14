@@ -1,15 +1,19 @@
 # Changelog
 
-## 0.7.0 (in progress) — Learning from review, mobile end to end in the sandbox
+## 0.7.0 — Learning from review, mobile end to end in the sandbox
 
 ### Learning from review
 - `qa-sentinel lessons [--since] [--push] [--dry-run]`: for agent commits merged with reviewer edits (merge commit: the MR branch after the agent's commit; squash: the agent's files against the squashed result), an agent (read-only, skill `learn-from-review`) writes general lessons with the commits they come from, or skips one-off fixes; code validates them (known commits only; `updates` must name an existing lesson) and writes `kb/review-lessons.md` on `qa-sentinel/review-lessons` (MR with `--push`). The reviewed commits are recorded in the file, so nothing is learned twice.
+- Only the reviewer's edits count: for merge commits the MR branch's own non-merge commits on the agent's files (main merged into the branch and later agent runs excluded); for squash merges a three-way interdiff (the target before the squash plus the agent's change, against the squash result), so other MRs merged meanwhile don't count.
+- Lesson text is one plain line per field (no headings, code fences or HTML comments can be written into the file agents read); an update matches the exact lesson heading; a repeated lesson strengthens the existing one.
+- An open lessons MR is built on, never replaced (reviewers' edits on it survive the next run); the branch starts from the target branch and the command returns to the branch it started on.
 - `metrics`: merged-without-edits by month.
 - GitLab template: scheduled `qa-lessons` job (`QA_LESSONS=true`).
 
 ### Mobile end to end in the sandbox
 - `local.mjs setup --mobile`: the ShopLite Android app (`services/shoplite-app`: Java, programmatic UI with accessibility ids, deep links `shoplite://orders/<id>`, built by `build.sh` with javac/d8/aapt2/zipalign/apksigner), screen objects (`HomeScreen`, `NewOrderScreen`, `OrderScreen`) and app tests, the app as a `kind: mobile` service with its screens in `test-map.yaml`.
-- Scenario SHOP-109 (mobile). `local.mjs app build`; `run` builds the app from the developer's change, checks Appium and the emulator, runs selected app tests with `--regression`, and includes the app tests in `--showcase`.
+- Scenario SHOP-109 (mobile): the gap report names the one app test the change breaks and gives the `wdio --spec` command for it.
+- Regression selection: a changed page or screen selects only its own service's tests (an app screen and a web route can share a name). `local.mjs app build`; `run` builds the app from the developer's change, checks Appium and the emulator, runs selected app tests with `--regression`, and includes the app tests in `--showcase`.
 - GitHub Actions `android-sandbox`: builds the app, runs the app tests and `qa-sentinel verify` on an Android emulator.
 - Mobile scaffold: `openDeepLink` takes the app package from the session (installed APKs); `add-mobile` adds `wdio.conf.ts` to `tsconfig.json`.
 

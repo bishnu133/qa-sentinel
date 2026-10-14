@@ -15,7 +15,7 @@ export const STOREFRONT_ROUTES = ["/", "/orders/new", "/orders/:id"];
 /** The native Android app (opt-in: `setup --mobile`): tested through WebdriverIO + Appium on an emulator. */
 export const APP = "shoplite-app";
 /** The services present in a work folder: the four always, the app when it was set up. */
-export const servicesIn = (work) => [...SERVICES, ...(fs.existsSync(path.join(work, APP)) ? [APP] : [])];
+export const servicesIn = (work) => [...SERVICES, APP].filter((s) => fs.existsSync(path.join(work, s, ".git")));
 export const TEST_REPO = "qa-tests";
 
 export const log = (...a) => console.log("›", ...a);

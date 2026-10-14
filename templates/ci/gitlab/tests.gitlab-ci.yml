@@ -14,7 +14,7 @@
 #   the QA environment. Generated tests are code; isolate where they run.
 
 variables:
-  QA_SENTINEL_VERSION: "0.6.0"
+  QA_SENTINEL_VERSION: "0.7.0"
   # Where to install qa-sentinel from: set QA_SENTINEL_PACKAGE as a group/project CI/CD variable, e.g.
   # "github:bishnu133/qa-sentinel#main" until it is on npm. Default: qa-sentinel@$QA_SENTINEL_VERSION.
   # (Not defined here on purpose: trigger jobs forward YAML variables downstream, where they override CI/CD variables.)
@@ -220,8 +220,12 @@ qa-lessons:
   rules:
     - if: $QA_LESSONS == "true" && $CI_PIPELINE_SOURCE == "schedule"
   script:
+    - npm i -g --no-audit --no-fund --loglevel=error @anthropic-ai/claude-code
     - !reference [.qa-sentinel-install, script]
-    - git fetch -q origin "{{targetBranch}}" "+refs/heads/qa-sentinel/*:refs/remotes/origin/qa-sentinel/*" || true
+    # The target branch, and an open lessons MR (if any), so a rerun builds on it instead of replacing a reviewer's edits.
+    - git fetch -q origin "{{targetBranch}}" "+refs/heads/qa-sentinel/review-lessons:refs/remotes/origin/qa-sentinel/review-lessons" || git fetch -q origin "{{targetBranch}}"
+    - git config user.name "qa-sentinel" && git config user.email "qa-sentinel@noreply.local"
+    - git remote set-url origin "${CI_SERVER_URL}/${CI_PROJECT_PATH}.git"   # strip the job token GitLab put in .git/config
     - qa-sentinel lessons --since 90d --push
   artifacts:
     when: always

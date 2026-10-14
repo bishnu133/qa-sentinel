@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # CI proof of the mobile layer on a real Android emulator (run inside reactivecircus/android-emulator-runner):
-# build the ShopLite app, start the ShopLite QA environment and Appium, run the sandbox's app tests, then make
-# the SHOP-109 change and check that qa-sentinel's verification sees the broken test as FAILED (not BLOCKED).
+# build the ShopLite app, start the ShopLite QA environment and Appium, run the sandbox's app tests (recordings and
+# result files must be written), then check that `qa-sentinel verify` runs a changed app test and reports VERIFIED.
 set -euo pipefail
 W="${1:?work folder}"
 ROOT="$(cd "$(dirname "$0")/../../.." && pwd)"

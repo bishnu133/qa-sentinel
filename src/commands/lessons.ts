@@ -33,9 +33,36 @@ export async function lessonsCommand(o: LessonsOptions): Promise<number> {
   const c = loadConfig(cwd);
   const target = targetRef(cwd, c.ci.targetBranch);
   if (!target) throw new Error(`target branch ${c.ci.targetBranch} not found; fetch it first`);
-  const lessonsPath = path.join(c.knowledge.dir, LESSONS_FILE);
-  const current = fs.existsSync(path.join(cwd, lessonsPath)) ? fs.readFileSync(path.join(cwd, lessonsPath), "utf8") : undefined;
-  const done = processedCommits(current);
+  const lessonsPath = path.join(c.knowledge.dir, LESSONS_FILE).split(path.sep).join("/");
+  const branch = "qa-sentinel/review-lessons";
+  const at = (ref: string) => {
+    try {
+      return git(cwd, ["show", `${ref}:${lessonsPath}`]);
+    } catch {
+      return undefined;
+    }
+  };
+  const has = (ref: string) => {
+    try {
+      git(cwd, ["rev-parse", "--verify", "--quiet", `${ref}^{commit}`]);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  const merged = (ref: string) => {
+    try {
+      git(cwd, ["merge-base", "--is-ancestor", ref, target]);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  // An open lessons MR (not merged yet) is built on, never replaced: a reviewer may have edited it.
+  const open = [`origin/${branch}`, branch].find((r) => has(r) && !merged(r));
+  const base = open ?? target;
+  const current = at(base);
+  const done = processedCommits(at(target), current);
   const commits = agentCommits(cwd, target, parseSince(o.since)).filter((x) => x.state === "merged-edited" && !done.has(x.sha.slice(0, 8)));
   const edits = reviewerEdits(cwd, commits);
   log.step(`lessons: ${edits.length} agent MR(s) merged with reviewer edits not learned from yet${done.size ? ` (${done.size} already in ${lessonsPath})` : ""}`);
@@ -53,6 +80,13 @@ export async function lessonsCommand(o: LessonsOptions): Promise<number> {
   }
   ensureAgentFiles(cwd, c);
   const start = resolveSha(cwd, "HEAD");
+  const startBranch = (() => {
+    try {
+      return git(cwd, ["symbolic-ref", "--quiet", "--short", "HEAD"]);
+    } catch {
+      return undefined;
+    }
+  })();
   // What was already changed before the agent ran (e.g. a skill this version just added) is not the agent's doing.
   const before = new Set(workingChanges(cwd).map((x) => x.path));
   const r = await learnLessons({ cwd, c, run, engine: o.engine ?? engineFor(c), edits, lessonsPath, existingHeadings: lessonHeadings(current) });
@@ -72,8 +106,8 @@ export async function lessonsCommand(o: LessonsOptions): Promise<number> {
   r.lessons.skipped.forEach((s) => log.dim(`  skipped ${s.commit}: ${s.reason}`));
   // Record every reviewed commit (also the skipped ones), so the next run starts after them.
   const next = applyLessons(current, l, edits.map((e) => e.sha));
-  const branch = "qa-sentinel/review-lessons";
-  git(cwd, ["checkout", "-q", "-B", branch]);
+  // The branch starts from the target (or the open lessons MR), never from whatever happens to be checked out.
+  git(cwd, ["checkout", "-q", "-B", branch, base]);
   fs.mkdirSync(path.dirname(path.join(cwd, lessonsPath)), { recursive: true });
   fs.writeFileSync(path.join(cwd, lessonsPath), next);
   git(cwd, ["add", "--", lessonsPath]);
@@ -98,12 +132,14 @@ export async function lessonsCommand(o: LessonsOptions): Promise<number> {
   if (o.push) {
     const ctx = gitlabContext(c.ci.gitlabUrl);
     const projectPath = c.ci.testRepoProject && !/^\d+$/.test(c.ci.testRepoProject) ? c.ci.testRepoProject : process.env.CI_PROJECT_PATH;
-    git(cwd, ["push", "--force", pushUrl(c.ci.gitlabUrl, projectPath) ?? "origin", `HEAD:refs/heads/${branch}`]);
+    // Built on the open MR's branch (if any), so a plain push fast-forwards it; nothing a reviewer wrote is lost.
+    git(cwd, ["push", pushUrl(c.ci.gitlabUrl, projectPath) ?? "origin", `HEAD:refs/heads/${branch}`]);
     const project = c.ci.testRepoProject ?? process.env.CI_PROJECT_ID;
     if (ctx && project) {
       const mr = await createOrUpdateMergeRequest(ctx, project, { source: branch, target: c.ci.targetBranch, title: "QA agent: lessons from review", description: summary, labels: ["qa-agent", "qa-sentinel::lessons"] });
       log.ok(`merge request ${mr.action}: ${mr.web_url}`);
     }
   }
+  if (startBranch && startBranch !== branch) git(cwd, ["checkout", "-q", startBranch]);
   return 0;
 }

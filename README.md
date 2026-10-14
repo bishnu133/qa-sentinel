@@ -72,7 +72,7 @@ Risk is a fixed rule that you can read: **critical** for auth, money or personal
 - **Knowledge base (`kb/`).** Team-written domain rules and review lessons, read by every agent and citable as `domain-rule` evidence. When a story is silent, a kb rule can be the oracle. Agents can't edit it.
 - **Jira as a report target.** `reporting.targets: [gitlab-mr, jira]` posts the gap report on the story too.
 
-### What's in v0.7 (in progress)
+### What's in v0.7
 
 - **Learning from review.** `qa-sentinel lessons` finds agent MRs a QA engineer edited before merging (merge or squash), shows an agent what the reviewer changed, and proposes short, general rules in `kb/review-lessons.md` through an MR; one-off fixes are skipped, repeated ones strengthen an existing lesson. Every agent reads `kb/` on its next run, so a lesson merged today shapes tomorrow's tests. `metrics` shows merged-without-edits **by month**, the number that should rise. GitLab: a weekly `qa-lessons` job (`QA_LESSONS=true` on a schedule).
 - **Mobile end to end in the sandbox.** `setup --mobile` adds a native ShopLite Android app (plain Java, built with the SDK tools by `build.sh`, no Gradle) with screen objects and app tests, and SHOP-109, a mobile story: new order-screen elements, a changed message that breaks an existing app test, API-created data opened by deep link. A GitHub Actions job builds the app and runs the app tests and `qa-sentinel verify` on an Android emulator for every change.
@@ -311,7 +311,8 @@ The order follows external review #1 ([response](docs/REVIEW-RESPONSE-1.md)):
 | **v0.4** ✅ | Plain-language Jira comments, lower-environment runs before the MR, Showcase evidence on the story (once), feature manifests with deployment readiness |
 | **v0.5** ✅ | Web (Playwright UI, page objects first, page snapshots for the agent), workflow planner (API-first setup graphs), video evidence, optional [Bubblegum](https://github.com/bishnu133/bubblegum) healing |
 | **v0.6** ✅ | One showcase video + evidence PDF per story, Mobile (WebdriverIO + Appium), tech scope / expected results and "is the story built?", story review, story-wide runs, bug cards, flaky retry, tag backfill, accessibility checks, metrics |
-| Later | Mobile on real devices and a device farm in the sandbox, app screen snapshots for the agent, learning from review feedback, mutation checks in the benchmark, alternative engines |
+| **v0.7** ✅ | Learning from review (`lessons`, merged-without-edits by month), mobile end to end in the sandbox (native Android app, SHOP-109, emulator CI) |
+| Later | App screen snapshots for the agent, iOS and a device farm, mutation checks in the benchmark, alternative engines |
 
 ## Try it yourself
 
