@@ -123,7 +123,18 @@ export function bugsFromPlan(story: string, items: { id: string; text: string }[
 }
 
 /** Description in Jira wiki markup, with a machine-readable block for coding agents. */
+const uniqueCode = (code: BugCandidate["code"]) => {
+  const seen = new Set<string>();
+  return (code ?? []).filter((x) => {
+    const k = `${x.file}:${x.line ?? ""}`;
+    if (seen.has(k)) return false;
+    seen.add(k);
+    return true;
+  });
+};
+
 export function bugDescription(b: BugCandidate): string {
+  b = { ...b, code: uniqueCode(b.code) };
   const md = [
     `*Story:* ${b.story} · *Requirement:* ${b.item}${b.suspected ? " · _suspected: found by static analysis, please confirm_" : ""}`,
     "",
