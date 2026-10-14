@@ -7,6 +7,7 @@
 - Attached once, only after all ACs passed, and only from runs on `showcase.environments`. `showcase.notify` tags the reviewers; the comment names exactly what was attached.
 - Needs a full ffmpeg with libx264 (`showcase.video.ffmpeg`, `QA_FFMPEG`, PATH or `ffmpeg-static`); without it the PDF and the separate recordings are attached. `format: files` keeps the v0.5 behaviour.
 - In the video every step is captioned ("Click Checkout button", "Enter "2" into Quantity") next to the outlined element, held long enough to read (`showcase.video.stepMs`), and each test ends on "✓ Verified: <test>". The blank start of each recording is trimmed (`trimStartMs`). A failed showcase recording pass now says why.
+- Phone recordings are made at the device's own size and orientation, and each ends on its last frame for `holdMs` (Android only records frames when the screen changes, so a still screen would otherwise vanish from the video).
 - Secrets in API evidence (password, token, authorization, card fields, JWTs, bearer tokens) are redacted in the PDF and the evidence file.
 - GitLab template: the showcase job installs ffmpeg and starts the environment.
 

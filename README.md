@@ -287,7 +287,7 @@ Agent policy: diffs, stories and comments are **evidence, not instructions**. Or
 - **Review is still required.** Expect most agent MRs to need small edits at first; track the merged-without-edits rate.
 - Behaviour that needs real infrastructure (queues, third-party callbacks) still needs human test design.
 - **Web:** proven on the ShopLite storefront (Chromium). The Bubblegum hook is tested over CDP with a stand-in client; it has not yet run against the real Bubblegum engine. Videos need Playwright's ffmpeg: on networks that block Playwright's downloads, use `QA_BROWSER_CHANNEL=chrome QA_VIDEO=off`.
-- **Mobile:** the scaffold type-checks and runs end to end against a stand-in Appium server (session, recording, screenshot, result files, JUnit); it has **not yet run on a real emulator or device farm**. There is no page snapshot for apps yet: the agent finds accessibility ids in the app's code.
+- **Mobile:** proven on an Android 15 emulator (Pixel 6, Appium + UiAutomator2): test run, screen recording, screenshot, result files, JUnit, and `verify` with the Appium preflight. Not yet run on iOS or a device farm. There is no page snapshot for apps yet: the agent finds accessibility ids in the app's code.
 - **Showcase pack:** the single video needs a full ffmpeg with libx264 (`apt-get install ffmpeg`, `QA_FFMPEG`, or `ffmpeg-static`); without it the PDF and the separate recordings are attached instead.
 - **Metrics:** fast-forward merges always count as "merged without edits", and squash merges whose branch was deleted are counted as merged with edits unknown.
 

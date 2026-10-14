@@ -308,14 +308,25 @@ export async function buildShowcasePack(i: {
   const seg = async (args: string[], out: string) => {
     const r3 = await runProcess(ffmpeg, ["-y", "-hide_banner", "-loglevel", "error", ...args, "-vf", norm, "-an", "-c:v", "libx264", "-preset", "veryfast", "-crf", "23", out], { cwd, env: i.env, timeoutMs: 180_000 });
     if (r3.code !== 0) throw new Error(`ffmpeg: ${(r3.stderr || r3.stdout).trim().slice(0, 300)}`);
-    segments.push(out);
+    // A clip with no frames to show (e.g. a phone recording of a still screen) is left out.
+    if (fs.existsSync(out) && fs.statSync(out).size > 1024) segments.push(out);
+  };
+  /** Phone recordings only get frames when the screen changes: end every one on its last frame, held for holdMs. */
+  const holdLastFrame = async (v: string, base: string) => {
+    const png = `${base}-last.png`;
+    const r5 = await runProcess(ffmpeg, ["-y", "-hide_banner", "-loglevel", "error", "-sseof", "-1", "-i", v, "-frames:v", "1", "-update", "1", png], { cwd, env: i.env, timeoutMs: 60_000 });
+    if (r5.code === 0 && fs.existsSync(png)) await seg(["-loop", "1", "-t", Math.max(1, c.showcase.video.holdMs / 1000).toFixed(1), "-i", png], `${base}-hold.mp4`);
   };
   try {
     await seg(["-loop", "1", "-t", String(T), "-i", cards[0].png], path.join(i.workDir, "seg-00.mp4"));
     for (const [k, p] of picks.entries()) {
       const v = p.ui ? videoOf(p) : undefined;
       await seg(["-loop", "1", "-t", String(v ? T : T + 2), "-i", cards[k + 1].png], path.join(i.workDir, `seg-${k + 1}a.mp4`));
-      if (v) await seg([...(c.showcase.video.trimStartMs ? ["-ss", (c.showcase.video.trimStartMs / 1000).toFixed(2)] : []), "-i", v], path.join(i.workDir, `seg-${k + 1}b.mp4`));
+      if (v) {
+        // Web recordings start on a blank page: trim it. Phone recordings start on the app: keep it, hold the end.
+        await seg([...(p.layer === "web" && c.showcase.video.trimStartMs ? ["-ss", (c.showcase.video.trimStartMs / 1000).toFixed(2)] : []), "-i", v], path.join(i.workDir, `seg-${k + 1}b.mp4`));
+        if (p.layer === "mobile") await holdLastFrame(v, path.join(i.workDir, `seg-${k + 1}c`));
+      }
       else if (p.ui) notes.push(`${p.ac}: no video for "${clean(p.test.title)}"; the card is shown alone`);
     }
     const list = path.join(i.workDir, "segments.txt");

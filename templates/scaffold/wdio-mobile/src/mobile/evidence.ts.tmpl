@@ -30,7 +30,8 @@ export async function beforeMobileTest(): Promise<void> {
     // Show touches in the recording (needs Appium with --allow-insecure=adb_shell; skipped otherwise).
     await driver.execute("mobile: shell", { command: "settings", args: ["put", "system", "show_touches", "1"] }).catch(() => undefined);
   }
-  if (recording()) await driver.startRecordingScreen({ timeLimit: 600, videoSize: "1280x720" } as never).catch(() => undefined);
+  // Native resolution and orientation (a fixed landscape size would shrink a portrait phone into the middle).
+  if (recording()) await driver.startRecordingScreen({ timeLimit: 600 } as never).catch(() => undefined);
 }
 
 export async function afterMobileTest(test: TestLike, _context: unknown, result: { passed: boolean; error?: Error; skipped?: boolean }): Promise<void> {
