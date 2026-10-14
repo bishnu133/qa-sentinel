@@ -304,3 +304,36 @@ describe("operating levels and usage", () => {
     expect(addUsage({ ok: true, status: "ok", result: "", turns: 3, costUsd: 0.1, durationMs: 1000 }, { ok: true, status: "ok", result: "", turns: 2, costUsd: 0.05, durationMs: 500 })).toEqual({ turns: 5, costUsd: 0.15000000000000002, durationMs: 1500 });
   });
 });
+
+describe("decision engine", () => {
+  it("records the rule behind every decision", () => {
+    const v = validatePlan(basePlan(), ctx);
+    expect(v.rules).toMatchObject({ c1: expect.stringContaining("update tests"), c2: expect.stringContaining("human review"), c3: expect.stringContaining("no observable") });
+  });
+  it("forces ambiguous oracles to review (safety rule)", () => {
+    const p = basePlan();
+    p.changes[0].oracleStatus = "ambiguous";
+    const v = validatePlan(p, ctx);
+    expect(v.ok).toBe(true);
+    expect(v.plan!.decisions[0].decision).toBe("review");
+    expect(v.corrections.join()).toMatch(/oracle is ambiguous/);
+  });
+  it("lets the API contract act as oracle when there is no story", () => {
+    const p: any = basePlan();
+    p.changes = [{ ...p.changes[0], requirementIds: [], oracleStatus: "missing", evidence: [{ source: "openapi", file: "openapi.yaml", reference: "required: [slot]" }] }];
+    p.decisions = [{ ...p.decisions[0], decision: "create", proposedScenarios: [{ title: "t", requirementIds: [], setup: [], assertions: ["400"] }] }];
+    p.acMismatches = [];
+    const v = validatePlan(p, { ...ctx, acIds: [], requirementsMissing: true });
+    expect(v.errors).toEqual([]);
+    expect(v.plan!.decisions[0].decision).toBe("create");
+    // Without contract evidence there is nothing to test against: review.
+    p.changes[0].evidence = ev();
+    expect(validatePlan(p, { ...ctx, acIds: [], requirementsMissing: true }).plan!.decisions[0].decision).toBe("review");
+  });
+  it("rejects a non-safety mismatch so the agent repairs it", () => {
+    const p = basePlan();
+    p.decisions[0].coverage = "covered";
+    p.decisions[0].decision = "create";
+    expect(validatePlan(p, ctx).errors.join()).toMatch(/does not fit the rule "approved and already covered → reuse"/);
+  });
+});

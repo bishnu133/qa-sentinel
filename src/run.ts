@@ -8,7 +8,7 @@ import { resolveSha } from "./git.js";
 import { scrubbedEnv } from "./env.js";
 import type { RequirementSnapshot } from "./requirements.js";
 
-export const VERSION = "0.2.0";
+export const VERSION = "0.3.0";
 
 export interface RunDir {
   id: string;

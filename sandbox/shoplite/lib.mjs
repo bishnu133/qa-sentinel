@@ -179,6 +179,10 @@ export function configure(dir, o = {}) {
       projectKeys: [o.jira.project],
       approvedStatuses: ["In Progress", "Selected for Development", "Ready for Development", "Done"],
     };
+    // With Jira connected, publish the gap report on the story too (and keep the MR comment).
+    c.reporting = { ...(c.reporting ?? {}), targets: ["gitlab-mr", "jira"] };
+    // With Jira connected, publish the gap report on the story too (and keep the MR comment).
+    c.reporting = { ...(c.reporting ?? {}), targets: ["gitlab-mr", "jira"] };
   }
   fs.writeFileSync(file, "# qa-sentinel configuration for the ShopLite sandbox.\n" + YAML.stringify(c, { lineWidth: 100 }));
 }

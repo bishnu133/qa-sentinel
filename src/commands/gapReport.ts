@@ -8,10 +8,14 @@ import { ARTIFACT_GLOBS, createRunDir, findService, startManifest, writeManifest
 import { checkServiceUntouched, diffSnapshots, findingsMarkdown, snapshotTree, type Finding } from "../guardrails.js";
 import { requirementsLine, resolveRequirements, storyMarkdown } from "../requirements.js";
 import { gitlabContext, gitlabMrFromEnv, upsertMrNote } from "../scm/gitlab.js";
+import { capForJira, jiraContext, markdownToJiraWiki, upsertIssueComment } from "../scm/jira.js";
+import type { Config } from "../config.js";
 import { engineFor } from "../engines/ClaudeCodeEngine.js";
 import { addUsage } from "../engines/AgentEngine.js";
 import { oracleOf, planChange } from "../plan/planner.js";
 import { renderGapReport } from "../plan/render.js";
+import { buildTestIndex, readTestMap, traceMarkdown, traceStory } from "../analysis/testIndex.js";
+import { regressionMarkdown, selectRegression } from "../analysis/regression.js";
 import { contractDiffMarkdown } from "../analysis/contractDiff.js";
 import { log } from "../log.js";
 
@@ -99,6 +103,14 @@ export async function gapReportCommand(o: GapReportOptions): Promise<{ report: s
   let report: string;
   let exitCode = 0;
   if (outcome.status === "valid" && outcome.plan && outcome.risked) {
+    // Facts computed in code from the test repo: which existing tests to run, and what already proves the story.
+    const index = buildTestIndex(cwd, c.tests.api.dir);
+    const selection = selectRegression({ c, service: service.name, plan: outcome.plan, risked: outcome.risked.changes, contract: outcome.contract, index, map: readTestMap(cwd) });
+    fs.writeFileSync(path.join(run.dir, "regression.json"), JSON.stringify(selection, null, 2));
+    fs.writeFileSync(path.join(path.dirname(out), "qa-regression.txt"), selection.runFullSuite ? "" : selection.args.join("\n") + "\n");
+    const trace = traceStory(index, req.storyKey, req.acceptanceCriteria);
+    const traced = trace.acs.some((r) => r.status !== "not-traced");
+    log.step(`regression selection: ${selection.runFullSuite ? "full suite" : `${selection.tests.length} test(s)`}`);
     report =
       renderGapReport({
         service: service.name,
@@ -110,6 +122,9 @@ export async function gapReportCommand(o: GapReportOptions): Promise<{ report: s
         corrections: outcome.validation?.corrections ?? [],
         warnings: outcome.validation?.warnings ?? [],
         oracle: oracleOf(req),
+        regression: regressionMarkdown(selection, c.tests.api.runCommand),
+        rules: outcome.validation?.rules,
+        traceability: traced ? traceMarkdown(req.storyKey, trace) : undefined,
       }) + `\n\n${footer}`;
     manifest.outcome = "reported";
     log.ok(`plan valid · ${outcome.risked.overall} risk · ${outcome.plan.decisions.length} decision(s)`);
@@ -136,14 +151,46 @@ export async function gapReportCommand(o: GapReportOptions): Promise<{ report: s
   writeManifest(run, manifest);
   log.ok(`report written to ${path.relative(cwd, out)}${u ? ` (${u})` : ""}`);
 
-  if (o.post) {
-    const ctx = gitlabContext(c.ci.gitlabUrl);
-    if (!ctx) log.warn("--post: set QA_SENTINEL_GITLAB_TOKEN (or GITLAB_TOKEN) to comment on the MR");
-    else if (!mr.project || !mr.mrIid) log.warn("--post: no merge request context (CI_PROJECT_ID / CI_MERGE_REQUEST_IID) found");
-    else {
-      const r = await upsertMrNote(ctx, mr.project, mr.mrIid, report);
-      log.ok(`MR !${mr.mrIid}: comment ${r.action}`);
+  if (o.post) await publish(c, { report, service: service.name, storyKey: req.storyKey, mr });
+  return { report, skipped: false, exitCode };
+}
+
+/**
+ * Publish the report to every configured target. Publishing never fails the job: a missing token, MR or
+ * story key is a warning, because the report itself is already written and kept as a CI artifact.
+ */
+export async function publish(
+  c: Config,
+  i: { report: string; service: string; storyKey?: string; mr: ReturnType<typeof gitlabMrFromEnv> },
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<string[]> {
+  const done: string[] = [];
+  for (const target of c.reporting.targets) {
+    try {
+      if (target === "gitlab-mr") {
+        const ctx = gitlabContext(c.ci.gitlabUrl);
+        if (!ctx) log.warn("--post (gitlab-mr): set QA_SENTINEL_GITLAB_TOKEN (or GITLAB_TOKEN) to comment on the MR");
+        else if (!i.mr.project || !i.mr.mrIid) log.warn("--post (gitlab-mr): no merge request context (CI_PROJECT_ID / CI_MERGE_REQUEST_IID)");
+        else {
+          const r = await upsertMrNote(ctx, i.mr.project, i.mr.mrIid, i.report);
+          log.ok(`MR !${i.mr.mrIid}: comment ${r.action}`);
+          done.push("gitlab-mr");
+        }
+      } else if (target === "jira") {
+        const ctx = jiraContext(c.requirements.jira.baseUrl, env);
+        if (!ctx) log.warn("--post (jira): set requirements.jira.baseUrl and JIRA_EMAIL + JIRA_API_TOKEN (Cloud) or JIRA_PAT (Server/DC)");
+        else if (!i.storyKey) log.warn("--post (jira): no story key found in the MR title, branch or commits; nothing to comment on");
+        else {
+          const artifact = env.CI_JOB_URL ? `${env.CI_JOB_URL}/artifacts/file/qa-gap-report.md` : undefined;
+          const body = capForJira(markdownToJiraWiki(i.report), c.reporting.jira.maxChars, artifact);
+          const r = await upsertIssueComment(ctx, i.storyKey, i.service, body, c.reporting.jira.visibility);
+          log.ok(`Jira ${i.storyKey}: comment ${r.action} (${r.url})`);
+          done.push("jira");
+        }
+      }
+    } catch (e) {
+      log.warn(`--post (${target}) failed: ${(e as Error).message}`);
     }
   }
-  return { report, skipped: false, exitCode };
+  return done;
 }

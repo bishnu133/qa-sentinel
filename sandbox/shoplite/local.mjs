@@ -4,6 +4,7 @@
 //   node sandbox/shoplite/local.mjs setup [--level maintenance] [--work ./shoplite-local]
 //   node sandbox/shoplite/local.mjs list
 //   node sandbox/shoplite/local.mjs run SHOP-101 [--generate]     # make the dev change, gap report (+ generate tests)
+//   node sandbox/shoplite/local.mjs run SHOP-101 --regression     # also run the existing tests qa-sentinel selected, against the change
 //   node sandbox/shoplite/local.mjs reset                          # every service back to main, env stopped
 //   node sandbox/shoplite/local.mjs env start|stop
 import fs from "node:fs";
@@ -69,6 +70,14 @@ switch (cmd) {
     const story = path.join(work, "stories", `${s.id}.md`);
     const gap = run("node", [CLI, "gap-report", "-s", s.service, "--base", "main", "--head", "HEAD", "--story-file", story, "-o", `../${s.id}-gap-report.md`], { cwd: tests });
     log(`gap report: ${path.join(work, `${s.id}-gap-report.md`)}`);
+    if (f.regression) {
+      // Run the existing tests qa-sentinel selected, against the developer's change: do the predicted breaks happen?
+      const selected = fs.existsSync(path.join(work, "qa-regression.txt")) ? fs.readFileSync(path.join(work, "qa-regression.txt"), "utf8").split("\n").filter(Boolean) : [];
+      envStart();
+      log(`running ${selected.length || "all"} selected existing test(s) against ${s.service} with the change`);
+      run("npx", ["playwright", "test", "--project=api", "--reporter=list", ...selected], { cwd: tests, env: { ...process.env, QA_BASE_URL: "http://127.0.0.1:8080" } });
+      envStop(true);
+    }
     if (f.generate) {
       envStart();
       const code = run("node", [CLI, "generate", "-s", s.service, "--base", "main", "--head", "HEAD", "--story-file", story], {
@@ -78,7 +87,7 @@ switch (cmd) {
       envStop(true);
       const branch = git(tests, "branch", "--show-current");
       log(`generation exit ${code}; MR description: ${path.join(tests, "qa-sentinel-summary.md")}; branch: ${branch}`);
-      log(`review the generated tests: git -C ${tests} diff main ${branch}`);
+      if (branch.startsWith("qa-sentinel/")) log(`review the generated tests: git -C ${tests} diff main ${branch}`);
       process.exitCode = code;
     } else process.exitCode = gap;
     break;

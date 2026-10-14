@@ -5,6 +5,7 @@ import { learnCommand } from "./commands/learn.js";
 import { doctorCommand } from "./commands/doctor.js";
 import { gapReportCommand } from "./commands/gapReport.js";
 import { generateCommand } from "./commands/generate.js";
+import { traceCommand } from "./commands/trace.js";
 import { verifyCommand } from "./commands/verify.js";
 import { VERSION } from "./run.js";
 import { log } from "./log.js";
@@ -85,6 +86,14 @@ program
   .option("--push", "push the branch and open a GitLab merge request")
   .option("--dry-run", "do everything except call Claude and commit")
   .action(wrap(async (o) => generateCommand({ cwd: cwd(), ...o })));
+
+program
+  .command("trace")
+  .description("requirement traceability from test tags: which tests prove which acceptance criteria, and test-map.yaml consistency")
+  .option("--story <key>", "story key, e.g. SHOP-102")
+  .option("--story-file <file>", "story with acceptance criteria (otherwise the ACs claimed by the tests are listed)")
+  .option("--json", "print the full index as JSON")
+  .action(wrap(async (o) => traceCommand({ cwd: cwd(), ...o })));
 
 program
   .command("verify")

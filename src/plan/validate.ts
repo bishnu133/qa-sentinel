@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { type TestPlan, TestPlanSchema } from "./schema.js";
+import { ruleFor } from "./decide.js";
 
 export interface PlanContext {
   /** AC ids from the requirement snapshot (AC-1, AC-2, …). Empty when none were parsed. */
@@ -20,6 +21,8 @@ export interface PlanValidation {
   corrections: string[];
   /** Non-blocking oddities worth showing a reviewer. */
   warnings: string[];
+  /** The decision-engine rule that applied to each change's decision (changeId → rule). */
+  rules: Record<string, string>;
 }
 
 const exists = (root: string, f: string) => fs.existsSync(path.resolve(root, f));
@@ -32,6 +35,7 @@ export function validatePlan(raw: unknown, ctx: PlanContext): PlanValidation {
   const errors: string[] = [];
   const corrections: string[] = [];
   const warnings: string[] = [];
+  const rules: Record<string, string> = {};
 
   const parsed = TestPlanSchema.safeParse(raw);
   if (!parsed.success) {
@@ -40,6 +44,7 @@ export function validatePlan(raw: unknown, ctx: PlanContext): PlanValidation {
       errors: parsed.error.issues.map((i) => `${i.path.join(".") || "(root)"}: ${i.message}`),
       corrections,
       warnings,
+      rules,
     };
   }
   const plan: TestPlan = structuredClone(parsed.data);
@@ -84,10 +89,18 @@ export function validatePlan(raw: unknown, ctx: PlanContext): PlanValidation {
     }
     decided.set(d.changeId, (decided.get(d.changeId) ?? 0) + 1);
 
-    // Safety rule, enforced in code: a requirement conflict always goes to a human.
-    if (c.oracleStatus === "conflicting" && d.decision !== "review") {
-      corrections.push(`${where}: decision "${d.decision}" changed to "review" because the oracle is conflicting`);
-      d.decision = "review";
+    // The decision engine (decide.ts): safety rules are corrected in code, the rest are errors to repair.
+    const rule = ruleFor(c, d);
+    rules[d.changeId] = rule.rule;
+    if (!rule.allowed.includes(d.decision)) {
+      if (rule.safety) {
+        const because = c.type === "suspicious-instruction" ? "the change is a suspicious instruction" : `the oracle is ${c.oracleStatus}`;
+        corrections.push(`${where}: decision "${d.decision}" changed to "${rule.fallback}" because ${because}`);
+        if (rule.fallback === "skip" && !d.evidence.length) d.evidence = c.evidence.slice(0, 3);
+        d.decision = rule.fallback;
+      } else if (c.observable && c.type !== "internal") {
+        errors.push(`${where}: decision "${d.decision}" does not fit the rule "${rule.rule}"; use ${rule.allowed.map((a) => `"${a}"`).join(" or ")}`);
+      }
     }
 
     switch (d.decision) {
@@ -132,7 +145,7 @@ export function validatePlan(raw: unknown, ctx: PlanContext): PlanValidation {
   if (plan.skipReason && plan.changes.some((c) => c.observable)) errors.push("skipReason is set but there are observable changes");
   for (const m of plan.acMismatches) if (m.requirementId) checkReqIds("acMismatches", [m.requirementId]);
 
-  return { ok: errors.length === 0, plan, errors, corrections, warnings };
+  return { ok: errors.length === 0, plan, errors, corrections, warnings, rules };
 }
 
 /** Decisions that require writing tests. */

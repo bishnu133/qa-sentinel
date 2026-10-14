@@ -23,6 +23,11 @@ export interface RenderInput {
   corrections: string[];
   warnings: string[];
   oracle: "provided" | "ambiguous" | "missing";
+  /** Computed by qa-sentinel, rendered after the agent's own "run these" list. */
+  regression?: string;
+  traceability?: string;
+  /** Decision-engine rule per change id. */
+  rules?: Record<string, string>;
 }
 
 /** Decision table: the shared core of gap reports and MR descriptions. */
@@ -62,6 +67,8 @@ export function renderGapReport(i: RenderInput): string {
     out.push("");
   }
 
+  if (i.regression) out.push(i.regression, "");
+
   const scenarios = plan.decisions.filter((d) => ["create", "update", "review"].includes(d.decision)).flatMap((d) => d.proposedScenarios.map((s) => ({ d, s })));
   if (scenarios.length) {
     out.push("**Missing or outdated scenarios**");
@@ -78,6 +85,7 @@ export function renderGapReport(i: RenderInput): string {
   }
 
   out.push(contractDiffMarkdown(i.contract, i.specPath), "");
+  if (i.traceability) out.push(i.traceability, "");
   if (plan.specDrift.length) {
     out.push("**Spec drift** (code vs spec)");
     plan.specDrift.forEach((s) => out.push(`- ${s}`));
@@ -107,7 +115,7 @@ export function renderGapReport(i: RenderInput): string {
     c.evidence.forEach((e) => out.push(`  - ${e.source}: ${cite(e)}`));
   }
   for (const d of plan.decisions) {
-    out.push(`- decision ${d.changeId}: ${d.decision} – ${d.reason}`);
+    out.push(`- decision ${d.changeId}: ${d.decision} – ${d.reason}${i.rules?.[d.changeId] ? ` _(rule: ${i.rules[d.changeId]})_` : ""}`);
     d.evidence.forEach((e) => out.push(`  - ${e.source}: ${cite(e)}`));
   }
   if (i.warnings.length) i.warnings.forEach((w) => out.push(`- ⚠️ ${w}`));

@@ -1,3 +1,4 @@
+import { constSubstituter } from "./analysis/testIndex.js";
 import fs from "node:fs";
 import path from "node:path";
 import type { Config } from "./config.js";
@@ -185,7 +186,9 @@ export function findDiscrepancies(cwd: string, ref: string, changes: FileChange[
   for (const ch of changes) {
     if (ch.status === "D" || !TEST_FILE.test(ch.path)) continue;
     const added = new Set(addedLines(cwd, ref, ch.path));
-    const lines = fs.readFileSync(path.join(cwd, ch.path), "utf8").split("\n");
+    const src = fs.readFileSync(path.join(cwd, ch.path), "utf8");
+    const subst = constSubstituter(src);
+    const lines = src.split("\n");
     lines.forEach((line, i) => {
       if (!added.has(line)) return;
       const m = line.match(/\b(?:test|it|describe)\.(?:fixme|skip)\s*\(\s*(["'`])(.*?)\1|\bx(?:it|describe)\s*\(\s*(["'`])(.*?)\3/);
@@ -203,7 +206,7 @@ export function findDiscrepancies(cwd: string, ref: string, changes: FileChange[
           break;
         }
       }
-      out.push({ file: ch.path, test: (m[2] ?? m[4] ?? "").replace(/\s*@\S+/g, "").trim(), note });
+      out.push({ file: ch.path, test: subst(m[2] ?? m[4] ?? "").replace(/\s*@\S+/g, "").trim(), note });
     });
   }
   return out;
