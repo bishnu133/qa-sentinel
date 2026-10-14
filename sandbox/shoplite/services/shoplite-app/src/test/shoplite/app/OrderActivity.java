@@ -31,12 +31,16 @@ public class OrderActivity extends Activity {
         load(id);
     }
 
-    private void load(String id) {
-        new Thread(() -> {
-            try {
-                Api.Response res = Api.get("/orders/" + Uri.encode(id));
-                JSONObject o = new JSONObject(res.body.isEmpty() ? "{}" : res.body);
-                runOnUiThread(() -> {
+    private void load(final String id) {
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    final Api.Response res = Api.get("/orders/" + Uri.encode(id));
+                    final JSONObject o = new JSONObject(res.body.isEmpty() ? "{}" : res.body);
+                    runOnUiThread(new Runnable() {
+                        @Override
+                        public void run() {
                     if (res.status != 200) {
                         message.setText("Could not load the order (" + res.status + ")");
                         return;
@@ -44,9 +48,16 @@ public class OrderActivity extends Activity {
                     heading.setText("Order " + o.optString("id"));
                     line.setText(o.optInt("qty") + " × " + o.optString("item"));
                     message.setText("");
-                });
-            } catch (Exception e) {
-                runOnUiThread(() -> message.setText("Could not reach ShopLite: " + e.getMessage()));
+                        }
+                    });
+                } catch (final Exception e) {
+                    runOnUiThread(new Runnable() {
+                        @Override
+                        public void run() {
+                            message.setText("Could not reach ShopLite: " + e.getMessage());
+                        }
+                    });
+                }
             }
         }).start();
     }

@@ -4,6 +4,7 @@ import android.app.Activity;
 import android.content.Intent;
 import android.os.Bundle;
 import android.text.InputType;
+import android.view.View;
 import android.widget.EditText;
 import android.widget.LinearLayout;
 import android.widget.RadioButton;
@@ -59,13 +60,18 @@ public class NewOrderActivity extends Activity {
         currencies.check(200);
         col.addView(currencies);
 
-        Ui.button(this, col, "place-order", "Place order", v -> placeOrder());
+        Ui.button(this, col, "place-order", "Place order", new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                placeOrder();
+            }
+        });
         error = Ui.text(this, col, "order-error", "", 14);
     }
 
     private void placeOrder() {
         String[] item = ITEMS[items.getCheckedRadioButtonId() - 100];
-        String currency = CURRENCIES[currencies.getCheckedRadioButtonId() - 200];
+        final String currency = CURRENCIES[currencies.getCheckedRadioButtonId() - 200];
         int qty;
         try {
             qty = Integer.parseInt(quantity.getText().toString().trim());
@@ -74,23 +80,35 @@ public class NewOrderActivity extends Activity {
             return;
         }
         final int q = qty;
+        final String[] chosen = item;
         error.setText("");
-        new Thread(() -> {
-            try {
-                JSONObject body = new JSONObject().put("item", item[0]).put("qty", q).put("unitPrice", Double.parseDouble(item[2])).put("currency", currency);
-                Api.Response res = Api.post("/orders", body.toString());
-                JSONObject data = new JSONObject(res.body.isEmpty() ? "{}" : res.body);
-                runOnUiThread(() -> {
-                    if (res.status == 201) {
-                        startActivity(new Intent(this, OrderActivity.class).putExtra("orderId", data.optString("id")));
-                    } else if (res.status == 402) {
-                        error.setText("Payment declined: " + data.optString("reason", "try another currency"));
-                    } else {
-                        error.setText("Could not place the order: " + data.optString("error", String.valueOf(res.status)));
-                    }
-                });
-            } catch (Exception e) {
-                runOnUiThread(() -> error.setText("Could not reach ShopLite: " + e.getMessage()));
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    JSONObject body = new JSONObject().put("item", chosen[0]).put("qty", q).put("unitPrice", Double.parseDouble(chosen[2])).put("currency", currency);
+                    final Api.Response res = Api.post("/orders", body.toString());
+                    final JSONObject data = new JSONObject(res.body.isEmpty() ? "{}" : res.body);
+                    runOnUiThread(new Runnable() {
+                        @Override
+                        public void run() {
+                            if (res.status == 201) {
+                                startActivity(new Intent(NewOrderActivity.this, OrderActivity.class).putExtra("orderId", data.optString("id")));
+                            } else if (res.status == 402) {
+                                error.setText("Payment declined: " + data.optString("reason", "try another currency"));
+                            } else {
+                                error.setText("Could not place the order: " + data.optString("error", String.valueOf(res.status)));
+                            }
+                        }
+                    });
+                } catch (final Exception e) {
+                    runOnUiThread(new Runnable() {
+                        @Override
+                        public void run() {
+                            error.setText("Could not reach ShopLite: " + e.getMessage());
+                        }
+                    });
+                }
             }
         }).start();
     }
