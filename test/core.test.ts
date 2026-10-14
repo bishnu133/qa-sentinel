@@ -166,8 +166,26 @@ describe("doctor", () => {
 
 describe("claude args", () => {
   it("builds headless args", () => {
-    const args = buildClaudeArgs({ cwd: ".", prompt: "hi", maxTurns: 5, allowedTools: ["Read", "Bash(npx playwright test:*)"], addDirs: ["/svc"], model: "m" });
-    expect(args).toEqual(["-p", "hi", "--output-format", "json", "--max-turns", "5", "--allowedTools", "Read,Bash(npx playwright test:*)", "--add-dir", "/svc", "--model", "m"]);
+    const args = buildClaudeArgs({
+      cwd: ".",
+      prompt: "hi",
+      maxTurns: 5,
+      tools: ["Read", "Edit"],
+      allow: ["Read", "Edit(tests/api/**)"],
+      deny: ["Read(.env*)"],
+      addDirs: ["/svc"],
+      model: "m",
+      maxBudgetUsd: 2,
+      timeoutMs: 1000,
+      env: {},
+    });
+    expect(args).toEqual([
+      "-p", "hi", "--output-format", "json", "--max-turns", "5",
+      "--permission-mode", "dontAsk", "--tools", "Read,Edit",
+      "--allowedTools", "Read,Edit(tests/api/**)",
+      "--settings", JSON.stringify({ permissions: { deny: ["Read(.env*)"] } }),
+      "--add-dir", "/svc", "--model", "m", "--max-budget-usd", "2",
+    ]);
   });
 });
 
@@ -181,6 +199,7 @@ describe("gap-report", () => {
     gitInit(svc);
     fs.mkdirSync(tests);
     await initCommand({ cwd: tests, yes: true, mode: "scratch", ci: "gitlab", workspace: ws });
+    gitInit(tests);
 
     write(svc, "README.md", "docs");
     sh(svc, "add", "-A");
@@ -196,6 +215,15 @@ describe("gap-report", () => {
     const runs = fs.readdirSync(path.join(tests, ".qa-sentinel/runs"));
     const diff = fs.readFileSync(path.join(tests, ".qa-sentinel/runs", runs[0], "change.diff"), "utf8");
     expect(diff).toContain("+export const max = 5;");
+    const manifest = JSON.parse(fs.readFileSync(path.join(tests, ".qa-sentinel/runs", runs[0], "manifest.json"), "utf8"));
+    expect(manifest.service.head).toMatch(/^[0-9a-f]{40}$/);
+    expect(manifest.requirements.source).toBe("none");
+
+    // The service checkout must be at the analysed commit.
+    sh(svc, "checkout", "-q", "HEAD~1");
+    await expect(gapReportCommand({ cwd: tests, service: "orders-service", base: "HEAD~1", head: "main", out: "r.md", dryRun: true })).rejects.toThrow(/--checkout/);
+    await gapReportCommand({ cwd: tests, service: "orders-service", base: "main~1", head: "main", out: "r.md", dryRun: true, checkout: true });
+    expect(sh(svc, "rev-parse", "HEAD").trim()).toBe(sh(svc, "rev-parse", "main").trim());
   });
 });
 

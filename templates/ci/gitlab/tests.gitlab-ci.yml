@@ -6,9 +6,15 @@
 #
 # CI/CD variables: ANTHROPIC_API_KEY, QA_SENTINEL_GITLAB_TOKEN (api + write_repository), {{baseUrlEnv}}
 # Allow this project's CI_JOB_TOKEN to read the service repos (Settings › CI/CD › Job token permissions).
+#
+# Security notes:
+# - qa-sentinel never passes QA_SENTINEL_GITLAB_TOKEN or CI_JOB_TOKEN to the agent or to test runs, and pushes
+#   with a one-off URL (the token is never written to .git/config).
+# - Run these jobs on runners whose network can reach only GitLab, the Anthropic API, your package registry and
+#   the QA environment. Generated tests are code; isolate where they run.
 
 variables:
-  QA_SENTINEL_VERSION: "0.1"
+  QA_SENTINEL_VERSION: "0.1.1"
 
 .qa-node:
   image: mcr.microsoft.com/playwright:v1.49.0-noble
@@ -21,13 +27,17 @@ qa-generate:
   stage: test
   rules:
     - if: $CI_PIPELINE_SOURCE == "pipeline" && $QA_SERVICE_NAME
-  resource_group: "qa-generate-$QA_SERVICE_NAME"   # one run per service at a time
+  # ONE write-enabled generation at a time for the whole test repo: services share test-map.yaml, clients and fixtures.
+  resource_group: qa-sentinel-generate
   timeout: 45m
   script:
     - npm i -g @anthropic-ai/claude-code "qa-sentinel@${QA_SENTINEL_VERSION}"
     - git clone "https://gitlab-ci-token:${CI_JOB_TOKEN}@${CI_SERVER_HOST}/${QA_SERVICE_PROJECT}.git" "/tmp/services/$QA_SERVICE_NAME"
+    # Pin the service to the merged commit and drop the token-bearing remote before any agent runs.
+    - git -C "/tmp/services/$QA_SERVICE_NAME" checkout --quiet --detach "$QA_SERVICE_SHA"
+    - git -C "/tmp/services/$QA_SERVICE_NAME" remote remove origin
     - git config user.name "qa-sentinel" && git config user.email "qa-sentinel@noreply.local"
-    - git remote set-url origin "https://oauth2:${QA_SENTINEL_GITLAB_TOKEN}@${CI_SERVER_HOST}/${CI_PROJECT_PATH}.git"
+    - git remote set-url origin "${CI_SERVER_URL}/${CI_PROJECT_PATH}.git"   # strip the job token GitLab put in .git/config
     - >
       qa-sentinel generate
       --service "$QA_SERVICE_NAME" --service-path "/tmp/services/$QA_SERVICE_NAME"
@@ -37,21 +47,26 @@ qa-generate:
     paths: [qa-sentinel-summary.md, .qa-sentinel/runs/]
     expire_in: 2 weeks
 
-# Gate for agent MRs: type-check and run only the specs the agent touched.
+# Blocking gate for agent MRs (and any MR touching tests): the same independent checks qa-sentinel runs after
+# generation – write policy, type-check, changed specs with JUnit. Fails unless VERIFIED.
 qa-agent-mr-checks:
   extends: .qa-node
   stage: test
+  variables:
+    GIT_DEPTH: 0
   rules:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event" && $CI_MERGE_REQUEST_SOURCE_BRANCH_NAME =~ /^qa-sentinel\//
+      variables: { QA_VERIFY_POLICY: "--policy" }
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+      changes: ["{{apiDir}}/**/*"]
   script:
-    - npx tsc --noEmit || echo "type-check failed (see log)"
-    - CHANGED=$(git diff --name-only --diff-filter=AM "$CI_MERGE_REQUEST_DIFF_BASE_SHA"...HEAD -- "{{apiDir}}" | grep -E '\.(spec|test)\.[cm]?[jt]s$' || true)
-    - if [ -n "$CHANGED" ]; then {{runCommand}} $CHANGED; else echo "no spec changes"; fi
+    - npm i -g "qa-sentinel@${QA_SENTINEL_VERSION}"
+    - qa-sentinel verify $QA_VERIFY_POLICY --base "$CI_MERGE_REQUEST_DIFF_BASE_SHA" --out qa-verify.md
   artifacts:
     when: always
     reports:
-      junit: test-results/junit.xml
-    paths: [playwright-report/, test-results/]
+      junit: .qa-sentinel/runs/*/junit.xml
+    paths: [qa-verify.md, .qa-sentinel/runs/, playwright-report/]
     expire_in: 2 weeks
 
 # Regular API runs: on schedule, or after a deployment (pass QA_TEST_ARGS, e.g. --grep @service:orders).

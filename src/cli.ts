@@ -5,6 +5,8 @@ import { learnCommand } from "./commands/learn.js";
 import { doctorCommand } from "./commands/doctor.js";
 import { gapReportCommand } from "./commands/gapReport.js";
 import { generateCommand } from "./commands/generate.js";
+import { verifyCommand } from "./commands/verify.js";
+import { VERSION } from "./run.js";
 import { log } from "./log.js";
 import { API_FRAMEWORKS } from "./config.js";
 
@@ -12,7 +14,7 @@ const program = new Command();
 program
   .name("qa-sentinel")
   .description("AI QA agents for your test repo: gap reports and API test generation from dev changes.")
-  .version("0.1.0")
+  .version(VERSION)
   .option("-C, --cwd <dir>", "test repository root", process.cwd());
 
 const cwd = () => program.opts().cwd as string;
@@ -53,7 +55,8 @@ program
 program
   .command("doctor")
   .description("check configuration, access and agent readiness")
-  .action(wrap(() => doctorCommand(cwd())));
+  .option("--online", "also call GitLab to check the token can reach the test and service projects")
+  .action(wrap(async (o) => doctorCommand(cwd(), { online: o.online })));
 
 program
   .command("gap-report")
@@ -62,6 +65,7 @@ program
   .option("--service-path <dir>", "override where the service repo is checked out (useful in CI)")
   .option("--base <ref>", "base ref (default: MR diff base in CI, else origin/<targetBranch>)")
   .option("--head <ref>", "head ref", "HEAD")
+  .option("--checkout", "check out the head commit in the service repo if it is not already there (CI)")
   .option("--story-file <file>", "file with the story / acceptance criteria")
   .option("-o, --out <file>", "where to write the report", "qa-gap-report.md")
   .option("--post", "post or update the report as a GitLab MR comment")
@@ -75,9 +79,18 @@ program
   .option("--service-path <dir>", "override where the service repo is checked out (useful in CI)")
   .option("--base <ref>", "base ref in the service repo", "HEAD~1")
   .option("--head <ref>", "head ref in the service repo", "HEAD")
+  .option("--checkout", "check out the head commit in the service repo if it is not already there (CI)")
   .option("--story-file <file>", "file with the story / acceptance criteria")
   .option("--push", "push the branch and open a GitLab merge request")
   .option("--dry-run", "do everything except call Claude and commit")
   .action(wrap(async (o) => generateCommand({ cwd: cwd(), ...o })));
+
+program
+  .command("verify")
+  .description("independent checks on changed tests (policy, type-check, lint, changed specs); exit 0 only when VERIFIED")
+  .option("--base <ref>", "compare with this ref (default: MR diff base in CI, else origin/<targetBranch>)")
+  .option("--policy", "also enforce the agent write policy (use on qa-sentinel/* branches)")
+  .option("-o, --out <file>", "write the verification summary (markdown) here")
+  .action(wrap(async (o) => verifyCommand({ cwd: cwd(), ...o })));
 
 program.parseAsync();

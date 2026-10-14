@@ -1,36 +1,48 @@
-## QA agent: orders-service@7c60858
+## QA agent: orders-service@d8492a67 · ✅ VERIFIED
 
-**Source change:** `POST /orders` now requires `deliverySlot` (future ISO date-time), echoes it, and returns 409 when a slot is full. **Story:** SHOP-42
+**Requirements:** SHOP-42 from [story-file](story-SHOP-42.md) @ sha256:591fcc21c1487cb6 · 4 AC parsed · approval unverified
 
-### What changed
-| File | Change | Why |
+**Verification: ✅ VERIFIED** (run by qa-sentinel, not reported by the agent)
+
+| Check | Result | Detail |
 | --- | --- | --- |
-| tests/api/orders/create-order.spec.ts | 2 existing tests fixed, 7 added (1 `fixme`) | AC1: required and invalid slot → 400. AC2: past slot → 400. AC3: capacity → 409. AC4: slot echoed. |
-| src/data/builders.ts | `DataFactory.futureSlot()` | Gives each test its own future slot, so capacity counts don't collide between tests. |
-| src/api/orders.ts (new) | `createOrderWithSlot`, `fillSlot` | Setup helpers for capacity scenarios. |
-| test-map.yaml | none | `POST /orders` already maps to `create-order.spec.ts`. |
+| preflight | passed | localhost:3123 answered 404 |
+| typecheck | passed | tsc --noEmit clean |
+| tests | passed | 6 passed, 1 skipped |
 
-### Results
-| Spec | Result | Note |
+Tests: 6 passed · 0 failed · 1 skipped (of 7).
+
+### ⚠️ Unresolved product discrepancies (1, not executed as passing tests)
+These tests encode the requirement, but the product currently behaves differently. They are marked fixme/skip so they do not fail the build. **A human must decide: fix the product or change the requirement.**
+
+| Test | File | Note |
 | --- | --- | --- |
-| create-order.spec.ts (8 tests) | pass | The executor reported a clean type-check and 8 of 9 tests passing. |
-| create-order.spec.ts › 409 on 4th order in a slot | possible-product-bug (`test.fixme`) | AC says max 3 per slot. The API allows 5. |
+| returns 409 for the 4th order in the same slot | `tests/api/orders/create-order.spec.ts` | AC-3 says a slot accepts at most 3 orders (4th -> 409), but orders-service |
+
+### Agent notes
+_Written by the agent. Claims about test results here are superseded by the verification table above._
+
+### Decisions
+| Change | Decision | Files | Why |
+| --- | --- | --- | --- |
+| `deliverySlot` required and valid (AC-1) | update | tests/api/orders/create-order.spec.ts | +2 scenarios: missing, and not an ISO date-time. Both expect 400 and an `error` body. |
+| `deliverySlot` in the past (AC-2) | update | same | +1 scenario, expects 400. |
+| Created order echoes `deliverySlot` (AC-4) | update | same | The existing "creates an order" test now sends a slot and asserts it is echoed. The `Order` schema now includes `deliverySlot`. |
+| Existing "qty is 0 → 400" test | update | same | Now sends a valid slot, so the 400 can only come from `qty`. |
+| Slot capacity: 3 orders accepted (AC-3 boundary) | create | same | Passes against both the AC (3) and the service (5). |
+| Slot capacity: 4th order → 409 (AC-3) | review | same | Written to the AC as `test.fixme`; the service allows 5 (see below). |
+| Unique slot per test | create | src/data/builders.ts | New `deliverySlot()` and `pastDeliverySlot()` helpers, so tests don't share slot capacity in the service's in-memory store. |
+| `POST /orders` traceability | update | test-map.yaml | Added the endpoint → spec mapping. |
 
 ### Needs human attention
-- **AC mismatch (high):** SHOP-42 AC3 says the 4th order for a slot gets 409. The service has `MAX_ORDERS_PER_SLOT = 5`, so 409 only starts at the 6th order. The test follows the AC and is marked `fixme`. Either fix the constant or correct the story, then remove the `fixme`.
-- **AC mismatch (medium):** AC1 requires ISO 8601. The service uses `Date.parse`, which also accepts strings like `March 7, 2030`. I didn't write a test for this, so please decide what the intended behaviour is.
-- **Slot matching:** the service compares slots as raw strings. `…Z` and `…+00:00` for the same instant count as different slots. No test covers this.
-- **OpenAPI drift:** `openapi.yaml` isn't updated. It doesn't list `deliverySlot` as a request field or the 409 response, and has no 201 response schema.
-- **Run target not confirmed:** the executor couldn't start a local `orders-service` and couldn't read `QA_BASE_URL`, so I don't know which server the passing run hit. Please rerun locally before merging:
-  `PORT=3917 node src/server.js` in `orders-service`, then `QA_BASE_URL=http://127.0.0.1:3917 npx playwright test --project=api tests/api/orders/create-order.spec.ts`.
-- **Assertions changed:** none removed. The two existing tests now send `deliverySlot`. Without it the qty-0 test would pass only because the slot was missing. Both titles changed because the `@story:SHOP-42` tag was added and the tags now sit in a shared `TAGS` constant. Anything keyed on the old titles will see them as new.
-- **No cleanup:** orders live in service memory and there's no delete endpoint. Unique slots keep tests isolated.
+- **Requirement conflict (AC-3):** expected 409 "delivery slot is full" on the 4th order for a slot. Observed `MAX_ORDERS_PER_SLOT = 5`, so the 4th order gets 201 (`orders-service/src/server.js`, diff line 10). The test follows the AC and is marked `test.fixme` with `// QA-AGENT:`. Either the service constant or the story needs correcting; remove the fixme once that's settled.
+- **Ambiguous requirement:** the story is unverified, and "ISO 8601 date-time" is looser in the service than in the AC. The service uses `Date.parse`, so date-only or non-ISO strings may be accepted. I only tested clearly invalid input (`"not-a-date"`).
+- **Assertions changed:** none removed or loosened. The two existing tests now send `deliverySlot` (required since this change), and the success test also asserts the slot is echoed.
 
 ### Reviewer checklist
-- [ ] Expected values match the acceptance criteria (capacity of 3, not 5)
-- [ ] No duplicated coverage. "creates an order" and "echoes deliverySlot" both assert the echo.
-- [ ] Test data is isolated and cleaned up (unique slots; no teardown possible)
-- [ ] Rerun against a local `orders-service`
+- [ ] Expected values match the acceptance criteria
+- [ ] No duplicated coverage
+- [ ] Test data is isolated and cleaned up (each test uses its own random future slot; the service has no delete endpoint, so records are not removed)
 
 ---
-Generated by qa-sentinel. A QA engineer must review before merge. (19 turns · 192s · $0.60)
+Generated by qa-sentinel 0.1.1 (run `2026-10-09T06-30-48-094Z-gen-orders-service`, 20 turns · 42s · $0.14). A QA engineer must review before merge.

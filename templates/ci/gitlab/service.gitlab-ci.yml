@@ -12,7 +12,7 @@
 # The service's name in qa-sentinel.config.yaml must equal $CI_PROJECT_NAME (or set QA_SERVICE_NAME).
 
 variables:
-  QA_SENTINEL_VERSION: "0.1"
+  QA_SENTINEL_VERSION: "0.1.1"
   QA_SERVICE_NAME: "$CI_PROJECT_NAME"
 
 .qa-sentinel:
@@ -22,6 +22,7 @@ variables:
   before_script:
     - npm i -g @anthropic-ai/claude-code "qa-sentinel@${QA_SENTINEL_VERSION}"
     - git clone --depth 1 --branch {{targetBranch}} "https://gitlab-ci-token:${CI_JOB_TOKEN}@${CI_SERVER_HOST}/${QA_TESTS_PROJECT}.git" /tmp/qa-tests
+    - git -C /tmp/qa-tests remote remove origin   # no token in .git/config for the agent to read
     - (cd /tmp/qa-tests && npm ci --ignore-scripts)
 
 # Phase 1: read-only QA impact comment on every MR. Never blocks the MR.
@@ -36,7 +37,7 @@ qa-gap-report:
     - >
       qa-sentinel -C /tmp/qa-tests gap-report
       --service "$QA_SERVICE_NAME" --service-path "$CI_PROJECT_DIR"
-      --base "$CI_MERGE_REQUEST_DIFF_BASE_SHA" --head "$CI_COMMIT_SHA"
+      --base "$CI_MERGE_REQUEST_DIFF_BASE_SHA" --head "$CI_COMMIT_SHA" --checkout
       --out "$CI_PROJECT_DIR/qa-gap-report.md" --post
   artifacts:
     when: always

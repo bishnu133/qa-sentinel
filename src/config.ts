@@ -20,6 +20,7 @@ const ServiceSchema = z.object({
   name: z.string(),
   path: z.string().describe("Path to the service repo, relative to the test repo"),
   openapi: z.string().optional().describe("Path to the OpenAPI spec inside the service repo"),
+  gitlabProject: z.string().optional().describe("GitLab project path of the service, e.g. group/orders-service"),
   dependsOn: z.array(z.string()).default([]),
 });
 
@@ -29,9 +30,11 @@ export const ConfigSchema = z.object({
   project: z.object({
     name: z.string(),
   }),
-  workspace: z.object({
-    services: z.array(ServiceSchema).default([]),
-  }),
+  workspace: z
+    .object({
+      services: z.array(ServiceSchema).default([]),
+    })
+    .default({}),
   tests: z.object({
     language: z.enum(["typescript", "javascript"]).default("typescript"),
     api: z.object({
@@ -40,6 +43,8 @@ export const ConfigSchema = z.object({
       helpersDir: z.string().default("src/api"),
       runCommand: z.string().describe("Command that runs API tests; spec paths are appended"),
       baseUrlEnv: z.string().default("QA_BASE_URL"),
+      /** Extra paths the agent may write besides dir and helpersDir (fixtures, data builders, schemas). */
+      extraWritePaths: z.array(z.string()).default([]),
     }),
     web: z
       .object({
@@ -58,6 +63,9 @@ export const ConfigSchema = z.object({
   requirements: z
     .object({
       source: z.enum(["mr-description", "jira", "none"]).default("mr-description"),
+      /** When true, generation refuses to run without requirements (gap reports still run and say so). */
+      required: z.boolean().default(false),
+      storyKeyPattern: z.string().default("[A-Z][A-Z0-9]+-\\d+"),
       jira: z
         .object({
           baseUrl: z.string().optional(),
@@ -87,6 +95,20 @@ export const ConfigSchema = z.object({
         })
         .default({}),
       maxFixAttempts: z.number().int().min(0).max(10).default(3),
+      timeoutMinutes: z
+        .object({
+          gapReport: z.number().positive().default(15),
+          generate: z.number().positive().default(30),
+          learn: z.number().positive().default(20),
+        })
+        .default({}),
+      maxBudgetUsd: z
+        .object({
+          gapReport: z.number().positive().default(2),
+          generate: z.number().positive().default(5),
+          learn: z.number().positive().default(3),
+        })
+        .default({}),
       skipPaths: z
         .array(z.string())
         .default(["**/*.md", "docs/**", "**/*.lock", "**/package-lock.json", ".gitlab-ci.yml", "Jenkinsfile"]),
@@ -94,8 +116,48 @@ export const ConfigSchema = z.object({
     .default({}),
   guardrails: z
     .object({
-      forbiddenUrlPatterns: z.array(z.string()).default(["prod", "production"]),
-      allowAssertionRemoval: z.boolean().default(false),
+      /** Globs the agent may change during `generate`. Empty = derived from tests.api (dir, helpersDir, extraWritePaths, test-map.yaml). */
+      allowedWritePaths: z.array(z.string()).default([]),
+      /** Globs that may never change, even if they match allowedWritePaths. */
+      blockedWritePaths: z
+        .array(z.string())
+        .default([
+          ".claude/**",
+          "CLAUDE.md",
+          "qa-sentinel.config.yaml",
+          ".gitlab-ci.yml",
+          "**/*.gitlab-ci.yml",
+          "Jenkinsfile*",
+          "ci/**",
+          ".github/**",
+          ".env*",
+          "**/.env*",
+          "package.json",
+          "package-lock.json",
+          "pnpm-lock.yaml",
+          "yarn.lock",
+          "playwright.config.*",
+          "tsconfig*.json",
+        ]),
+      /** Hosts that may appear in URLs added to test code. The host of the base URL env var is always allowed. */
+      allowedHosts: z.array(z.string()).default(["localhost", "127.0.0.1", "example.com", "example.test", "example.org"]),
+      /** What to do when a changed test file has fewer assertions than before: warn (flag in MR) or fail the run. */
+      assertionRemoval: z.enum(["warn", "fail"]).default("warn"),
+      /** Environment variables passed to the agent and to test runs. Token-like variables are never passed unless listed here. */
+      passEnv: z.array(z.string()).default([]),
+    })
+    .default({}),
+  verification: z
+    .object({
+      /** Run `npx tsc --noEmit` before tests ("auto" = when tsconfig.json exists). */
+      typecheck: z.enum(["auto", "always", "never"]).default("auto"),
+      /** Optional lint command; changed files are appended. */
+      lintCommand: z.string().optional(),
+      /** Where the test runner writes JUnit XML. For Playwright this is set automatically. */
+      junitPath: z.string().optional(),
+      /** Check that the base URL answers before running tests (unreachable = BLOCKED). */
+      preflight: z.boolean().default(true),
+      timeoutMinutes: z.number().positive().default(15),
     })
     .default({}),
 });

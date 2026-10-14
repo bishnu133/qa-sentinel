@@ -2,7 +2,9 @@
 
 > **Purpose of this document:** a self-contained brief for an external reviewer (human or AI) who has not seen our earlier discussions. It explains the problem, the approach, the architecture, what is built and verified, what is not, and the specific questions we want feedback on.
 >
-> **Status:** v0.1.0, pre-release. Not yet published to npm. Not yet run in a real GitLab/Jenkins pipeline.
+> **Status:** v0.1.1, pre-release. Not yet published to npm. Not yet run in a real GitLab/Jenkins pipeline.
+>
+> **Update after review #1:** this brief describes v0.1.0 as it was reviewed. For what changed in v0.1.1 (requirement snapshot, SHA pinning, code-enforced guardrails, independent verification, run limits, credential isolation) and our point-by-point response, see **[REVIEW-RESPONSE-1.md](REVIEW-RESPONSE-1.md)**. Section 6 below is annotated with the current status.
 > **Repo:** https://github.com/bishnu133/qa-sentinel · **License:** MIT · **Date:** October 2026
 
 ---
@@ -164,6 +166,8 @@ Outputs: `examples/delivery-slot-demo/expected-output/`.
 - The Claude CLI waited 3 s for stdin. Fixed with `stdio: ignore`.
 
 ## 6. Known limitations and honest gaps
+
+> v0.1.1 status: items 4 and 5 are **fixed**, item 11 is **mitigated and tested**, item 6 is **partly fixed** (requirements are fetched from the MR behind a merged commit; Jira is still pending). Items 1–3 and 7–10 remain open. See REVIEW-RESPONSE-1.md §D.
 
 1. **Not exercised on real CI yet.** The GitLab and Jenkins files are written but unverified: job-token permissions, triggers, the `trigger:` variable passing, and Docker images.
 2. **Multi-service features.** Each service merge triggers its own run, and each run sees only that service's diff. A feature spanning 3 services produces 3 separate analyses and 3 test MRs, and cross-service flows are not tested as a whole. (Proposal in §7.)

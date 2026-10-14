@@ -24,19 +24,19 @@ pipeline {
         }
         dir('qa-tests') {
           git url: params.QA_TESTS_REPO, branch: '{{targetBranch}}', credentialsId: 'gitlab-checkout'
-          sh 'npm ci --ignore-scripts'
+          sh 'npm ci --ignore-scripts && git remote remove origin'
         }
       }
     }
     stage('Gap report') {
       steps {
-        sh 'npm i -g --prefix "$WORKSPACE/.npm-global" @anthropic-ai/claude-code qa-sentinel@0.1'
+        sh 'npm i -g --prefix "$WORKSPACE/.npm-global" @anthropic-ai/claude-code qa-sentinel@0.1.1'
         sh '''
           export PATH="$WORKSPACE/.npm-global/bin:$PATH"
           SERVICE="${QA_SERVICE_NAME:-$JOB_BASE_NAME}"
           qa-sentinel -C qa-tests gap-report \
             --service "$SERVICE" --service-path "$WORKSPACE/service" \
-            --base "origin/${gitlabTargetBranch}" --head HEAD \
+            --base "origin/${gitlabTargetBranch}" --head HEAD --checkout \
             --out "$WORKSPACE/qa-gap-report.md" --post
         '''
       }

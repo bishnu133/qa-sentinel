@@ -5,6 +5,8 @@ import { CONFIG_FILE, configPath, loadConfig } from "../config.js";
 import { claudeAvailable } from "../claude.js";
 import { isGitRepo } from "../git.js";
 import { log } from "../log.js";
+import { SECRET_NAME } from "../env.js";
+import { currentUser, getProject, gitlabContext } from "../scm/gitlab.js";
 
 type Level = "ok" | "warn" | "fail";
 export interface Check {
@@ -78,12 +80,54 @@ export function runChecks(cwd: string, env: NodeJS.ProcessEnv = process.env): Ch
   }
 
   if (c.requirements.source === "none") add("warn", "requirements source", "without stories/AC, tests only check what the code does");
+
+  const leaked = Object.keys(env).filter((k) => c.guardrails.passEnv.includes(k) && SECRET_NAME.test(k));
+  if (leaked.length) add("warn", `passEnv forwards credential-like variables to agents: ${leaked.join(", ")}`, "only list what generated tests truly need");
+  if (c.guardrails.allowedWritePaths.some((g) => g === "**" || g === "**/*")) add("fail", "guardrails.allowedWritePaths is not a catch-all", "list the test, helper and fixture folders explicitly");
+  if (c.workspace.services.length && c.ci.scm === "gitlab" && c.workspace.services.some((s) => !s.gitlabProject)) {
+    add("warn", "services have gitlabProject set", "needed after merge to fetch the MR's acceptance criteria (or set QA_SERVICE_PROJECT in CI)");
+  }
   return checks;
 }
 
-export function doctorCommand(cwd: string): number {
+/** Calls GitLab to prove the token can reach the projects, rather than only checking a variable exists. */
+export async function onlineChecks(cwd: string, env: NodeJS.ProcessEnv = process.env): Promise<Check[]> {
+  const checks: Check[] = [];
+  const c = loadConfig(cwd);
+  const ctx = gitlabContext(c.ci.gitlabUrl, env);
+  if (!ctx) return [{ level: "fail", label: "GitLab token available for online checks", hint: "set QA_SENTINEL_GITLAB_TOKEN" }];
+  try {
+    const u = await currentUser(ctx);
+    checks.push({ level: "ok", label: `GitLab token works (user ${u.username})` });
+  } catch (e) {
+    return [{ level: "fail", label: "GitLab token accepted", hint: (e as Error).message.slice(0, 200) }];
+  }
+  const targets = [
+    ...(c.ci.testRepoProject ? [{ label: "test repo", project: c.ci.testRepoProject, needWrite: true }] : []),
+    ...c.workspace.services.filter((s) => s.gitlabProject).map((s) => ({ label: `service ${s.name}`, project: s.gitlabProject!, needWrite: false })),
+  ];
+  for (const t of targets) {
+    try {
+      const p = await getProject(ctx, t.project);
+      const level = Math.max(p.permissions?.project_access?.access_level ?? 0, p.permissions?.group_access?.access_level ?? 0);
+      if (t.needWrite && level < 30) checks.push({ level: "fail", label: `${t.label} (${t.project}): Developer access to push branches and open MRs`, hint: `token has access level ${level}` });
+      else checks.push({ level: "ok", label: `${t.label} (${t.project}) reachable` });
+    } catch (e) {
+      checks.push({ level: "fail", label: `${t.label} (${t.project}) reachable with the token`, hint: (e as Error).message.slice(0, 160) });
+    }
+  }
+  checks.push({
+    level: "warn",
+    label: "CI job-token allowlists cannot be checked from here",
+    hint: "in each service project: Settings › CI/CD › Job token permissions › allow the test repo (and vice versa)",
+  });
+  return checks;
+}
+
+export async function doctorCommand(cwd: string, o: { online?: boolean } = {}): Promise<number> {
   log.title("qa-sentinel doctor");
   const checks = runChecks(path.resolve(cwd));
+  if (o.online && !checks.some((c) => c.level === "fail" && c.label.includes("valid"))) checks.push(...(await onlineChecks(path.resolve(cwd))));
   for (const ch of checks) {
     const line = ch.hint ? `${ch.label}  — ${ch.hint}` : ch.label;
     if (ch.level === "ok") log.ok(line);
