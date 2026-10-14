@@ -5,9 +5,9 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 SDK="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-$HOME/Library/Android/sdk}}"
-# Latest final releases only (not 36.0.0-rc1 or android-Baklava previews).
+# Latest final releases only (not 36.0.0-rc1 or android-Baklava previews; android-36.1 minor releases are fine).
 BT="$(ls -d "$SDK"/build-tools/* 2>/dev/null | grep -E '/[0-9]+(\.[0-9]+)*$' | sort -V | tail -1 || true)"
-PLAT="$(ls -d "$SDK"/platforms/android-* 2>/dev/null | grep -E '/android-[0-9]+$' | sort -V | tail -1 || true)"
+PLAT="$(ls -d "$SDK"/platforms/android-* 2>/dev/null | grep -E '/android-[0-9]+(\.[0-9]+)?$' | sort -V | tail -1 || true)"
 if [ -z "$BT" ] || [ -z "$PLAT" ]; then
   echo "✗ Android SDK build-tools or platform not found in $SDK." >&2
   echo "  Android Studio › Settings › Languages & Frameworks › Android SDK: tick an 'Android SDK Platform' (SDK Platforms tab)" >&2
