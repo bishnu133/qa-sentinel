@@ -1,0 +1,199 @@
+import fs from "node:fs";
+import path from "node:path";
+import { z } from "zod";
+import type { Config } from "../config.js";
+import type { AgentEngine, AgentResult } from "../engines/AgentEngine.js";
+import { git } from "../git.js";
+import type { AgentCommit } from "../commands/metrics.js";
+import { type RunDir, agentEnv } from "../run.js";
+
+/**
+ * Learning from review: what QA engineers changed in agent-written tests before merging them, turned into short,
+ * general rules in the knowledge base (kb/review-lessons.md) that every agent reads on the next run. The rules are
+ * proposed through a merge request; a human decides what the agents learn.
+ */
+
+export const LESSONS_FILE = "review-lessons.md";
+const MARKER = /<!--\s*qa-sentinel:lessons-from:\s*([^>]*?)\s*-->/;
+
+export interface ReviewerEdit {
+  /** The agent's commit and where it was merged. */
+  sha: string;
+  runId?: string;
+  subject: string;
+  mergedBy: string;
+  how: "merge" | "squash";
+  files: string[];
+  /** What the reviewer changed on top of the agent's version (unified diff, capped). */
+  diff: string;
+}
+
+const tryGit = (repo: string, args: string[]) => {
+  try {
+    return git(repo, args);
+  } catch {
+    return "";
+  }
+};
+
+/** The reviewer's net change to each merged-with-edits agent commit: agent's version → what was merged. */
+export function reviewerEdits(repo: string, commits: AgentCommit[], maxDiffChars = 30_000): ReviewerEdit[] {
+  const out: ReviewerEdit[] = [];
+  for (const c of commits) {
+    if (c.state !== "merged-edited" || !c.mergedBy) continue;
+    const parents = tryGit(repo, ["rev-list", "--parents", "-n", "1", c.mergedBy]).split(" ").slice(1);
+    const how = parents.length > 1 ? "merge" : "squash";
+    // Merge commit: the MR branch's tip has the reviewer's commits on top of the agent's. Squash: compare the agent's
+    // files at the agent's commit with the squashed result.
+    const tip = how === "merge" ? parents[1] : c.mergedBy;
+    const files = how === "merge" ? tryGit(repo, ["diff", "--name-only", c.sha, tip]).split("\n").filter(Boolean) : c.files;
+    if (!files.length) continue;
+    let diff = tryGit(repo, ["diff", "--unified=4", c.sha, tip, "--", ...files]);
+    if (!diff.trim()) continue;
+    if (diff.length > maxDiffChars) diff = `${diff.slice(0, maxDiffChars)}\n… (diff cut at ${maxDiffChars} characters)`;
+    out.push({ sha: c.sha, runId: c.runId, subject: tryGit(repo, ["log", "-1", "--format=%s", c.sha]), mergedBy: c.mergedBy, how, files, diff });
+  }
+  return out;
+}
+
+/** Agent commits already turned into lessons (recorded in the lessons file itself). */
+export function processedCommits(lessonsMd: string | undefined): Set<string> {
+  const m = lessonsMd?.match(MARKER);
+  return new Set((m?.[1] ?? "").split(/[\s,]+/).filter(Boolean));
+}
+
+export const LessonsSchema = z
+  .object({
+    schemaVersion: z.literal(1),
+    lessons: z
+      .array(
+        z
+          .object({
+            /** One imperative rule, e.g. "Assert the error message the AC names, not only the status code." */
+            lesson: z.string().min(10).max(240),
+            why: z.string().min(1),
+            /** A short before → after from the reviewer's edit. */
+            example: z.string().nullish(),
+            appliesTo: z.enum(["api", "web", "mobile", "all"]),
+            /** Agent commits (first 8 characters) whose review taught this. */
+            sources: z.array(z.string().min(7)).min(1),
+            /** The heading of an existing lesson this strengthens, instead of adding a new one. */
+            updates: z.string().nullish(),
+          })
+          .strict(),
+      )
+      .default([]),
+    /** Edits that teach nothing general (a test data value, a typo, a project-specific fix). */
+    skipped: z.array(z.object({ commit: z.string(), reason: z.string() }).strict()).default([]),
+  })
+  .strict();
+export type Lessons = z.infer<typeof LessonsSchema>;
+
+export function validateLessons(raw: unknown, inputs: string[], existingHeadings: string[]): { lessons?: Lessons; errors: string[] } {
+  const p = LessonsSchema.safeParse(raw);
+  if (!p.success) return { errors: p.error.issues.map((i) => `${i.path.join(".") || "(root)"}: ${i.message}`) };
+  const errors: string[] = [];
+  const known = (s: string) => inputs.some((sha) => sha.startsWith(s) || s.startsWith(sha.slice(0, 8)));
+  p.data.lessons.forEach((l, i) => {
+    l.sources.forEach((s) => !known(s) && errors.push(`lessons[${i}].sources: ${s} is not one of the reviewed commits (${inputs.map((x) => x.slice(0, 8)).join(", ")})`));
+    if (l.updates && !existingHeadings.includes(l.updates)) errors.push(`lessons[${i}].updates: "${l.updates}" is not an existing lesson heading`);
+  });
+  return errors.length ? { errors } : { lessons: p.data, errors };
+}
+
+/** The reviewer edits as one markdown file for the agent. */
+export function editsMarkdown(edits: ReviewerEdit[]): string {
+  return edits
+    .map((e) =>
+      [
+        `## ${e.sha.slice(0, 8)} · ${e.subject}`,
+        `Merged by ${e.how} (${e.mergedBy.slice(0, 8)}). Files the reviewer changed: ${e.files.join(", ")}.`,
+        "What the reviewer changed on top of the agent's tests (- agent, + reviewer):",
+        "```diff",
+        e.diff,
+        "```",
+      ].join("\n"),
+    )
+    .join("\n\n");
+}
+
+export async function learnLessons(i: {
+  cwd: string;
+  c: Config;
+  run: RunDir;
+  engine: AgentEngine;
+  edits: ReviewerEdit[];
+  lessonsPath: string;
+  existingHeadings: string[];
+}): Promise<{ lessons?: Lessons; errors: string[]; runs: AgentResult[] }> {
+  fs.writeFileSync(path.join(i.run.dir, "review-edits.md"), editsMarkdown(i.edits));
+  const out = `${i.run.rel}/lessons.json`;
+  const runs: AgentResult[] = [];
+  const ask = (extra: string[] = []) =>
+    i.engine.run({
+      kind: "lessons",
+      cwd: i.cwd,
+      prompt: [
+        "Use the learn-from-review skill.",
+        `What reviewers changed in agent-written tests: ${i.run.rel}/review-edits.md.`,
+        `The lessons the team has so far: ${fs.existsSync(path.join(i.cwd, i.lessonsPath)) ? i.lessonsPath : "(none yet)"}.`,
+        `Write your result as JSON to ${out}. That is the only file you may write. Then answer "done".`,
+        ...extra,
+      ].join("\n"),
+      readOnlyDirs: [],
+      write: { allowed: [out], blocked: [] },
+      bash: [],
+      maxTurns: i.c.agent.maxTurns.review,
+      maxBudgetUsd: i.c.agent.maxBudgetUsd.review,
+      timeoutMs: i.c.agent.timeoutMinutes.review * 60_000,
+      env: agentEnv(i.c),
+      model: i.c.agent.model,
+    });
+  const read = () => {
+    try {
+      return JSON.parse(fs.readFileSync(path.join(i.cwd, out), "utf8"));
+    } catch {
+      return undefined;
+    }
+  };
+  const inputs = i.edits.map((e) => e.sha);
+  const first = await ask();
+  runs.push(first);
+  if (!first.ok) return { errors: [first.status], runs };
+  let v = validateLessons(read(), inputs, i.existingHeadings);
+  if (!v.lessons) {
+    runs.push(await ask(["Your previous result was rejected:", ...v.errors.map((e) => `- ${e}`), "Fix these and write the file again."]));
+    v = validateLessons(read(), inputs, i.existingHeadings);
+  }
+  return { ...v, runs };
+}
+
+const HEADER = `# Review lessons
+
+What QA engineers changed in agent-written tests before merging them, as rules for the next tests. Every
+qa-sentinel agent reads this file. Proposed by \`qa-sentinel lessons\` from merged agent MRs; a human reviews each
+change before it is merged. Edit or delete a lesson freely.
+`;
+
+export const lessonHeadings = (md: string | undefined) => [...(md ?? "").matchAll(/^## (.+)$/gm)].map((m) => m[1].trim());
+
+const SCOPE: Record<Lessons["lessons"][number]["appliesTo"], string> = { api: "API tests", web: "web tests", mobile: "mobile tests", all: "all tests" };
+
+/** The lessons file with the new lessons added (or existing ones strengthened) and the reviewed commits recorded. */
+export function applyLessons(current: string | undefined, l: Lessons, reviewed: string[]): string {
+  let md = (current ?? HEADER).replace(MARKER, "").trimEnd();
+  for (const x of l.lessons) {
+    const from = x.sources.map((s) => s.slice(0, 8)).join(", ");
+    if (x.updates) {
+      // Strengthen an existing lesson: add the new evidence under it.
+      const at = md.indexOf(`## ${x.updates}`);
+      const next = md.indexOf("\n## ", at + 3);
+      const end = next < 0 ? md.length : next;
+      md = `${md.slice(0, end).trimEnd()}\n- Seen again: ${from}${x.example ? ` (${x.example})` : ""}\n${md.slice(end)}`;
+      continue;
+    }
+    md += `\n\n## ${x.lesson}\n- Why: ${x.why}\n${x.example ? `- Example: ${x.example}\n` : ""}- Applies to: ${SCOPE[x.appliesTo]}\n- From review of: ${from}`;
+  }
+  const done = [...new Set([...processedCommits(current), ...reviewed.map((s) => s.slice(0, 8))])];
+  return `${md.trimEnd()}\n\n<!-- qa-sentinel:lessons-from: ${done.join(",")} -->\n`;
+}

@@ -8,6 +8,7 @@ import { bugsCommand } from "./commands/bugs.js";
 import { tagCommand } from "./commands/tag.js";
 import { metricsCommand } from "./commands/metrics.js";
 import { storyCheckCommand } from "./commands/storyCheck.js";
+import { lessonsCommand } from "./commands/lessons.js";
 import { learnCommand } from "./commands/learn.js";
 import { doctorCommand } from "./commands/doctor.js";
 import { gapReportCommand } from "./commands/gapReport.js";
@@ -123,6 +124,14 @@ program
   .option("--json", "print the parsed story as JSON")
   .option("-o, --out <file>", "markdown output", "qa-story-check.md")
   .action(wrap(async (o) => storyCheckCommand({ cwd: cwd(), story: o.story, storyFile: o.storyFile, fields: o.fields, json: o.json, out: o.out })));
+
+program
+  .command("lessons")
+  .description("learn from review: what QA engineers changed in agent MRs before merging, as rules in kb/review-lessons.md (on a branch / MR)")
+  .option("--since <when>", "only agent MRs merged since: 30d, 12w or a date")
+  .option("--push", "push the branch and open a merge request")
+  .option("--dry-run", "list the edited agent MRs without calling the agent")
+  .action(wrap(async (o) => lessonsCommand({ cwd: cwd(), since: o.since, push: o.push, dryRun: o.dryRun })));
 
 program
   .command("metrics")
