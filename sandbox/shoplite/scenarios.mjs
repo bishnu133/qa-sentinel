@@ -302,6 +302,37 @@ document.getElementById("order-form").addEventListener("submit", async (e) => {`
       ],
     },
   },
+  {
+    id: "SHOP-109",
+    service: "shoplite-app",
+    branch: "feature/SHOP-109-order-status-in-app",
+    title: "SHOP-109: Show the payment status and total in the app",
+    story: `As a customer I see in the app whether my order is paid and what it cost.
+
+## Acceptance criteria
+1. The order screen shows the order's status, e.g. "Status: confirmed".
+2. The order screen shows the order total with its currency and two decimals, e.g. "Total: SGD 25.00" for 2 books.
+3. Opening an order that does not exist (e.g. shoplite://orders/ord_missing) shows "Order not found".`,
+    expect:
+      "Mobile (needs `setup --mobile`, an emulator and Appium). New order-screen elements → screen object OrderScreen first (status, total), then app tests with the order created through the API and opened by deep link. AC-3 changes the not-found message, so the existing \"says when an order can't be loaded\" app test breaks (regression selection should name it). Every AC passes after generation, so --showcase builds the video from the phone recordings.",
+    edits: {
+      "src/test/shoplite/app/OrderActivity.java": [
+        ["    private TextView line;\n", "    private TextView line;\n    private TextView status;\n    private TextView total;\n"],
+        [
+          '        line = Ui.text(this, col, "order-line", "", 18);\n',
+          '        line = Ui.text(this, col, "order-line", "", 18);\n        status = Ui.text(this, col, "order-status", "", 18);\n        total = Ui.text(this, col, "order-total", "", 18);\n',
+        ],
+        [
+          '                    if (res.status != 200) {\n                        message.setText("Could not load the order (" + res.status + ")");',
+          '                    if (res.status == 404) {\n                        heading.setText("Order");\n                        message.setText("Order not found");\n                        return;\n                    }\n                    if (res.status != 200) {\n                        message.setText("Could not load the order (" + res.status + ")");',
+        ],
+        [
+          '                    line.setText(o.optInt("qty") + " × " + o.optString("item"));\n',
+          '                    line.setText(o.optInt("qty") + " × " + o.optString("item"));\n                    status.setText("Status: " + o.optString("status"));\n                    total.setText(String.format(java.util.Locale.US, "Total: %s %.2f", o.optString("currency"), o.optDouble("total")));\n',
+        ],
+      ],
+    },
+  },
 ];
 
 // Part 2 of a story shares the story (and its acceptance criteria) with part 1.

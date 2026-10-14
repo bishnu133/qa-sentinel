@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android" package="test.shoplite.app">
+    <uses-permission android:name="android.permission.INTERNET" />
+    <application android:label="ShopLite" android:usesCleartextTraffic="true" android:theme="@android:style/Theme.Material.Light.DarkActionBar">
+        <activity android:name=".MainActivity" android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+        <activity android:name=".NewOrderActivity" android:exported="false" />
+        <!-- Deep links: shoplite://orders/<id> opens an order (tests use it to skip navigation). -->
+        <activity android:name=".OrderActivity" android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="shoplite" android:host="orders" />
+            </intent-filter>
+        </activity>
+    </application>
+</manifest>

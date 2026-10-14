@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // ShopLite on your laptop – no GitLab needed.
 //
-//   node sandbox/shoplite/local.mjs setup [--level maintenance] [--work ./shoplite-local]
+//   node sandbox/shoplite/local.mjs setup [--level maintenance] [--mobile] [--work ./shoplite-local]
 //   node sandbox/shoplite/local.mjs list
 //   node sandbox/shoplite/local.mjs run SHOP-101 [--generate]     # make the dev change, gap report (+ generate tests)
 //   node sandbox/shoplite/local.mjs run SHOP-101 --regression     # also run the existing tests qa-sentinel selected, against the change
@@ -13,10 +13,12 @@
 //   node sandbox/shoplite/local.mjs story SHOP-106 [--generate]    # one gap report (and one test branch) for the whole story, all services
 //   node sandbox/shoplite/local.mjs reset                          # every service back to main, env stopped
 //   node sandbox/shoplite/local.mjs env start|stop
+//   node sandbox/shoplite/local.mjs app build                      # (setup --mobile) build the Android app → shoplite-app/build/shoplite.apk
+//   node sandbox/shoplite/local.mjs run SHOP-109 --generate --showcase   # mobile: app change, screen objects + app tests (emulator + Appium running)
 import fs from "node:fs";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
-import { CLI, HERE, SERVICES, TEST_REPO, buildServices, buildTests, die, flags, git, log, makeChange, scenario } from "./lib.mjs";
+import { APP, CLI, HERE, TEST_REPO, buildServices, buildTests, die, flags, git, log, makeChange, scenario, servicesIn } from "./lib.mjs";
 import { SCENARIOS } from "./scenarios.mjs";
 
 const f = flags(process.argv.slice(2));
@@ -79,13 +81,14 @@ function envStop(quiet = false) {
 switch (cmd) {
   case "setup": {
     fs.mkdirSync(work, { recursive: true });
-    buildServices(work);
-    buildTests(work, { level: f.level === "maintenance" ? "maintenance" : "intelligence", jira: JIRA });
+    buildServices(work, { mobile: Boolean(f.mobile) });
+    buildTests(work, { level: f.level === "maintenance" ? "maintenance" : "intelligence", jira: JIRA, mobile: Boolean(f.mobile) });
     if (JIRA) log(`Jira mode: stories from ${JIRA.baseUrl} (project ${JIRA.project}); seed them with jira-seed.mjs --work ${path.relative(process.cwd(), work) || "."}`);
     fs.mkdirSync(path.join(work, "stories"), { recursive: true });
     for (const s of SCENARIOS) fs.writeFileSync(path.join(work, "stories", `${s.id}.md`), `# ${s.title}\n\n${s.story}\n`);
     installBrowser();
     log(`ShopLite ready in ${work}`);
+    if (f.mobile) log("mobile: start an Android emulator and Appium, then: node sandbox/shoplite/local.mjs app build && node sandbox/shoplite/local.mjs run SHOP-109");
     log(`next: node sandbox/shoplite/local.mjs run SHOP-101`);
     break;
   }
@@ -95,9 +98,13 @@ switch (cmd) {
   case "env":
     arg === "stop" ? envStop() : envStart();
     break;
+  case "app":
+    if (arg !== "build") die("usage: local.mjs app build");
+    buildApp();
+    break;
   case "reset":
     envStop(true);
-    for (const svc of SERVICES) if (fs.existsSync(path.join(work, svc))) git(path.join(work, svc), "checkout", "-q", "-f", "main");
+    for (const svc of servicesIn(work)) git(path.join(work, svc), "checkout", "-q", "-f", "main");
     testsToMain();
     log("all repos back on main; environment stopped");
     break;
@@ -115,7 +122,7 @@ switch (cmd) {
     const id = String(arg ?? "").toUpperCase();
     if (!id) die("usage: local.mjs feature SHOP-106 [--run]");
     const key = storyKeyOf(id);
-    for (const svc of SERVICES) if (fs.existsSync(path.join(work, svc))) git(path.join(work, svc), "checkout", "-q", "-f", "main");
+    for (const svc of servicesIn(work)) git(path.join(work, svc), "checkout", "-q", "-f", "main");
     envStart();
     const storyFile = path.join(work, "stories", `${id}.md`);
     const code = run("node", [CLI, "feature", key, "--env", "local", ...(fs.existsSync(storyFile) ? storyArgs(storyFile) : []), ...(f.run ? ["--run"] : []), ...(JIRA && f.post ? ["--post"] : [])], {
@@ -132,7 +139,7 @@ switch (cmd) {
     const id = String(arg ?? "").toUpperCase();
     if (!id) die("usage: local.mjs story SHOP-106 [--generate]");
     const key = storyKeyOf(id);
-    for (const svc of SERVICES) if (fs.existsSync(path.join(work, svc))) git(path.join(work, svc), "checkout", "-q", "-f", "main");
+    for (const svc of servicesIn(work)) git(path.join(work, svc), "checkout", "-q", "-f", "main");
     testsToMain();
     const storyFile = path.join(work, "stories", `${id}.md`);
     const gap = run("node", [CLI, "gap-report", "--story", key, "--checkout", ...(fs.existsSync(storyFile) ? storyArgs(storyFile) : []), ...(JIRA ? ["--post"] : []), "-o", `../${id}-story-gap-report.md`], { cwd: tests });
@@ -152,13 +159,15 @@ switch (cmd) {
     if (!fs.existsSync(tests)) die(`no sandbox in ${work}; run: node sandbox/shoplite/local.mjs setup`);
     const s = scenario(arg);
     const svcDir = path.join(work, s.service);
-    for (const svc of SERVICES) if (fs.existsSync(path.join(work, svc))) git(path.join(work, svc), "checkout", "-q", "-f", "main");
+    for (const svc of servicesIn(work)) git(path.join(work, svc), "checkout", "-q", "-f", "main");
     const prev = git(tests, "branch", "--show-current");
     if (prev.startsWith("qa-sentinel/")) log(`generated tests stay on branch ${prev} (review: git -C ${tests} diff main ${prev})`);
     testsToMain();
     const key = storyKeyOf(s.storyKey ?? s.id);
     log(`${s.id}${key !== s.id ? ` (Jira ${key})` : ""}: developer change on ${s.service} (${s.branch})`);
     // The commit message carries the story key, as a developer's would: that's how qa-sentinel finds the story.
+    const mobile = s.service === APP;
+    if (mobile && !fs.existsSync(svcDir)) die(`${s.id} is a mobile scenario: run setup with --mobile first (node sandbox/shoplite/local.mjs setup --mobile --level maintenance)`);
     makeChange(svcDir, s, { storyKey: key });
     console.log(`  expect: ${s.expect}\n`);
     if (f["change-only"]) {
@@ -170,19 +179,28 @@ switch (cmd) {
     const gap = run("node", [CLI, "gap-report", "-s", s.service, "--base", "main", "--head", "HEAD", ...storyArgs(story), ...(JIRA ? ["--post"] : []), "-o", `../${s.id}-gap-report.md`], { cwd: tests });
     if (gap === 3) noClaude();
     log(`gap report: ${path.join(work, `${s.id}-gap-report.md`)}`);
+    // Mobile: the app under test is the one built from this change, on the running emulator.
+    const testEnv = { ...process.env, ...QA_URLS, ...(mobile ? mobileEnv() : {}) };
+    if (mobile && (f.regression || f.generate)) {
+      buildApp();
+      appiumCheck();
+    }
     if (f.regression) {
       // Run the existing tests qa-sentinel selected, against the developer's change: do the predicted breaks happen?
       const selected = fs.existsSync(path.join(work, "qa-regression.txt")) ? fs.readFileSync(path.join(work, "qa-regression.txt"), "utf8").split("\n").filter(Boolean) : [];
+      const app = selected.filter((x) => x.startsWith("tests/mobile/"));
+      const rest = selected.filter((x) => !x.startsWith("tests/mobile/"));
       envStart();
       log(`running ${selected.length || "all"} selected existing test(s) against ${s.service} with the change`);
-      run("npx", ["playwright", "test", ...(selected.length ? [] : ["--project=api", "--project=web"]), "--reporter=list", ...selected], { cwd: tests, env: { ...process.env, ...QA_URLS } });
+      if (rest.length || !selected.length) run("npx", ["playwright", "test", ...(selected.length ? [] : ["--project=api", "--project=web"]), "--reporter=list", ...rest], { cwd: tests, env: testEnv });
+      if (app.length) run("npx", ["wdio", "run", "wdio.conf.ts", ...[...new Set(app.map((x) => x.replace(/:\d+$/, "")))].flatMap((x) => ["--spec", x])], { cwd: tests, env: testEnv });
       envStop(true);
     }
     if (f.generate) {
       envStart();
       const code = run("node", [CLI, "generate", "-s", s.service, "--base", "main", "--head", "HEAD", ...storyArgs(story)], {
         cwd: tests,
-        env: { ...process.env, ...QA_URLS },
+        env: testEnv,
       });
       envStop(true);
       if (code === 3) noClaude();
@@ -192,8 +210,12 @@ switch (cmd) {
         // for the story if every acceptance criterion passed. Without JIRA_* it only assesses (--dry-run).
         // The environment stays up for the showcase: it re-records the chosen web tests in showcase mode.
         envStart();
-        run("npx", ["playwright", "test", "--project=api", "--project=web"], { cwd: tests, env: { ...process.env, ...QA_URLS } });
-        run("node", [CLI, "showcase", "--story", key, ...storyArgs(story), ...(JIRA ? [] : ["--dry-run"]), "-o", `../${s.id}-showcase.md`], { cwd: tests, env: { ...process.env, ...QA_URLS } });
+        run("npx", ["playwright", "test", "--project=api", "--project=web"], { cwd: tests, env: testEnv });
+        if (mobile) {
+          fs.rmSync(path.join(tests, "test-results/mobile"), { recursive: true, force: true });
+          run("npx", ["wdio", "run", "wdio.conf.ts"], { cwd: tests, env: testEnv });
+        }
+        run("node", [CLI, "showcase", "--story", key, ...storyArgs(story), ...(JIRA ? [] : ["--dry-run"]), "-o", `../${s.id}-showcase.md`], { cwd: tests, env: testEnv });
         envStop(true);
         log(`showcase summary: ${path.join(work, `${s.id}-showcase.md`)}`);
       }
@@ -204,7 +226,7 @@ switch (cmd) {
     break;
   }
   default:
-    console.log(fs.readFileSync(new URL(import.meta.url), "utf8").split("\n").slice(1, 14).join("\n").replace(/^\/\/ ?/gm, ""));
+    console.log(fs.readFileSync(new URL(import.meta.url), "utf8").split("\n").slice(1).filter((l, i, all) => all.slice(0, i + 1).every((x) => x.startsWith("//"))).join("\n").replace(/^\/\/ ?/gm, ""));
 }
 
 /**
@@ -223,6 +245,30 @@ function installBrowser() {
   Web tests can use your installed Google Chrome instead; videos need Playwright's ffmpeg, so turn them off:
     export QA_BROWSER_CHANNEL=chrome QA_VIDEO=off
   The API tests are not affected.`);
+}
+
+/** Build the Android app from the app repo's current checkout (the developer's change included). */
+function buildApp() {
+  const dir = path.join(work, APP);
+  if (!fs.existsSync(dir)) die("no app in this sandbox: run setup with --mobile");
+  log(`${APP}: building the app (Android SDK tools)`);
+  const code = run("bash", [path.join(dir, "build.sh")], { cwd: dir });
+  if (code !== 0) die(`the app did not build (exit ${code}); see above`);
+}
+
+/** Device and app for the mobile tests: the emulator via Appium, the APK just built. */
+function mobileEnv() {
+  return { QA_MOBILE_PLATFORM: "android", QA_APP: path.join(work, APP, "build/shoplite.apk") };
+}
+
+/** Appium must be up (and an emulator running) before the mobile tests; say so clearly instead of failing later. */
+function appiumCheck() {
+  const url = (process.env.QA_APPIUM_URL ?? "http://127.0.0.1:4723").replace(/\/+$/, "");
+  const r = spawnSync("curl", ["-s", "-m", "5", "-o", "/dev/null", "-w", "%{http_code}", `${url}/status`], { encoding: "utf8" });
+  if (r.stdout?.trim() !== "200")
+    die(`Appium is not answering at ${url}. Start the emulator (emulator -avd <name> &) and Appium (appium) in other terminals, then rerun.`);
+  const adb = spawnSync("adb", ["devices"], { encoding: "utf8" });
+  if (adb.status === 0 && !/\tdevice\b/.test(adb.stdout)) log("! adb lists no running device; start the emulator first");
 }
 
 /** qa-sentinel exits 3 when Claude can't be used at all; nothing after that step would mean anything. */
