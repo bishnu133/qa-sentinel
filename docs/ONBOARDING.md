@@ -109,7 +109,9 @@ requirements:
 
 Run `story-check` on **five stories from different authors** until each reads as intended. Fix the template, not the stories; if a story is genuinely unclear, that's what `review-story` is for.
 
-**3d. Story keys:** `requirements.jira.projectKeys` and `requirements.storyKeyPattern` decide which keys are found in branch names, MR titles and commit messages. Ask developers to put the key in the branch name (`feature/PAY-123-…`) or the MR title.
+**3d. Number the ACs in the story.** Tests are tagged `@ac:AC-3`, and the traceability table, the showcase and the "is the story built?" check all follow those tags. When a story numbers its own ACs (`AC-1: …` list items, or a number column in a Given / When / Then table), the ids stay the same when someone edits the story. When it doesn't, qa-sentinel numbers them by position. Inserting or reordering an AC then shifts every id after it, and existing tests silently point at the wrong criterion. `story-check` flags unnumbered ACs. Agree with the POs to number them, and never to reuse a number for a different AC.
+
+**3e. Story keys:** `requirements.jira.projectKeys` and `requirements.storyKeyPattern` decide which keys are found in branch names, MR titles and commit messages. Ask developers to put the key in the branch name (`feature/PAY-123-…`) or the MR title.
 
 ## 4. Learn the conventions and check readiness
 

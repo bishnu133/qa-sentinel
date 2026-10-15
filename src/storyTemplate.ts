@@ -64,6 +64,8 @@ export const DEFAULT_TEMPLATE: TemplateSection[] = [
 export interface ParsedStory {
   acceptanceCriteria: { id: string; text: string }[];
   acFormat: "table" | "list" | "gherkin" | "none";
+  /** True when the story numbers its own ACs (AC-3: …, a number column); else ids follow the order. */
+  acIdsFromStory: boolean;
   scopeItems: { id: string; text: string; source: string; service?: string }[];
   outOfScope: string[];
   context: { name: string; text: string }[];
@@ -381,7 +383,8 @@ export function parseStory(text: string, template: TemplateSection[] = DEFAULT_T
     }
   }
   const servicesNamed = services.filter((n) => new RegExp(`(^|[^\\w-])${escapeRe(n)}($|[^\\w-])`, "i").test(text));
-  return { acceptanceCriteria: numberAcs(ac.items), acFormat: ac.items.length ? ac.format : "none", scopeItems, outOfScope, context, showcase, servicesNamed, headings };
+  const own = ac.items.length > 0 && ac.items.every((x) => x.id !== undefined) && new Set(ac.items.map((x) => x.id)).size === ac.items.length;
+  return { acceptanceCriteria: numberAcs(ac.items), acIdsFromStory: own, acFormat: ac.items.length ? ac.format : "none", scopeItems, outOfScope, context, showcase, servicesNamed, headings };
 }
 
 const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");

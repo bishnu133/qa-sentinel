@@ -1,3 +1,4 @@
+import { safeUrl } from "../secrets.js";
 import fs from "node:fs";
 import os from "node:os";
 import { spawnSync } from "node:child_process";
@@ -159,7 +160,7 @@ export function mobileChecks(cwd: string, c: Config, env: NodeJS.ProcessEnv): Ch
   env.QA_APP || env.QA_APP_PACKAGE || env.QA_BUNDLE_ID
     ? add("ok", `app under test: ${env.QA_APP ?? env.QA_APP_PACKAGE ?? env.QA_BUNDLE_ID}`)
     : add("warn", "app under test (QA_APP, QA_APP_PACKAGE or QA_BUNDLE_ID)", "the .apk/.app to install, or the package/bundle id of an installed app");
-  add(env[m.appiumUrlEnv] ? "ok" : "warn", `Appium: ${env[m.appiumUrlEnv] ?? `${m.appiumUrl} (default)`}`, env[m.appiumUrlEnv] ? undefined : `set ${m.appiumUrlEnv} for a remote Appium or device farm; qa-sentinel checks <url>/status before running mobile tests`);
+  add(env[m.appiumUrlEnv] ? "ok" : "warn", `Appium: ${env[m.appiumUrlEnv] ? safeUrl(env[m.appiumUrlEnv]!) : `${m.appiumUrl} (default)`}`, env[m.appiumUrlEnv] ? undefined : `set ${m.appiumUrlEnv} for a remote Appium or device farm; qa-sentinel checks <url>/status before running mobile tests`);
   return out;
 }
 

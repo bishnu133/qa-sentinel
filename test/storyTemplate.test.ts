@@ -203,3 +203,14 @@ describe("onboarding with init", () => {
     expect(yaml).toContain("out of scope");
   });
 });
+
+describe("AC numbering", () => {
+  it("knows whether the story numbers its own ACs (stable ids) or qa-sentinel numbers them by position", () => {
+    const own = parseStory("h2. Acceptance criteria\n* AC-2: shows the total\n* AC-5: shows the status\n");
+    expect(own.acIdsFromStory).toBe(true);
+    expect(own.acceptanceCriteria.map((a) => a.id)).toEqual(["AC-2", "AC-5"]);
+    const positional = parseStory("h2. Acceptance criteria\n* shows the total\n* shows the status\n");
+    expect(positional.acIdsFromStory).toBe(false);
+    expect(positional.acceptanceCriteria.map((a) => a.id)).toEqual(["AC-1", "AC-2"]);
+  });
+});

@@ -89,6 +89,8 @@ export function storyCheckMarkdown(i: {
         .join("\n")}\n\`\`\``,
     );
   }
+  if (p.acceptanceCriteria.length > 1 && !p.acIdsFromStory)
+    todo.push("The ACs aren't numbered in the story, so qa-sentinel numbers them by position (AC-1, AC-2, …). If someone later inserts, removes or reorders an AC, the `@ac` tags on existing tests point at the wrong criterion. Number them in the story itself: `AC-1: …` list items, or a number column in a Given/When/Then table.");
   if (p.acFormat === "list" && p.acceptanceCriteria.some((a) => /^(given|when|then)\b/i.test(a.text)))
     todo.push("Some ACs look like single Given / When / Then lines: write each scenario as one item (or a Given/When/Then table) so it becomes one AC.");
   if (i.story && !i.keyFound) todo.push(`The key ${i.story} doesn't match \`requirements.storyKeyPattern\` (${c.requirements.storyKeyPattern}); qa-sentinel won't find it in branch names and commits.`);
