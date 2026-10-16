@@ -1,4 +1,6 @@
 #!/usr/bin/env node
+import { coverageCommand } from "./commands/coverage.js";
+import { backfillCommand } from "./commands/backfill.js";
 import { dataStatusCommand, dataSweepCommand } from "./commands/data.js";
 import { contractCheckCommand } from "./commands/contractCheck.js";
 import { ClaudeAccessError } from "./claude.js";
@@ -122,6 +124,33 @@ program
   .option("--limit <n>", "at most this many tests", (v) => Number(v))
   .option("--dry-run", "list the untagged tests")
   .action(wrap(async (o) => tagCommand({ cwd: cwd(), push: o.push, limit: o.limit, dryRun: o.dryRun })));
+
+program
+  .command("coverage")
+  .description("every endpoint (and page) with the tests that exercise it; untested ones ranked by risk (no agent, no cost)")
+  .option("--service <name>", "only this service")
+  .option("--json", "print the result as JSON")
+  .option("-o, --out <file>", "markdown output (a .json next to it)", "qa-coverage.md")
+  .action(wrap(async (o) => coverageCommand({ cwd: cwd(), service: o.service, json: o.json, out: o.out })));
+
+program
+  .command("backfill")
+  .description("write tests for the riskiest untested endpoints of a service, a small reviewed batch per run")
+  .requiredOption("--service <name>", "service from qa-sentinel.config.yaml")
+  .option("--service-path <path>", "service checkout (CI)")
+  .option("--batch <n>", "endpoints per run (one MR)", (v) => Number(v), 5)
+  .addOption(new Option("--min-risk <level>", "only gaps at this risk or above").choices(["low", "medium", "high", "critical"]))
+  .option("--include-weak", "also endpoints whose tests only check the status or are all fixme/skip")
+  .option("--endpoint <endpoint...>", 'exactly these, e.g. "POST /orders"')
+  .option("--checkout", "check the service out at its current commit if needed")
+  .option("--push", "push the branch and open a merge request")
+  .option("--env <name>", "environment from `environments` to verify against")
+  .option("--dry-run", "show the batch without generating")
+  .action(
+    wrap(async (o) =>
+      backfillCommand({ cwd: cwd(), service: o.service, servicePath: o.servicePath, batch: o.batch, minRisk: o.minRisk, includeWeak: o.includeWeak, endpoints: o.endpoint, checkout: o.checkout, push: o.push, env: o.env, dryRun: o.dryRun }),
+    ),
+  );
 
 const data = program.command("data").description("test data the tests created (testData.cleanup: ledger)");
 data
