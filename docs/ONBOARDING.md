@@ -67,6 +67,22 @@ workspace:
 
 **Services that are folders of one repository** (a monorepo): set `path` to the folder locally and `subdir` to the folder inside the repository (e.g. `services/orders`), so CI (where the repository root is checked out) finds it. In the service pipeline, run one gap-report job per service with its own `QA_SERVICE_NAME` and `rules: changes:` for its folder (extend `qa-gap-report`), and switch off the default one.
 
+**Many services?** `npx qa-sentinel discover --gitlab-group <your-group>` (token with `read_api`) lists the group's projects and writes `qa-services.draft.yaml`: each service's kind, its spec (or the generator that makes it) and the services it seems to call, with the config file and line that says so. Delete what's wrong, then copy the entries in (or rerun with `--apply`, which adds only services not configured yet; `path` assumes clones next to the test repo).
+
+**Spec-first teams** (the API spec is agreed before the code and is the source of truth): add `contract` to the service, pointing to where the agreed spec lives. Exactly one of:
+
+```yaml
+    - name: orders-service
+      openapi: openapi.yaml                       # what the code implements (or generates)
+      contract: { file: specs/orders.yaml }       # in the test repo
+      # contract: { gitlabProject: acme/api-specs, path: orders.yaml, ref: main }
+      # contract: { repo: ../api-specs, path: orders.yaml, ref: v2 }   # a local clone
+      # contract: { url: https://portal.acme/specs/orders.yaml, urlHeaderEnv: SPEC_PORTAL_AUTH }
+      # contract: { jiraAttachment: "orders-api*.yaml" }   # attached to the story (newest match)
+```
+
+Gap reports then compare the implemented spec with the agreed one, field by field and including error responses, for the endpoints the MR touches; agents treat the agreed spec as the API oracle, so a mismatch becomes a review decision (a fixme test, and a bug card when `bugs.mode` is on). `npx qa-sentinel contract-check` checks every endpoint (`--strict` for a CI gate). Without `openapi` the code can't be compared statically, and only the tests check it.
+
 Stories often name services in their tech notes; qa-sentinel recognises a service by its `name`, the last part of its `path` or of its `gitlabProject`.
 
 ## 3. Teach it how your stories are written
@@ -131,7 +147,15 @@ Run `story-check` on **five stories from different authors** until each reads as
 npx qa-sentinel learn      # an agent reads your tests: conventions into the write-*-test skills, draft test-map.yaml
 git diff                   # review what it learned; fix anything wrong; commit
 npx qa-sentinel doctor     # keys, access, services, specs, story template, layers; --online checks GitLab access
+npx qa-sentinel coverage   # every endpoint and its tests; the untested ones ranked by risk (no AI call)
 ```
+
+**Test data.** Tests that build chains of data (program → company → event → session) must create their own and remove it. Choose `testData.cleanup`:
+- `ledger` (new frameworks get it; existing Playwright projects: `npx qa-sentinel add-data-ledger`): each helper calls `data.track(kind, id, { path: "/events/42" })` right after creating a record; when the test ends, pass or fail, the records are deleted newest first. A killed run leaves `.qa-data/*.jsonl` behind, and `qa-sentinel data sweep` deletes those leftovers on the test environment (the CI templates run it after every job). Set `QA_CLEANUP_AUTH` (or `testData.sweepAuthEnv`) if deletes need a token.
+- `project`: your own pattern; describe it in `testData.notes` so the agents follow it.
+- `none`: data is left behind, and generated tests say so.
+
+**Little automation yet?** After the first gap reports, run `npx qa-sentinel backfill --service <name> --min-risk high --dry-run` to see the riskiest untested endpoints, then without `--dry-run` (add `--push` in CI) to get one reviewed MR per small batch.
 
 ## 5. CI
 

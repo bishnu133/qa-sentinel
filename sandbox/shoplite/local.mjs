@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // ShopLite on your laptop – no GitLab needed.
 //
-//   node sandbox/shoplite/local.mjs setup [--level maintenance] [--mobile] [--work ./shoplite-local]
+//   node sandbox/shoplite/local.mjs setup [--level maintenance] [--mobile] [--spec-first] [--work ./shoplite-local]
 //   node sandbox/shoplite/local.mjs list
 //   node sandbox/shoplite/local.mjs run SHOP-101 [--generate]     # make the dev change, gap report (+ generate tests)
 //   node sandbox/shoplite/local.mjs run SHOP-101 --regression     # also run the existing tests qa-sentinel selected, against the change
@@ -89,7 +89,7 @@ switch (cmd) {
   case "setup": {
     fs.mkdirSync(work, { recursive: true });
     buildServices(work, { mobile: Boolean(f.mobile) });
-    buildTests(work, { level: f.level === "maintenance" ? "maintenance" : "intelligence", jira: JIRA, mobile: Boolean(f.mobile) });
+    buildTests(work, { level: f.level === "maintenance" ? "maintenance" : "intelligence", jira: JIRA, mobile: Boolean(f.mobile), specFirst: Boolean(f["spec-first"]) });
     if (JIRA) log(`Jira mode: stories from ${JIRA.baseUrl} (project ${JIRA.project}); seed them with jira-seed.mjs --work ${path.relative(process.cwd(), work) || "."}`);
     fs.mkdirSync(path.join(work, "stories"), { recursive: true });
     for (const s of SCENARIOS) fs.writeFileSync(path.join(work, "stories", `${s.id}.md`), `# ${s.title}\n\n${s.story}\n`);
