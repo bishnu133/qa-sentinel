@@ -99,7 +99,11 @@ const PERSONAL = /\b(email|phone|mobile|address\w*|date-?of-?birth|dateOfBirth|d
 /** Splits camelCase and snake_case so "unitPrice" and "refund_amount" match the word lists. */
 const spaced = (s: string) => s.replace(/([a-z])([A-Z])/g, "$1 $2").replace(/[_/{}.:-]+/g, " ");
 
+/** Operational endpoints (health checks, version, metrics): no business behaviour, whatever service they sit in. */
+const OPS = /\/(health|healthz|healthcheck|ping|status|version|info|metrics|ready|readiness|live|liveness)\/?$/i;
+
 export function endpointFactors(op: SpecOperation): RiskFactor[] {
+  if (op.method === "GET" && OPS.test(op.path)) return ["read-only"];
   const w = `${spaced(op.words)} ${op.words}`;
   const f = new Set<RiskFactor>();
   if (AUTH.test(w)) f.add("auth");
