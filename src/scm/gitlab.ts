@@ -55,7 +55,7 @@ export async function call(ctx: GitLabContext, method: string, route: string, bo
 }
 
 /** GET every page of a list endpoint. */
-async function getAll(ctx: GitLabContext, route: string, maxPages = 50): Promise<any[]> {
+export async function getAll(ctx: GitLabContext, route: string, maxPages = 50): Promise<any[]> {
   const out: any[] = [];
   const sep = route.includes("?") ? "&" : "?";
   for (let page = 1; page <= maxPages; page++) {
@@ -153,4 +153,23 @@ export function pushUrl(gitlabUrl: string, projectPath: string | undefined, env:
   if (!token || !projectPath || /^\d+$/.test(projectPath)) return undefined;
   const host = new URL(env.CI_SERVER_URL ?? gitlabUrl);
   return `${host.protocol}//oauth2:${encodeURIComponent(token)}@${host.host}/${projectPath.replace(/^\/|\.git$/g, "")}.git`;
+}
+
+/** A file's raw content at a ref, or undefined when it doesn't exist. */
+export async function rawFile(ctx: GitLabContext, project: string | number, file: string, ref: string): Promise<string | undefined> {
+  const res = await fetch(`${ctx.apiUrl}/projects/${enc(project)}/repository/files/${enc(file)}/raw?ref=${enc(ref)}`, { headers: { "PRIVATE-TOKEN": ctx.token } });
+  if (res.status === 404) return undefined;
+  if (!res.ok) throw new GitLabError(`GitLab GET ${file} in ${project}: ${res.status}`, res.status);
+  return res.text();
+}
+
+/** Projects of a group (and its subgroups), not archived. */
+export async function groupProjects(ctx: GitLabContext, group: string, subgroups = true): Promise<any[]> {
+  return getAll(ctx, `/groups/${enc(group)}/projects?include_subgroups=${subgroups}&archived=false&order_by=path&sort=asc&simple=true`);
+}
+
+/** Every file path in a project at a ref (blobs only), capped. */
+export async function projectFiles(ctx: GitLabContext, project: string | number, ref: string, maxPages = 30): Promise<string[]> {
+  const items = await getAll(ctx, `/projects/${enc(project)}/repository/tree?recursive=true&ref=${enc(ref)}`, maxPages);
+  return items.filter((i) => i.type === "blob").map((i) => String(i.path));
 }

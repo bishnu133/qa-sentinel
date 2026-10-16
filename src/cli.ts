@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { discoverCommand } from "./commands/discover.js";
 import { coverageCommand } from "./commands/coverage.js";
 import { backfillCommand } from "./commands/backfill.js";
 import { dataStatusCommand, dataSweepCommand } from "./commands/data.js";
@@ -124,6 +125,16 @@ program
   .option("--limit <n>", "at most this many tests", (v) => Number(v))
   .option("--dry-run", "list the untagged tests")
   .action(wrap(async (o) => tagCommand({ cwd: cwd(), push: o.push, limit: o.limit, dryRun: o.dryRun })));
+
+program
+  .command("discover")
+  .description("list a GitLab group's projects and draft service entries: kind, OpenAPI spec, dependencies with evidence")
+  .requiredOption("--gitlab-group <group>", "group path or id, e.g. acme/platform")
+  .option("--no-subgroups", "only the group itself")
+  .option("--limit <n>", "at most this many projects", (v) => Number(v))
+  .option("--apply", "add the services not configured yet to qa-sentinel.config.yaml")
+  .option("-o, --out <file>", "draft YAML (a .md with the evidence next to it)", "qa-services.draft.yaml")
+  .action(wrap(async (o) => discoverCommand({ cwd: cwd(), group: o.gitlabGroup, subgroups: o.subgroups, limit: o.limit, apply: o.apply, out: o.out })));
 
 program
   .command("coverage")
