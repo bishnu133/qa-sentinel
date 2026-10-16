@@ -29,7 +29,7 @@ Sample at least 5 web specs and their page objects. Add a **Project conventions*
 The same for mobile: sample at least 5 mobile specs and their screen objects and add a **Project conventions** section: screen-object layout and naming, how selectors are written (accessibility ids, platform ids), how navigation is done (deep links?), how test data is set up, Android/iOS differences handled in code, naming and tags, and 2 examples worth copying.
 
 ## 2. Traceability → `test-map.yaml`
-For each service in the config: list its endpoints (from the OpenAPI spec if present, else from route definitions in its repo) and map each to the spec files that exercise it (match on paths, client methods, tags).
+For each service in the config: list its endpoints (from the OpenAPI spec if it is committed, else from route definitions or generator annotations such as tsoa decorators in its repo) and map each to the spec files that exercise it (match on paths, client methods, tags).
 Keep `unmapped` for specs you could not tie to a service. Use endpoint keys like `"POST /orders"`. For web front ends (`kind: web`), fill `screens` instead: route (`/orders/:id`) → web spec files; for apps (`kind: mobile`), screen name or deep-link route (`orders/new`) → mobile spec files.
 
 ## 3. Readiness gaps → `.claude/qa-sentinel.md`

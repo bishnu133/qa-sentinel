@@ -21,6 +21,13 @@ const ServiceSchema = z.object({
   name: z.string(),
   path: z.string().describe("Path to the service repo, relative to the test repo"),
   openapi: z.string().optional().describe("Path to the OpenAPI spec inside the service repo"),
+  /**
+   * For specs generated at build time (tsoa, swagger-jsdoc, springdoc, …): a shell command run in the service repo that
+   * writes the spec to `openapi`, e.g. "npx tsoa spec". qa-sentinel runs it at the base and the head commit (in a
+   * throwaway worktree that shares the repo's node_modules) and diffs the results, so the spec needn't be committed.
+   */
+  openapiCommand: z.string().optional(),
+  openapiCommandTimeoutSeconds: z.number().int().positive().optional(),
   gitlabProject: z.string().optional().describe("GitLab project path of the service, e.g. group/orders-service"),
   dependsOn: z.array(z.string()).default([]),
   /** api: a backend service (API tests); web: a front end (web UI tests through page objects); mobile: an app (WebdriverIO + Appium, screen objects). UI layers set data up via the API. */

@@ -33,7 +33,7 @@ For every change, produce one entry with a `type`:
 ### Is the story built?
 For every acceptance criterion and scope item in `story.md` (AC-n, TS-n, ER-n), decide whether this change builds it: `implemented`, `partial`, `conflict`, `not-found`, `elsewhere` (another service of the story should build it) or `not-applicable`, with the code as evidence. Read the whole story text, not only the ACs: tech scope and expected results often state behaviour the ACs forgot. Return these as `requirementStatus` (shape in the qa-plan skill).
 
-When the service has an OpenAPI spec (see `qa-sentinel.config.yaml`), compare spec and code. A code change without a matching spec change is a `specDrift` finding.
+When the service has an OpenAPI spec (see `qa-sentinel.config.yaml`), compare spec and code. A code change without a matching spec change is a `specDrift` finding. A spec generated at build time is not in the service repo: read the head version from `generatedSpecs` in context.json. Generated specs come from the code, so drift there means the generator annotations are missing or wrong.
 
 ### Oracle: what is the expected behaviour?
 Use this order of authority. Code shows what the system *does*; it is never by itself proof of what it *should* do.

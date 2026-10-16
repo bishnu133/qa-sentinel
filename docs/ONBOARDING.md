@@ -46,6 +46,10 @@ workspace:
       gitlabProject: pay/payments-service
       dependsOn: [ledger-service]
       version: { path: /actuator/info, field: git.commit.id }   # optional: deployed commit, for `feature`
+    - name: ledger-service
+      path: ../ledger-service
+      openapi: build/swagger.yaml     # not committed: generated at build time…
+      openapiCommand: npx tsoa spec   # …so qa-sentinel runs this at the MR's base and head commits
     - name: payments-portal
       path: ../payments-portal
       kind: web                       # tested through the UI (page objects); data set up via the API
@@ -54,6 +58,8 @@ workspace:
       path: ../payments-app
       kind: mobile                    # tested through WebdriverIO + Appium (screen objects)
 ```
+
+**Specs generated at build time** (tsoa, swagger-jsdoc, springdoc, NestJS…): set `openapiCommand` to the command that writes the spec to `openapi`. qa-sentinel checks each commit out in a throwaway worktree (sharing the service's `node_modules`, so install its dependencies first), runs the command with the test environment (no publishing credentials), and diffs the two results. The default time limit is 180 seconds (`openapiCommandTimeoutSeconds`). The command must work offline, without a database or secrets; if it fails, the report simply has no contract diff. Committing the spec is still the cheapest option.
 
 Stories often name services in their tech notes; qa-sentinel recognises a service by its `name`, the last part of its `path` or of its `gitlabProject`.
 
