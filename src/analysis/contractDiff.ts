@@ -42,6 +42,8 @@ export interface ContractDiff {
   status: "compared" | "unchanged" | "spec-added" | "spec-removed" | "no-spec" | "unparseable";
   changes: ContractChange[];
   note?: string;
+  /** Spec-first services: the implemented spec checked against the agreed one (see contracts.ts). */
+  agreed?: import("../contracts.js").ContractCheck[];
 }
 
 const METHODS = ["get", "put", "post", "delete", "options", "head", "patch", "trace"];
@@ -244,7 +246,9 @@ export function diffSpecs(baseText: string | undefined, headText: string | undef
   return { status: out.length ? "compared" : "unchanged", changes: out };
 }
 
-export const breakingEndpoints = (d: ContractDiff) => new Set(d.changes.filter((c) => c.breaking).map((c) => c.endpoint));
+/** Endpoints a client can break on: breaking changes base → head, and (spec-first) mismatches with the agreed spec. */
+export const breakingEndpoints = (d: ContractDiff) =>
+  new Set([...d.changes.filter((c) => c.breaking).map((c) => c.endpoint), ...(d.agreed ?? []).flatMap((k) => k.deviations.filter((x) => x.severity === "mismatch").map((x) => x.endpoint))]);
 
 export function contractDiffMarkdown(d: ContractDiff, specPath?: string): string {
   const head = `**Contract changes (computed from \`${specPath ?? "OpenAPI spec"}\`, base → head):**`;

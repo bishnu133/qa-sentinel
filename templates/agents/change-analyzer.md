@@ -35,10 +35,12 @@ For every acceptance criterion and scope item in `story.md` (AC-n, TS-n, ER-n), 
 
 When the service has an OpenAPI spec (see `qa-sentinel.config.yaml`), compare spec and code. A code change without a matching spec change is a `specDrift` finding. A spec generated at build time is not in the service repo: read the head version from `generatedSpecs` in context.json. Generated specs come from the code, so drift there means the generator annotations are missing or wrong.
 
+**Spec-first services.** When context.json has `agreedSpecs`, those files are the agreed API spec (the source of truth the team wrote before the code), and `contractCheck` is qa-sentinel's computed comparison of the implemented spec with it (treat it as fact). The agreed spec outranks the service's own spec: a ❌ mismatch on an endpoint this change touches makes that change's oracle `conflicting` (cite `"source": "openapi"` with the agreed spec's path), unless the story's ACs explicitly change the contract. ➕ extras are code the agreed spec doesn't describe: list them under `specDrift`. When the service has no spec of its own (`contractCheck` says so), compare the code with the agreed spec yourself, field by field, error responses included.
+
 ### Oracle: what is the expected behaviour?
 Use this order of authority. Code shows what the system *does*; it is never by itself proof of what it *should* do.
 1. Acceptance criteria in `story.md` (current and specific)
-2. The API contract (OpenAPI) for interface guarantees
+2. The API contract for interface guarantees: the agreed spec (`agreedSpecs`) when there is one, else the service's OpenAPI spec
 3. Documented domain rules (`CLAUDE.md`, `.claude/qa-sentinel.md`, any `kb/` docs)
 4. Existing tests: supporting evidence, not unquestionable truth
 5. Implementation code: evidence of actual behaviour only

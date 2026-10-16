@@ -3,6 +3,7 @@ import path from "node:path";
 import YAML from "yaml";
 import { z } from "zod";
 import { DEFAULT_TEMPLATE, SECTION_ROLES } from "./storyTemplate.js";
+import { ContractSourceSchema } from "./contractSource.js";
 
 export const CONFIG_FILE = "qa-sentinel.config.yaml";
 
@@ -35,6 +36,11 @@ const ServiceSchema = z.object({
    * this folder onto it; `path` (local) already points at the folder.
    */
   subdir: z.string().optional(),
+  /**
+   * Spec-first teams: the agreed API spec (the source of truth), when it lives outside the service repo or differs
+   * from what the code generates. The implemented spec (`openapi`) is checked against it field by field.
+   */
+  contract: ContractSourceSchema.optional(),
   dependsOn: z.array(z.string()).default([]),
   /** api: a backend service (API tests); web: a front end (web UI tests through page objects); mobile: an app (WebdriverIO + Appium, screen objects). UI layers set data up via the API. */
   kind: z.enum(["api", "web", "mobile"]).default("api"),

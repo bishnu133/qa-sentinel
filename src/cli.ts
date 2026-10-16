@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { contractCheckCommand } from "./commands/contractCheck.js";
 import { ClaudeAccessError } from "./claude.js";
 import { Command, Option } from "commander";
 import { addMobileCommand, addWebCommand, initCommand, upgradeCommand } from "./commands/init.js";
@@ -114,6 +115,17 @@ program
   .option("--limit <n>", "at most this many tests", (v) => Number(v))
   .option("--dry-run", "list the untagged tests")
   .action(wrap(async (o) => tagCommand({ cwd: cwd(), push: o.push, limit: o.limit, dryRun: o.dryRun })));
+
+program
+  .command("contract-check")
+  .description("spec-first: check each service's implemented OpenAPI spec against its agreed spec (`contract`), every endpoint")
+  .option("--service <name>", "only this service")
+  .option("--story <key>", "Jira story (for contracts attached to the story)")
+  .option("--ref <ref>", "service commit, branch or tag to check", "HEAD")
+  .option("--strict", "exit 1 on any mismatch (CI gate)")
+  .option("--json", "print the result as JSON")
+  .option("-o, --out <file>", "markdown output", "qa-contract-check.md")
+  .action(wrap(async (o) => contractCheckCommand({ cwd: cwd(), service: o.service, story: o.story, ref: o.ref, strict: o.strict, json: o.json, out: o.out })));
 
 program
   .command("story-check")

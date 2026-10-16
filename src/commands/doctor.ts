@@ -1,3 +1,4 @@
+import { describeSource, loadContract } from "../contracts.js";
 import { findUp, hasPackage } from "../fsutil.js";
 import { safeUrl } from "../secrets.js";
 import fs from "node:fs";
@@ -100,6 +101,15 @@ export function runChecks(cwd: string, env: NodeJS.ProcessEnv = process.env): Ch
       );
     else if (!fs.existsSync(path.join(dir, s.openapi))) add("warn", `service ${s.name}: ${s.openapi} found`);
     else add("ok", `service ${s.name} (OpenAPI: ${s.openapi})`);
+    if (s.contract) {
+      const k = s.contract;
+      const where = describeSource(k);
+      if (k.file || k.repo) {
+        const p = path.resolve(cwd, (k.file ?? k.repo)!);
+        add(fs.existsSync(p) ? "ok" : "fail", `service ${s.name}: agreed spec (${where})`, fs.existsSync(p) ? undefined : k.repo ? "clone the specs repository there, or use contract.gitlabProject" : "the file doesn't exist");
+      } else add("ok", `service ${s.name}: agreed spec (${where})`, k.jiraAttachment ? "read from the story at run time" : "checked with `doctor --online`");
+      if (!s.openapi) add("warn", `service ${s.name}: implemented spec to compare with the agreed one`, "set `openapi` (and `openapiCommand` if generated) so qa-sentinel can check the code field by field; without it only the tests check it");
+    }
   }
 
   const mapFile = path.join(cwd, "test-map.yaml");
@@ -225,6 +235,20 @@ export async function onlineChecks(cwd: string, env: NodeJS.ProcessEnv = process
     } catch (e) {
       checks.push({ level: "fail", label: `${t.label} (${t.project}) reachable with the token`, hint: (e as Error).message.slice(0, 160) });
     }
+  }
+  for (const s of c.workspace.services.filter((x) => x.contract?.url || x.contract?.gitlabProject)) {
+    const { contract, reason } = await loadContract(c, s.contract!, { cwd, env });
+    let parses = false;
+    try {
+      parses = Boolean(contract && YAML.parse(contract.text)?.paths);
+    } catch {
+      // not YAML/JSON
+    }
+    checks.push(
+      contract && parses
+        ? { level: "ok", label: `service ${s.name}: agreed spec loads (${contract.from})` }
+        : { level: "fail", label: `service ${s.name}: agreed spec loads`, hint: reason ?? "loaded, but it isn't an OpenAPI document with paths" },
+    );
   }
   checks.push({
     level: "warn",

@@ -19,6 +19,7 @@ import { gapSummary } from "../reporting/jiraSummary.js";
 import { indexTests, readTestMap, traceMarkdown, traceStory } from "../analysis/testIndex.js";
 import { mergeSelections, regressionCommands, regressionMarkdown, selectRegression } from "../analysis/regression.js";
 import { contractDiffMarkdown } from "../analysis/contractDiff.js";
+import { contractCheckMarkdown } from "../contracts.js";
 import { log } from "../log.js";
 import { bugsFromPlan, fileBugs } from "../bugs/bugs.js";
 import { jiraContext } from "../scm/jira.js";
@@ -186,6 +187,9 @@ export async function gapReportCommand(o: GapReportOptions): Promise<{ report: s
       regressionTests: selection.runFullSuite ? undefined : selection.tests.length,
     });
     if (featureLine) jiraSummary += `\n\n${featureLine}`;
+    const mismatched = (outcome.contract.agreed ?? []).filter((k) => k.deviations.some((d) => d.severity === "mismatch"));
+    if (mismatched.length)
+      jiraSummary += `\n\n**The code differs from the agreed API spec:** ${mismatched.map((k) => `${k.service} (${k.deviations.filter((d) => d.severity === "mismatch").length} mismatch${k.deviations.filter((d) => d.severity === "mismatch").length === 1 ? "" : "es"})`).join(", ")}. Details in the gap report.`;
     // The story names services (tech notes) that have no change for it: not started, or commits without the key.
     const changedServices = parts ? parts.map((p) => p.service.name) : [service.name, ...featureServices];
     const silent = (req.servicesNamed ?? []).filter((n) => !changedServices.includes(n));
@@ -206,6 +210,7 @@ export async function gapReportCommand(o: GapReportOptions): Promise<{ report: s
       outcome.message ? `\n<details><summary>Details</summary>\n\n${outcome.message}\n</details>` : "",
       "",
       contractDiffMarkdown(outcome.contract, service.openapi),
+      ...(outcome.contract.agreed?.length ? ["", contractCheckMarkdown(outcome.contract.agreed, new Set(outcome.contract.changes.map((x) => x.endpoint)))] : []),
       "",
       requirementsLine(req),
       "",

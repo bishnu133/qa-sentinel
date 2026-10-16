@@ -324,3 +324,32 @@ export async function issueFields(ctx: JiraContext, key: string): Promise<{ id: 
   }
   return out.sort((a, b) => Number(b.id.startsWith("customfield_")) - Number(a.id.startsWith("customfield_")) || a.name.localeCompare(b.name));
 }
+
+// ---------------------------------------------------------------------------------------------
+// Reading attachments (spec-first contracts attached to the story).
+
+export interface JiraAttachment {
+  id: string;
+  filename: string;
+  /** Download URL. */
+  content: string;
+  size?: number;
+  created?: string;
+}
+
+export async function storyAttachments(ctx: JiraContext, key: string): Promise<JiraAttachment[]> {
+  const j = await jiraCall(ctx, "GET", `/rest/api/2/issue/${encodeURIComponent(key)}?fields=attachment`);
+  return (j.fields?.attachment ?? []).map((a: any) => ({ id: String(a.id), filename: String(a.filename), content: String(a.content), size: a.size, created: a.created }));
+}
+
+const MAX_ATTACHMENT = 5 * 1024 * 1024;
+
+/** Download a text attachment. Only from this Jira site: the URL comes from Jira, but the credentials must not follow it elsewhere. */
+export async function downloadAttachment(ctx: JiraContext, url: string): Promise<string> {
+  if (new URL(url).origin !== new URL(ctx.baseUrl).origin) throw new Error(`attachment URL is not on ${new URL(ctx.baseUrl).origin}`);
+  const res = await netFetch(url, { headers: { Authorization: ctx.authHeader }, redirect: "follow" });
+  if (!res.ok) throw new Error(`Jira attachment download: ${res.status}`);
+  const text = await res.text();
+  if (text.length > MAX_ATTACHMENT) throw new Error("attachment larger than 5 MB");
+  return text;
+}
