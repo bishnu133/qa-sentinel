@@ -139,7 +139,12 @@ npx qa-sentinel doctor     # keys, access, services, specs, story template, laye
 | `QA_BASE_URL` (+ `QA_WEB_URL`, `QA_APPIUM_URL`, `QA_APP`) | test repo | the environment the tests run against |
 | `QA_SENTINEL_PACKAGE` | group | the qa-sentinel version to install |
 
-Include `ci/qa-sentinel/service.gitlab-ci.yml` from each service repo and `ci/qa-sentinel/tests.gitlab-ci.yml` from the test repo (Jenkins: one job per `Jenkinsfile.*`).
+Include `ci/qa-sentinel/service.gitlab-ci.yml` from each service repo and `ci/qa-sentinel/tests.gitlab-ci.yml` from the test repo (Jenkins: one job per `Jenkinsfile.*`). If your service repos already include a shared CI project, you can include the service template from there once for all services.
+
+**Options that fit most teams:**
+- **Dependency bots:** MRs from branches matching `ci.skipBranches` (default `^renovate/`, `^dependabot/`) get no gap report and no generation. Add your own bot or release branches there and rerun `qa-sentinel init --force` to update the CI rules.
+- **Generate after deployment, not after merge:** when the tests must run against an environment the change has to be deployed to first, set `QA_GENERATE_AFTER: "deploy"` in the service project and add a job after your deploy job that `extends: .qa-trigger-generation` (the template shows it).
+- **Test repo inside a monorepo** (e.g. `packages/api-tests`): run `qa-sentinel init` in that folder. The generated CI runs from it and keeps artifacts under it, and the service template finds it through `QA_TESTS_DIR`.
 
 ## 6. Roll out in steps
 

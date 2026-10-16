@@ -56,6 +56,11 @@ qa-gap-report:
   extends: .qa-sentinel
   stage: test
   rules:
+{{#if skipBranchesRe}}
+    # ci.skipBranches (dependency bots): no gap report.
+    - if: $CI_MERGE_REQUEST_SOURCE_BRANCH_NAME =~ /{{skipBranchesRe}}/
+      when: never
+{{/if}}
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
   allow_failure: true
   interruptible: true
@@ -71,13 +76,17 @@ qa-gap-report:
     expire_in: 2 weeks
 
 {{#if isMaintenance}}
-# Phase 2: after merge to the default branch, ask the test repo to generate/update API tests.
-qa-trigger-generation:
-  stage: test
-  rules:
-    - if: $CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
-    # Re-run by hand: Build › Pipelines › New pipeline on the default branch (generates for its latest commit).
-    - if: $CI_PIPELINE_SOURCE == "web" && $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+# Phase 2: ask the test repo to generate/update tests for the merged change.
+# By default this runs right after the merge. If the tests must run against an environment the change is deployed to
+# first (dev/SIT), set QA_GENERATE_AFTER: "deploy" in this project and add a job after your deploy job:
+#
+#   qa-generate-after-deploy:
+#     extends: .qa-trigger-generation
+#     stage: <a stage after deploy>
+#     needs: [<your deploy job>]
+#     rules:
+#       - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+.qa-trigger-generation:
   # QA_SERVICE_NAME (global, above) is forwarded as-is; redefining it here as "$QA_SERVICE_NAME" would send the
   # literal text "$QA_SERVICE_NAME" downstream.
   variables:
@@ -87,4 +96,19 @@ qa-trigger-generation:
   trigger:
     project: "$QA_TESTS_PROJECT"
     branch: {{targetBranch}}
+
+qa-trigger-generation:
+  extends: .qa-trigger-generation
+  stage: test
+  rules:
+    - if: $QA_GENERATE_AFTER == "deploy"
+      when: never
+{{#if skipBranchesMergeRe}}
+    # ci.skipBranches: a merge commit names its branch.
+    - if: $CI_COMMIT_MESSAGE =~ /Merge branch '(?:{{skipBranchesMergeRe}})/
+      when: never
+{{/if}}
+    - if: $CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+    # Re-run by hand: Build › Pipelines › New pipeline on the default branch (generates for its latest commit).
+    - if: $CI_PIPELINE_SOURCE == "web" && $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
 {{/if}}

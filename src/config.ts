@@ -256,6 +256,8 @@ export const ConfigSchema = z.object({
     .default({}),
   ci: z.object({
     platform: z.enum(["gitlab", "jenkins"]),
+    /** MRs from these source branches (regexes) get no gap report and no generation: dependency bots, by default. */
+    skipBranches: z.array(z.string()).default(["^renovate/", "^dependabot/"]),
     scm: z.enum(["gitlab", "github", "none"]).default("gitlab"),
     gitlabUrl: z.string().default("https://gitlab.com"),
     testRepoProject: z

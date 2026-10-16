@@ -7,7 +7,7 @@ import { matchesAny } from "../fsutil.js";
 import { formatUsage } from "../claude.js";
 import { ARTIFACT_GLOBS, createRunDir, findService, startManifest, writeManifest } from "../run.js";
 import { checkServiceUntouched, diffSnapshots, findingsMarkdown, snapshotTree, type Finding } from "../guardrails.js";
-import { requirementsLine, resolveRequirements, storyMarkdown } from "../requirements.js";
+import { requirementsLine, resolveRequirements, skippedBranch, storyMarkdown } from "../requirements.js";
 import { gitlabContext, gitlabMrFromEnv } from "../scm/gitlab.js";
 import { assembleFeature } from "../feature/manifest.js";
 import { publish } from "../reporting/publish.js";
@@ -75,6 +75,13 @@ export async function gapReportCommand(o: GapReportOptions): Promise<{ report: s
     return { report, skipped: true, exitCode: 0 };
   }
 
+  const bot = o.story ? undefined : skippedBranch(c, mr.sourceBranch, process.env.CI_MERGE_REQUEST_SOURCE_BRANCH_NAME, process.env.gitlabSourceBranch);
+  if (bot) {
+    const report = `### QA impact – ${service.name} · skipped\n**Verdict:** changes from \`${bot}\` (listed in ci.skipBranches) get no gap report.\n`;
+    fs.writeFileSync(out, report);
+    log.ok(`${bot} is in ci.skipBranches; skipped`);
+    return { report, skipped: true, exitCode: 0 };
+  }
   const req = await resolveRequirements(c, {
     storyFile: o.storyFile,
     mr: { title: mr.title, description: mr.description, url: mr.url, sourceBranch: mr.sourceBranch },

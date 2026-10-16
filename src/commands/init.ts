@@ -254,6 +254,9 @@ export function templateVars(c: Config, cwd?: string): TemplateVars {
   return {
     testsSubdir,
     testsPrefix: testsSubdir ? `${testsSubdir}/` : "",
+    // GitLab rules take /regex/ literals: slashes inside are escaped.
+    skipBranchesRe: c.ci.skipBranches.map((r) => r.replace(/\//g, "\\/")).join("|"),
+    skipBranchesMergeRe: c.ci.skipBranches.map((r) => r.replace(/^\^/, "").replace(/\//g, "\\/")).join("|"),
     projectName: c.project.name,
     mode: c.mode,
     isScratch: c.mode === "scratch",
