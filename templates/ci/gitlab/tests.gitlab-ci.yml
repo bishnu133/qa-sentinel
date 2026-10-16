@@ -54,6 +54,10 @@ variables:
     # Browser matching the @playwright/test version in the lockfile (a no-op when the image already has it).
     - npx playwright install chromium
 {{/if}}
+  # Test data a failed or killed test left behind (testData.cleanup: ledger): deleted even when the job fails.
+  after_script:
+    - cd "$CI_PROJECT_DIR/{{testsPrefix}}."
+    - if [ -d "{{ledgerDir}}" ] && command -v qa-sentinel >/dev/null; then qa-sentinel data sweep || true; fi
 
 {{#if isMaintenance}}
 # Phase 2: triggered by a service repo after merge. Opens an MR with new/updated API tests.

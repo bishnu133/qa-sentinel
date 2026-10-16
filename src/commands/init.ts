@@ -197,6 +197,8 @@ export async function initCommand(opts: InitOptions): Promise<Config> {
       web: { enabled: web },
       mobile: { enabled: mobile },
     },
+    // A new framework gets the data ledger; existing projects keep their own cleanup (`qa-sentinel add-data-ledger`).
+    testData: { cleanup: mode === "scratch" ? "ledger" : "project" },
     requirements: {
       source: reqSource,
       ...(jiraProjects.length ? { storyKeyPattern: `(?:${jiraProjects.join("|")})-\\d+` } : {}),
@@ -295,6 +297,9 @@ export function templateVars(c: Config, cwd?: string): TemplateVars {
     mobileRunCommand: c.tests.mobile.runCommand,
     mobilePlatform: c.tests.mobile.platform,
     appiumUrl: c.tests.mobile.appiumUrl,
+    ledgerDir: c.testData.ledgerDir,
+    sweepAuthEnv: c.testData.sweepAuthEnv,
+    ledgerCleanup: c.testData.cleanup === "ledger",
     serviceList: c.workspace.services.map((s) => `- **${s.name}** – \`${s.path}\`${s.openapi ? ` (OpenAPI: \`${s.openapi}\`)` : ""}`).join("\n") || "- _(none yet – add them to qa-sentinel.config.yaml)_",
   };
 }
@@ -433,7 +438,7 @@ function writeKbReadme(cwd: string, c: Config) {
 
 function ensureGitignore(cwd: string) {
   const file = path.join(cwd, ".gitignore");
-  const wanted = [".qa-sentinel/runs/", "qa-sentinel-summary.md", "qa-gap-report.md", "qa-regression.txt", "qa-feature-*", "qa-showcase.md", "qa-showcase/", "qa-verify.md", "qa-healed.md", "qa-healed.json", "qa-story-review.md", "qa-story-check.md", "qa-metrics.md", "qa-lessons.md", "test-results/", "playwright-report/", "node_modules/", ".env", ".DS_Store", "Thumbs.db"];
+  const wanted = [".qa-sentinel/runs/", "qa-sentinel-summary.md", "qa-gap-report.md", "qa-regression.txt", "qa-feature-*", "qa-showcase.md", "qa-showcase/", "qa-verify.md", "qa-healed.md", "qa-healed.json", "qa-story-review.md", "qa-story-check.md", "qa-metrics.md", "qa-lessons.md", ".qa-data/", "qa-contract-check.md", "test-results/", "playwright-report/", "node_modules/", ".env", ".DS_Store", "Thumbs.db"];
   const current = fs.existsSync(file) ? fs.readFileSync(file, "utf8") : "";
   const have = new Set(current.split(/\r?\n/).map((l) => l.trim()));
   const missing = wanted.filter((l) => !have.has(l));
@@ -561,6 +566,43 @@ export function addWebCommand(o: { cwd: string; healing?: "none" | "bubblegum" }
   );
   log.info(`Then: npx playwright install chromium (or QA_BROWSER_CHANNEL=chrome), set ${c.tests.web.baseUrlEnv}, and run qa-sentinel doctor.`);
   if (c.tests.web.healing === "bubblegum") log.info(`Healing: npm i -D ${c.tests.web.bubblegum.package} && pip install "bubblegum-ai[web]".`);
+  return c;
+}
+
+/**
+ * Existing projects: switch test data to the ledger. Writes ledger.ts (Playwright, TypeScript) next to the data
+ * helpers, sets testData.cleanup: ledger, and prints how to hook it into the project's own fixture (a human-owned file).
+ */
+export function addDataLedgerCommand(o: { cwd: string; dir?: string }): Config {
+  const cwd = path.resolve(o.cwd);
+  const file = configPath(cwd);
+  const before = loadConfig(cwd);
+  if (before.tests.api.framework !== "playwright" || before.tests.language !== "typescript")
+    log.warn("the ledger template is for Playwright + TypeScript; for another stack, use it as a reference and keep the same file format (.qa-data/*.jsonl), so `qa-sentinel data sweep` works");
+  const doc = YAML.parseDocument(fs.readFileSync(file, "utf8"));
+  doc.setIn(["testData", "cleanup"], "ledger");
+  fs.writeFileSync(file, doc.toString());
+  const c = loadConfig(cwd);
+  const folders = c.tests.api.extraWritePaths.map((p) => p.replace(/\/\*.*$/, ""));
+  const dir = o.dir ?? [/data/i, /factor/i, /fixture/i].map((re) => folders.find((f) => re.test(f))).find(Boolean) ?? c.tests.api.helpersDir;
+  const rel = path.join(dir, "ledger.ts");
+  const status = writeFileSafe(path.join(cwd, rel), render(readTemplate("scaffold/playwright-api/src/data/ledger.ts.tmpl"), templateVars(c, cwd)), false);
+  log.dim(`  ${status === "skipped" ? "kept    " : status.padEnd(8)} ${rel}`);
+  ensureGitignore(cwd);
+  log.ok("testData.cleanup: ledger in qa-sentinel.config.yaml");
+  log.title("Hook it into your fixture (once)");
+  log.info(
+    [
+      `    import { DataLedger } from "<relative path to>/${rel.replace(/\\/g, "/").replace(/\.ts$/, "")}";`,
+      "    data: async ({ request }, use, testInfo) => {",
+      "      const ledger = new DataLedger(request, testInfo.titlePath.join(\" › \"), `${testInfo.testId}-${testInfo.retry}`);",
+      "      await use(/* your data helper, with access to */ ledger);",
+      "      const failed = await ledger.cleanup();   // newest first, pass or fail",
+      "      if (failed.length) testInfo.annotations.push({ type: \"data-cleanup-failed\", description: failed.join(\"; \") });",
+      "    },",
+    ].join("\n"),
+  );
+  log.info("Then every helper that creates data calls ledger.track(kind, id, { path: <delete path> }); generated tests do this from now on. Leftovers from killed runs: qa-sentinel data sweep.");
   return c;
 }
 

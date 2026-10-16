@@ -21,6 +21,7 @@ import { planChange } from "../plan/planner.js";
 import { actionable } from "../plan/validate.js";
 import { decisionTable } from "../plan/render.js";
 import { log } from "../log.js";
+import { sweepAfterRun } from "../testData.js";
 import { bugsFromDiscrepancies, fileBugs } from "../bugs/bugs.js";
 import { jiraContext } from "../scm/jira.js";
 import { runCommandsFor } from "../layers.js";
@@ -262,6 +263,8 @@ export async function generateCommand(o: GenerateOptions): Promise<number> {
   log.step(`verifying ${changes.length} changed file(s) independently`);
   const verification = await verifyChanges({ cwd, c, changes, runDir: run.dir, env: testEnv(c) });
   const discrepancies = findDiscrepancies(cwd, startSha, changes);
+  // Data the verified tests created and couldn't delete (or a killed test left): sweep it now, report what stays.
+  if (c.testData.cleanup === "ledger") findings.push(...(await sweepAfterRun(cwd, c)));
   // Traceability from the tests' own tags: what each AC is now proven by, and tests that don't say what they prove.
   const index = indexTests(cwd, c);
   fs.writeFileSync(path.join(run.dir, "test-index.json"), JSON.stringify(index, null, 2));

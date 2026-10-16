@@ -55,6 +55,8 @@ pipeline {
   }
   post {
     always {
+      // Test data a failed or killed test left behind (testData.cleanup: ledger).
+      sh 'if [ -d "{{ledgerDir}}" ] && command -v qa-sentinel >/dev/null; then qa-sentinel data sweep || true; fi'
       junit testResults: 'test-results/junit.xml, .qa-sentinel/runs/*/junit*.xml{{#if mobileEnabled}}, test-results/mobile/junit/*.xml, .qa-sentinel/runs/*/junit-mobile/*.xml{{/if}}', allowEmptyResults: true
       archiveArtifacts artifacts: 'playwright-report/**, test-results/**, qa-verify.md, .qa-sentinel/runs/**', allowEmptyArchive: true
     }

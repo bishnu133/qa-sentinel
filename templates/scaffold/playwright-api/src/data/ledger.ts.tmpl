@@ -1,0 +1,78 @@
+import fs from "node:fs";
+import path from "node:path";
+import type { APIRequestContext } from "@playwright/test";
+
+/**
+ * Test-data ledger (qa-sentinel testData.cleanup: ledger).
+ *
+ * Every record a test creates is tracked here with the request that deletes it:
+ *
+ *   const program = await createProgram(api, data);            // helper returns the created id
+ *   data.track("program", program.id, { path: `/programs/${program.id}` });
+ *   const company = await createCompany(api, data, program.id);
+ *   data.track("company", company.id, { path: `/programs/${program.id}/companies/${company.id}` });
+ *
+ * When the test ends (passed or failed) the records are deleted newest first: the company, then the program.
+ * Each test writes {{ledgerDir}}/<test>.jsonl as it goes; if the run is killed, `qa-sentinel data sweep` deletes
+ * what is left. Prefer a `{ method, path }` delete: a function can't be replayed by the sweeper after a crash.
+ */
+export type Remove = { method?: "DELETE" | "POST" | "PUT" | "PATCH"; path: string } | (() => Promise<unknown>);
+
+interface Entry {
+  seq: number;
+  kind: string;
+  id: string;
+  remove: Remove;
+}
+
+const DIR = process.env.QA_DATA_DIR ?? "{{ledgerDir}}";
+
+export class DataLedger {
+  private entries: Entry[] = [];
+  private seq = 0;
+  private readonly file: string;
+
+  constructor(
+    private readonly request: APIRequestContext,
+    private readonly test: string,
+    runId: string,
+  ) {
+    this.file = path.join(DIR, `${runId.replace(/[^\w.-]/g, "_")}.jsonl`);
+  }
+
+  /** Record a created record and how to delete it; returns the id, so it can wrap the create call's result. */
+  track<T extends string | number>(kind: string, id: T, remove: Remove): T {
+    const seq = ++this.seq;
+    this.entries.push({ seq, kind, id: String(id), remove });
+    this.write({ op: "create", seq, kind, id: String(id), remove: typeof remove === "function" ? undefined : remove, test: this.test, at: new Date().toISOString() });
+    return id;
+  }
+
+  /** Delete everything tracked, newest first. Never throws: returns what could not be deleted. */
+  async cleanup(): Promise<string[]> {
+    const failed: string[] = [];
+    const auth = process.env.{{sweepAuthEnv}};
+    for (const e of [...this.entries].reverse()) {
+      try {
+        if (typeof e.remove === "function") await e.remove();
+        else {
+          const res = await this.request.fetch(e.remove.path, { method: e.remove.method ?? "DELETE", headers: auth ? { Authorization: auth } : {} });
+          // Already gone counts as deleted.
+          if (!res.ok() && res.status() !== 404 && res.status() !== 410) throw new Error(`${e.remove.method ?? "DELETE"} ${e.remove.path} → ${res.status()}`);
+        }
+        this.write({ op: "delete", seq: e.seq });
+      } catch (err) {
+        failed.push(`${e.kind} ${e.id}: ${(err as Error).message}`);
+        this.write({ op: "failed", seq: e.seq, error: (err as Error).message.slice(0, 200) });
+      }
+    }
+    this.entries = [];
+    if (!failed.length) fs.rmSync(this.file, { force: true });
+    return failed;
+  }
+
+  private write(line: Record<string, unknown>): void {
+    fs.mkdirSync(path.dirname(this.file), { recursive: true });
+    fs.appendFileSync(this.file, JSON.stringify(line) + "\n");
+  }
+}

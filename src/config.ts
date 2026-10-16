@@ -184,6 +184,22 @@ export const ConfigSchema = z.object({
       maxChars: z.number().int().min(1000).max(200_000).default(40_000),
     })
     .default({}),
+  /**
+   * Test data the tests create. ledger: every created record is written to a ledger with the request that deletes it;
+   * the test fixture deletes them in reverse order when the test ends (pass or fail), and `qa-sentinel data sweep`
+   * removes what a killed run left behind. project: the project has its own cleanup pattern (describe it in `notes`).
+   * none: data is left behind (say so in reports).
+   */
+  testData: z
+    .object({
+      cleanup: z.enum(["ledger", "project", "none"]).default("project"),
+      ledgerDir: z.string().default(".qa-data"),
+      /** Environment variable with the Authorization header value the sweeper sends (e.g. "Bearer …"). */
+      sweepAuthEnv: z.string().regex(/^[A-Z_][A-Z0-9_]*$/).default("QA_CLEANUP_AUTH"),
+      /** How this project creates and removes test data (project mode): helpers, naming conventions, its own sweeper. */
+      notes: z.string().optional(),
+    })
+    .default({}),
   /** Independent review of generated tests (assertion strength against the acceptance criteria). */
   review: z
     .object({

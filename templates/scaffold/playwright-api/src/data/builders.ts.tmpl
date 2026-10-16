@@ -1,10 +1,20 @@
+import type { DataLedger, Remove } from "./ledger";
+
 /**
  * Unique, per-test data. Add builders here (or one file per resource) and keep them UI-independent:
  * Web and Mobile tests reuse them for setup.
  */
 export class DataFactory {
   private seq = 0;
-  constructor(private readonly runId: string) {}
+  constructor(
+    private readonly runId: string,
+    private readonly ledger?: DataLedger,
+  ) {}
+
+  /** Record data this test created, with how to delete it; it is deleted when the test ends (see ledger.ts). */
+  track<T extends string | number>(kind: string, id: T, remove: Remove): T {
+    return this.ledger ? this.ledger.track(kind, id, remove) : id;
+  }
 
   /** Unique id with an optional prefix, e.g. data.unique("order") -> "order-0-1712-1". */
   unique(prefix = "qa"): string {

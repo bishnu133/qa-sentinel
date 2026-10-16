@@ -2,6 +2,7 @@ import fs from "node:fs";
 import { test as base, expect } from "@playwright/test";
 import { ApiClient } from "../api/client";
 import { DataFactory } from "../data/builders";
+import { DataLedger } from "../data/ledger";
 
 interface Fixtures {
   api: ApiClient;
@@ -20,8 +21,12 @@ export const test = base.extend<Fixtures>({
       await testInfo.attach("api-log", { path: file, contentType: "application/json" });
     }
   },
-  data: async ({}, use, testInfo) => {
-    await use(new DataFactory(`${testInfo.workerIndex}-${Date.now()}`));
+  data: async ({ request }, use, testInfo) => {
+    // Everything the test tracks is deleted newest first when it ends, passed or failed.
+    const ledger = new DataLedger(request, testInfo.titlePath.join(" › "), `${testInfo.testId}-${testInfo.retry}`);
+    await use(new DataFactory(`${testInfo.workerIndex}-${Date.now()}`, ledger));
+    const failed = await ledger.cleanup();
+    if (failed.length) testInfo.annotations.push({ type: "data-cleanup-failed", description: failed.join("; ") });
   },
 });
 

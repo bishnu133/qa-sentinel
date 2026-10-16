@@ -21,8 +21,11 @@ Given the scenarios to be written, decide what state each needs and how to creat
 1. Find existing setup helpers, fixtures and factories in `{{helpersDir}}` and the test folders. Reuse them.
 2. If a precondition has no helper, add one that creates it through an API. Each helper returns the created entity's ids.
 3. Make data unique per test (generated ids, timestamps or the existing factory pattern) so tests can run in parallel.
-4. Provide teardown where the project has a cleanup pattern. Otherwise say that data is left behind.
-5. Express setup as steps with dependencies (`createUser` → `createOrder(userId)`), so independent steps can run in parallel and cleanup can run in reverse order.
+4. Clean up by the project's rule: `testData` in context.json (from qa-sentinel.config.yaml).
+   - `cleanup: ledger`: every helper that creates a record tracks it right after creating it, with the request that deletes it: `data.track("<kind>", id, { path: "/<resource>/<id>" })` (look at `ledger.ts` for the exact API). Use the `{ method, path }` form; a function can't be replayed by `qa-sentinel data sweep` after a killed run. The fixture deletes tracked records newest first when the test ends, pass or fail, so never delete them in the test body too. For a new kind of record, find its delete endpoint in the service's OpenAPI spec; if there is none, use the closest documented way (e.g. archive) and say so in your notes.
+   - `cleanup: project`: follow the project's own pattern (`testData.notes`, existing helpers and fixtures).
+   - `cleanup: none`: create no teardown, and say in your notes which data is left behind.
+5. Express setup as steps with dependencies (`createProgram` → `createCompany(programId)` → `createEvent(companyId)`), so independent steps can run in parallel and cleanup can run in reverse order. Every test builds its own chain: never depend on data created by another test or created by hand beforehand.
 
 Later phases reuse your helpers for Web and Mobile tests, so keep them UI-independent.
 

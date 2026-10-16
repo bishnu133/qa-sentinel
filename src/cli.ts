@@ -1,8 +1,9 @@
 #!/usr/bin/env node
+import { dataStatusCommand, dataSweepCommand } from "./commands/data.js";
 import { contractCheckCommand } from "./commands/contractCheck.js";
 import { ClaudeAccessError } from "./claude.js";
 import { Command, Option } from "commander";
-import { addMobileCommand, addWebCommand, initCommand, upgradeCommand } from "./commands/init.js";
+import { addDataLedgerCommand, addMobileCommand, addWebCommand, initCommand, upgradeCommand } from "./commands/init.js";
 import { healedCommand } from "./commands/healed.js";
 import { reviewStoryCommand } from "./commands/reviewStoryCmd.js";
 import { bugsCommand } from "./commands/bugs.js";
@@ -84,6 +85,12 @@ program
   .action(wrap(async (o) => void addWebCommand({ cwd: cwd(), healing: o.healing })));
 
 program
+  .command("add-data-ledger")
+  .description("existing projects: track the test data tests create and delete it afterwards (writes ledger.ts, sets testData.cleanup: ledger)")
+  .option("--dir <dir>", "where to write ledger.ts (default: your data/fixtures folder, else the API helpers folder)")
+  .action(wrap(async (o) => void addDataLedgerCommand({ cwd: cwd(), dir: o.dir })));
+
+program
   .command("add-mobile")
   .description("add the mobile (WebdriverIO + Appium) test layer to an existing qa-sentinel project")
   .addOption(new Option("--platform <platform>", "android | ios (default when QA_MOBILE_PLATFORM is not set)").choices(["android", "ios"]))
@@ -115,6 +122,20 @@ program
   .option("--limit <n>", "at most this many tests", (v) => Number(v))
   .option("--dry-run", "list the untagged tests")
   .action(wrap(async (o) => tagCommand({ cwd: cwd(), push: o.push, limit: o.limit, dryRun: o.dryRun })));
+
+const data = program.command("data").description("test data the tests created (testData.cleanup: ledger)");
+data
+  .command("status")
+  .description("list records the tests created and haven't deleted yet")
+  .option("--older-than <minutes>", "only records from runs idle this long", (v) => Number(v))
+  .action(wrap(async (o) => dataStatusCommand({ cwd: cwd(), olderThan: o.olderThan })));
+data
+  .command("sweep")
+  .description("delete what killed runs left behind, newest first, on the test environment")
+  .option("--dry-run", "list what would be deleted")
+  .option("--older-than <minutes>", "skip runs active in the last N minutes (another run may still use them)", (v) => Number(v))
+  .option("-o, --out <file>", "markdown report")
+  .action(wrap(async (o) => dataSweepCommand({ cwd: cwd(), dryRun: o.dryRun, olderThan: o.olderThan, out: o.out })));
 
 program
   .command("contract-check")

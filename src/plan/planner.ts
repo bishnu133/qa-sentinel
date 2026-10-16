@@ -136,6 +136,7 @@ export async function planChange(i: PlanInput): Promise<PlanOutcome> {
         testLayers: layers(c).map((l) => ({ layer: l.layer, dir: l.dir, helpersDir: l.helpersDir, runCommand: l.runCommand })),
         serviceLayer: primaryLayer(c, i.service),
         ...(i.service.routes.length ? { serviceRoutes: i.service.routes } : {}),
+        testData: c.testData,
         acceptanceCriteriaIds: i.req.acceptanceCriteria.map((a) => a.id),
         scopeItemIds: (i.req.scopeItems ?? []).map((x) => x.id),
         contractDiff: `${run.rel}/contract-diff.md`,

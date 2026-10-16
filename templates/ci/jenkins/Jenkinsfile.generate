@@ -64,6 +64,10 @@ pipeline {
     }
   }
   post {
-    always { archiveArtifacts artifacts: 'qa-sentinel-summary.md, .qa-sentinel/runs/**', allowEmptyArchive: true }
+    always {
+      // Test data a failed or killed test left behind (testData.cleanup: ledger).
+      sh 'if [ -d "{{ledgerDir}}" ] && command -v qa-sentinel >/dev/null; then qa-sentinel data sweep || true; fi'
+      archiveArtifacts artifacts: 'qa-sentinel-summary.md, .qa-sentinel/runs/**', allowEmptyArchive: true
+    }
   }
 }
