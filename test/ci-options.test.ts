@@ -26,7 +26,7 @@ describe("skipping dependency-bot changes (ci.skipBranches)", () => {
     const repo = fs.mkdtempSync(path.join(os.tmpdir(), "qas-ci-"));
     execFileSync("git", ["init", "-q"], { cwd: repo });
     await initCommand({ cwd: repo, yes: true, mode: "scratch", ci: "gitlab", level: "maintenance", name: "t" });
-    const y = YAML.parse(fs.readFileSync(path.join(repo, "ci/qa-sentinel/service.gitlab-ci.yml"), "utf8"));
+    const y = YAML.parse(fs.readFileSync(path.join(repo, "ci/qa-sentinel/service.gitlab-ci.yml"), "utf8"), { logLevel: "error" });
     expect(y["qa-gap-report"].rules[0]).toEqual({ if: "$CI_MERGE_REQUEST_SOURCE_BRANCH_NAME =~ /^renovate\\/|^dependabot\\//", when: "never" });
     const gen = y["qa-trigger-generation"];
     expect(gen.extends).toBe(".qa-trigger-generation");
