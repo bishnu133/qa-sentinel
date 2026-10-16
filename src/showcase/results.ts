@@ -53,14 +53,16 @@ function fromPlaywrightJson(json: any, baseDir: string): RunResult[] {
 function fromJUnit(xml: string, baseDir: string): RunResult[] {
   const out: RunResult[] = [];
   for (const m of xml.matchAll(/<testcase\b([^>]*?)(?:\/>|>([\s\S]*?)<\/testcase>)/g)) {
-    const attr = (k: string) => m[1].match(new RegExp(`${k}="([^"]*)"`))?.[1];
+    // Whole attribute names only: "name" must not match inside "classname".
+    const attr = (k: string) => m[1].match(new RegExp(`(?:^|\\s)${k}="([^"]*)"`))?.[1];
     const body = m[2] ?? "";
     const status = /<(failure|error)\b/.test(body) ? "failed" : /<skipped\b/.test(body) ? "skipped" : "passed";
     const evidence = [...body.matchAll(/\[\[ATTACHMENT\|([^\]]+)\]\]/g)].map((a) => {
       const p = path.resolve(baseDir, a[1].trim());
       return { kind: kindOf(path.basename(p).replace(/\.[^.]+$/, ""), "", p), name: path.basename(p), path: p };
     });
-    out.push({ file: attr("file") ?? attr("classname"), title: (attr("name") ?? "").replace(/&quot;/g, '"').replace(/&amp;/g, "&"), status, evidence });
+    const cls = attr("classname");
+    out.push({ file: attr("file") ?? (cls && /\.[cm]?[jt]sx?$/.test(cls.trim()) ? cls : undefined), title: (attr("name") ?? "").replace(/&quot;/g, '"').replace(/&amp;/g, "&"), status, evidence });
   }
   return out;
 }

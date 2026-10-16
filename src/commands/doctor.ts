@@ -11,6 +11,8 @@ import { isGitRepo } from "../git.js";
 import { log } from "../log.js";
 import { SECRET_NAME } from "../env.js";
 import { currentUser, getProject, gitlabContext } from "../scm/gitlab.js";
+import { junitReporter, layers, runCommandRunsEverything, runnerOf } from "../layers.js";
+import { packageScripts } from "../verification.js";
 
 type Level = "ok" | "warn" | "fail";
 export interface Check {
@@ -47,6 +49,33 @@ export function runChecks(cwd: string, env: NodeJS.ProcessEnv = process.env): Ch
 
   for (const f of [".claude/agents/change-analyzer.md", ".claude/skills/qa-plan/SKILL.md", ".claude/skills/write-api-test/SKILL.md"]) {
     fs.existsSync(path.join(cwd, f)) ? add("ok", `${f}`) : add("fail", `${f}`, "rerun `qa-sentinel init --force`");
+  }
+
+  // How each layer's tests run: qa-sentinel adds spec paths (and a JUnit reporter it can switch on) to the run command.
+  const scripts = packageScripts(cwd);
+  for (const l of layers(c)) {
+    const runner = runnerOf(l.runCommand, scripts);
+    const script = l.runCommand.match(/\b(?:npm|pnpm|yarn)\s+(?:run\s+)?([\w:.-]+)/)?.[1];
+    const full = `${l.runCommand} ${script && scripts[script] ? scripts[script] : ""}`;
+    if (runCommandRunsEverything(full))
+      add("warn", `${l.layer} run command runs only the tests asked for`, `\`${l.runCommand}\`${script && scripts[script] ? ` (script: \`${scripts[script]}\`)` : ""} contains a spec glob or file: qa-sentinel appends the spec paths to verify, so every run would include all tests. Point tests.${l.layer === "api" ? "api" : l.layer}.runCommand at the runner without the glob`);
+    if (runner === "mocha") {
+      const rc = [".mocharc.yml", ".mocharc.yaml", ".mocharc.json", ".mocharc.js", ".mocharc.cjs", ".mocharc.jsonc"].map((f) => path.join(cwd, f)).find((f) => fs.existsSync(f));
+      if (rc && /^\s*["']?spec["']?\s*[:=]/m.test(fs.readFileSync(rc, "utf8")))
+        add("warn", `${l.layer}: ${path.basename(rc)} has no \`spec\``, "mocha adds the configured spec to the files qa-sentinel passes, so every run includes all tests: move `spec` into the npm script instead");
+    }
+    if (!l.isPlaywright && !l.junitDirEnv && !c.verification.junitPath) {
+      const auto = junitReporter(runner, l.runCommand, "junit.xml", (pkg) => fs.existsSync(path.join(cwd, "node_modules", pkg)));
+      if (auto) add("ok", `${l.layer} results: JUnit through ${runner}'s reporter (switched on by qa-sentinel)`);
+      else
+        add(
+          "warn",
+          `${l.layer} results readable`,
+          runner === "jest"
+            ? "install jest-junit (qa-sentinel switches it on), or set verification.junitPath"
+            : `qa-sentinel can't see per-test results for \`${l.runCommand}\`: call the runner directly or end an npm command with \` --\`, or set verification.junitPath to the JUnit file your runner writes`,
+        );
+    }
   }
 
   const skill = path.join(cwd, ".claude/skills/write-api-test/SKILL.md");

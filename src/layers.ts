@@ -121,3 +121,40 @@ export function suiteRunCommand(c: Config): string {
   if (ls.length > 1 && parts.every(Boolean) && new Set(parts.map((p) => p![1])).size === 1) return `${parts[0]![1]} ${parts.map((p) => `--project=${p![2]}`).join(" ")}`;
   return ls.map((l) => l.runCommand).join(" && ");
 }
+
+/** The test runner behind a run command: named directly, or through an npm script (`npm run test --`, `npm test --`). */
+export type Runner = "playwright" | "mocha" | "vitest" | "jest" | "wdio";
+
+export function runnerOf(runCommand: string, scripts: Record<string, string> = {}): Runner | undefined {
+  const direct = (cmd: string): Runner | undefined => {
+    if (/\bplaywright\b/.test(cmd)) return "playwright";
+    if (/\bwdio\b/.test(cmd)) return "wdio";
+    if (/\bvitest\b/.test(cmd)) return "vitest";
+    if (/\bmocha\b/.test(cmd)) return "mocha";
+    if (/\bjest\b/.test(cmd)) return "jest";
+    return undefined;
+  };
+  const npm = runCommand.match(/\b(?:npm|pnpm|yarn)\s+(?:run\s+)?([\w:.-]+)/);
+  if (npm && scripts[npm[1]]) return direct(scripts[npm[1]]) ?? direct(runCommand);
+  return direct(runCommand);
+}
+
+/**
+ * Arguments that make the runner write JUnit to `file`, for runners that can do it without extra packages (mocha's
+ * built-in xunit reporter, vitest's junit reporter) or with one the team already has (jest-junit). Extra arguments only
+ * reach the runner when the command calls it directly or ends with `--` (npm passes what follows to the script).
+ */
+export function junitReporter(runner: Runner | undefined, runCommand: string, file: string, has: (pkg: string) => boolean, quote: (s: string) => string = shellWord): { args: string; env: Record<string, string> } | undefined {
+  const viaNpm = /\b(?:npm|pnpm|yarn)\s/.test(runCommand);
+  if (viaNpm && !/\s--(\s|$)/.test(runCommand) && !/^\s*yarn\s/.test(runCommand)) return undefined;
+  if (runner === "mocha") return { args: ` --reporter xunit --reporter-option output=${quote(file)}`, env: {} };
+  if (runner === "vitest") return { args: ` --reporter=junit --outputFile=${quote(file)}`, env: {} };
+  if (runner === "jest" && has("jest-junit"))
+    return { args: " --reporters=default --reporters=jest-junit", env: { JEST_JUNIT_OUTPUT_FILE: file, JEST_JUNIT_ADD_FILE_ATTRIBUTE: "true" } };
+  return undefined;
+}
+
+/** A spec glob or directory baked into the run command: every run would include all tests, not only the ones asked for. */
+export function runCommandRunsEverything(cmd: string): boolean {
+  return /(^|\s)['"]?[^\s'"]*(\*|\.(spec|test)\.(ts|js|mjs|cjs))['"]?(\s|$)/.test(cmd);
+}
