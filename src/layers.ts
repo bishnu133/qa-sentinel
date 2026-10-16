@@ -156,5 +156,11 @@ export function junitReporter(runner: Runner | undefined, runCommand: string, fi
 
 /** A spec glob or directory baked into the run command: every run would include all tests, not only the ones asked for. */
 export function runCommandRunsEverything(cmd: string): boolean {
-  return /(^|\s)['"]?[^\s'"]*(\*|\.(spec|test)\.(ts|js|mjs|cjs))['"]?(\s|$)/.test(cmd);
+  const words = cmd.trim().split(/\s+/).map((w) => w.replace(/^['"]|['"]$/g, ""));
+  return words.some((w, i) => {
+    if (i === 0 || w.startsWith("-")) return false;
+    const prev = words[i - 1];
+    if (prev.startsWith("-") && !prev.includes("=")) return false; // the value of an option (--ignore '*.e2e.ts')
+    return w.includes("*") || /\.(spec|test)\.[cm]?[jt]sx?$/.test(w) || /^\.?\/?(tests?|specs?|__tests__)\//.test(w);
+  });
 }

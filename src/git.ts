@@ -32,6 +32,14 @@ export function fromRoot(cwd: string, p: string): string {
   return path.posix.relative(prefix, p);
 }
 
+export function toplevel(cwd: string): string | undefined {
+  try {
+    return git(cwd, ["rev-parse", "--show-toplevel"]);
+  } catch {
+    return undefined;
+  }
+}
+
 export function isGitRepo(cwd: string): boolean {
   try {
     git(cwd, ["rev-parse", "--is-inside-work-tree"]);
@@ -76,9 +84,12 @@ export function shortSha(repo: string, ref = "HEAD"): string {
  * Make sure the working tree the agent reads is exactly `sha`. Without this the agent could read newer code
  * than the diff it was given. With `checkout`, a clean tree is moved to a detached HEAD at `sha`.
  */
-export function ensureAtCommit(repo: string, sha: string, checkout: boolean): void {
+export function ensureAtCommit(repo: string, sha: string, checkout: boolean, testRepo?: string): void {
   const current = resolveSha(repo, "HEAD");
   if (current === sha) return;
+  // A service and the test repo in one repository: checking out the service's commit would move the tests too.
+  if (checkout && testRepo && toplevel(repo) && toplevel(repo) === toplevel(testRepo))
+    throw new Error(`${repo} and the test repo are in the same repository; check out ${sha.slice(0, 12)} yourself (CI already has it) and run without --checkout.`);
   if (!checkout) {
     throw new Error(
       `${repo} is at ${current.slice(0, 12)} but the change being analysed is ${sha.slice(0, 12)}. ` +
@@ -176,11 +187,11 @@ export function commitMessages(repo: string, base: string, head: string): string
  * The working tree must contain `sha` (story mode reads the code as of the story's tip): fine when HEAD is that
  * commit or a descendant (e.g. main after the merge); else check it out when allowed.
  */
-export function atLeast(repo: string, sha: string, checkout: boolean): void {
+export function atLeast(repo: string, sha: string, checkout: boolean, testRepo?: string): void {
   try {
     execFileSync("git", ["merge-base", "--is-ancestor", sha, "HEAD"], { cwd: repo, stdio: "ignore" });
     return;
   } catch {
-    ensureAtCommit(repo, sha, checkout);
+    ensureAtCommit(repo, sha, checkout, testRepo);
   }
 }

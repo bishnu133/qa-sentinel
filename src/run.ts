@@ -29,7 +29,7 @@ export function findService(c: Config, nameOrPath: string, cwd: string, override
   if (/\$\{?[A-Za-z_]/.test(nameOrPath))
     throw new Error(`Service name "${nameOrPath}" looks like an unexpanded CI variable. Check how the pipeline sets it.`);
   const byName = c.workspace.services.find((s) => s.name === nameOrPath);
-  if (byName) return overridePath ? { ...byName, path: overridePath } : byName;
+  if (byName) return overridePath ? { ...byName, path: byName.subdir ? path.join(overridePath, byName.subdir) : overridePath } : byName;
   if (overridePath) {
     const known = c.workspace.services.map((s) => s.name);
     if (known.length) log.warn(`service "${nameOrPath}" is not in workspace.services (${known.join(", ")}); its openapi, dependsOn and gitlabProject settings are not used`);

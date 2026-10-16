@@ -24,7 +24,7 @@ pipeline {
         }
         dir('qa-tests') {
           git url: params.QA_TESTS_REPO, branch: '{{targetBranch}}', credentialsId: 'gitlab-checkout'
-          sh 'git remote remove origin && cd "./{{testsSubdir}}" && npm ci --ignore-scripts'
+          sh 'git remote remove origin && cd "./{{testsSubdir}}" && if [ -f package-lock.json ]; then npm ci --ignore-scripts; else (cd "$WORKSPACE/qa-tests" && npm ci --ignore-scripts); fi'
         }
       }
     }

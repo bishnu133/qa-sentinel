@@ -1,3 +1,4 @@
+import { hasPackage } from "./fsutil.js";
 import { constSubstituter } from "./analysis/testIndex.js";
 import fs from "node:fs";
 import path from "node:path";
@@ -45,7 +46,7 @@ const attr = (attrs: string, name: string) => {
 };
 
 /** Reporters put a file path or a suite title in classname (mocha xunit, jest-junit): only a path is a file. */
-export const fileLike = (s: string | undefined) => (s && /\.[cm]?[jt]sx?$/.test(s.trim()) ? s : undefined);
+export const fileLike = (s: string | undefined) => (s && /\.([cm]?[jt]sx?|py|java|kt|cs|rb|go|php|feature)$/.test(s.trim()) ? s : undefined);
 
 /** The package.json scripts of the test repo (to see which runner `npm run test` calls). */
 export function packageScripts(cwd: string): Record<string, string> {
@@ -190,7 +191,7 @@ export async function verifyChanges(o: VerifyOptions): Promise<VerificationRepor
     // Other runners: JUnit through their own reporter when qa-sentinel can switch it on (mocha, vitest, jest-junit).
     const auto =
       !l.isPlaywright && !l.junitDirEnv && !c.verification.junitPath
-        ? junitReporter(runnerOf(l.runCommand, packageScripts(cwd)), l.runCommand, path.join(o.runDir, l.layer === "api" ? "junit.xml" : `junit-${l.layer}.xml`), (pkg) => fs.existsSync(path.join(cwd, "node_modules", pkg)), shq)
+        ? junitReporter(runnerOf(l.runCommand, packageScripts(cwd)), l.runCommand, path.join(o.runDir, l.layer === "api" ? "junit.xml" : `junit-${l.layer}.xml`), (pkg) => hasPackage(cwd, pkg), shq)
         : undefined;
     const junit = l.isPlaywright
       ? path.join(o.runDir, l.layer === "api" ? "junit.xml" : `junit-${l.layer}.xml`)

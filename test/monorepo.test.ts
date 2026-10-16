@@ -3,8 +3,10 @@ import os from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { describe, expect, it } from "vitest";
-import { changeSet, changesSince, fromRoot, showFile, workingChanges } from "../src/git.js";
+import { changeSet, changesSince, ensureAtCommit, fromRoot, showFile, workingChanges } from "../src/git.js";
 import { initCommand } from "../src/commands/init.js";
+import { findService } from "../src/run.js";
+import { ConfigSchema } from "../src/config.js";
 
 const sh = (cwd: string, ...args: string[]) =>
   execFileSync("git", args, { cwd, encoding: "utf8", env: { ...process.env, GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@t", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@t" } }).trim();
@@ -60,5 +62,20 @@ describe("a test repo that is a folder of a monorepo", () => {
     const svc = fs.readFileSync(path.join(tests, "ci/qa-sentinel/service.gitlab-ci.yml"), "utf8");
     expect(svc).toContain('QA_TESTS_DIR: "/tmp/qa-tests/packages/api-tests"');
     expect(svc).toContain('qa-sentinel -C "$QA_TESTS_DIR" gap-report');
+  });
+
+  it("in CI, a monorepo service's folder is joined onto the checkout (--service-path is the repository root)", () => {
+    const c = ConfigSchema.parse({ version: 1, mode: "existing", project: { name: "p" }, tests: { api: { framework: "mocha", runCommand: "x" } }, ci: { platform: "gitlab" }, workspace: { services: [{ name: "orders", path: "../../services/orders", subdir: "services/orders" }] } });
+    expect(findService(c, "orders", "/tmp/x", "/builds/group/platform").path).toBe("/builds/group/platform/services/orders");
+    expect(findService(c, "orders", "/tmp/x").path).toBe("../../services/orders");
+  });
+
+  it("refuses to check out a service commit that would move the test repo in the same repository", () => {
+    const { root, tests } = monorepo();
+    const first = sh(root, "rev-parse", "HEAD");
+    write(path.join(root, "services/orders/src/server.ts"), "export const a = 3;\n");
+    sh(root, "commit", "-qam", "next");
+    expect(() => ensureAtCommit(path.join(root, "services/orders"), first, true, tests)).toThrow(/same repository/);
+    expect(sh(root, "rev-parse", "HEAD")).not.toBe(first);
   });
 });

@@ -39,10 +39,10 @@ const env = { PATH: process.env.PATH, HOME: process.env.HOME };
 describe("generated OpenAPI specs (openapiCommand)", () => {
   beforeEach(() => clearSpecCache());
 
-  it("generates the spec at base and head in throwaway worktrees, so a spec that isn't committed still gets a contract diff", () => {
+  it("generates the spec at base and head in throwaway worktrees, so a spec that isn't committed still gets a contract diff", async () => {
     const { repo, base, head } = service();
-    const b = specAt(repo, base, svc, { env });
-    const h = specAt(repo, head, svc, { env });
+    const b = await specAt(repo, base, svc, { env });
+    const h = await specAt(repo, head, svc, { env });
     expect(b).toContain("/orders/{id}");
     expect(h).toContain('"/orders"');
     const d = diffSpecs(b, h);
@@ -53,20 +53,48 @@ describe("generated OpenAPI specs (openapiCommand)", () => {
     expect(fs.existsSync(path.join(repo, "openapi.yaml"))).toBe(false);
   });
 
-  it("reads committed specs from git as before, and gives no spec (not an error) when the command fails", () => {
+  it("reads committed specs from git as before, and gives no spec (not an error) when the command fails", async () => {
     const { repo, head } = service();
-    expect(specAt(repo, head, { name: "orders", openapi: "openapi.yaml" }, { env })).toBeUndefined(); // not committed
-    expect(specAt(repo, head, { ...svc, openapiCommand: "exit 3" }, { env })).toBeUndefined();
-    expect(specAt(repo, head, { ...svc, openapiCommand: "sleep 5" }, { env, timeoutMs: 300 })).toBeUndefined();
+    expect(await specAt(repo, head, { name: "orders", openapi: "openapi.yaml" }, { env })).toBeUndefined(); // not committed
+    expect(await specAt(repo, head, { ...svc, openapiCommand: "exit 3" }, { env })).toBeUndefined();
+    expect(await specAt(repo, head, { ...svc, openapiCommand: "sleep 5" }, { env, timeoutMs: 300 })).toBeUndefined();
     expect(sh(repo, "worktree", "list").split("\n")).toHaveLength(1);
   });
 
-  it("feeds the contract diff in gap reports and gives the agent the generated head spec", () => {
+  it("feeds the contract diff in gap reports and gives the agent the generated head spec", async () => {
     const { repo, base, head } = service();
     const c = ConfigSchema.parse({ version: 1, mode: "scratch", project: { name: "p" }, tests: { api: { framework: "playwright", runCommand: "x" } }, ci: { platform: "gitlab" }, workspace: { services: [{ name: "orders", path: repo, ...svc }] } });
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "qas-run-"));
-    const d = computeContractDiff({ c, service: c.workspace.services[0], repo, cs: { base, head } as never, run: { dir, rel: "run" } as never });
+    const d = await computeContractDiff({ c, service: c.workspace.services[0], repo, cs: { base, head } as never, run: { dir, rel: "run" } as never });
     expect(d.changes.map((x) => x.endpoint)).toContain("POST /orders");
     expect(fs.readFileSync(path.join(dir, "spec-orders.yaml"), "utf8")).toContain('"/orders"');
+  });
+
+  it("never runs the MR's git hooks during the checkout (they could read CI secrets)", async () => {
+    const { repo, base, head } = service();
+    const marker = path.join(os.tmpdir(), `qas-hook-${process.pid}-${Date.now()}`);
+    fs.mkdirSync(path.join(repo, ".husky"), { recursive: true });
+    fs.writeFileSync(path.join(repo, ".husky/post-checkout"), `#!/bin/sh\ntouch ${marker}\n`, { mode: 0o755 });
+    sh(repo, "add", "-A");
+    sh(repo, "commit", "-qm", "hook");
+    sh(repo, "config", "core.hooksPath", ".husky");
+    expect(await specAt(repo, "HEAD", svc, { env })).toContain("/orders");
+    expect(await specAt(repo, base, svc, { env })).toBeTruthy();
+    expect(fs.existsSync(marker)).toBe(false);
+    void head;
+  });
+
+  it("runs in the service's folder when the service is a folder of a monorepo, with dependencies hoisted to the root", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "qas-specs-mono-"));
+    sh(root, "init", "-q", "-b", "main");
+    fs.writeFileSync(path.join(root, ".gitignore"), "node_modules/\nopenapi.yaml\n");
+    fs.mkdirSync(path.join(root, "node_modules/fake-tsoa"), { recursive: true });
+    fs.writeFileSync(path.join(root, "node_modules/fake-tsoa/index.js"), `require("fs").writeFileSync("openapi.yaml", JSON.stringify({ openapi: "3.0.0", info: { title: "s", version: "1" }, paths: { [require("fs").readFileSync("route.txt", "utf8").trim()]: { get: { responses: { "200": { description: "ok" } } } } } }));`);
+    fs.mkdirSync(path.join(root, "services/orders"), { recursive: true });
+    fs.writeFileSync(path.join(root, "services/orders/route.txt"), "/orders\n");
+    sh(root, "add", "-A");
+    sh(root, "commit", "-qm", "init");
+    const spec = await specAt(path.join(root, "services/orders"), "HEAD", { ...svc, openapiCommand: "node ../../node_modules/fake-tsoa/index.js" }, { env });
+    expect(spec).toContain('"/orders"');
   });
 });

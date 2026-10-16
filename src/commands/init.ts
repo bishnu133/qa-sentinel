@@ -253,10 +253,12 @@ export function templateVars(c: Config, cwd?: string): TemplateVars {
   const testsSubdir = cwd && isGitRepo(cwd) ? repoPrefix(cwd) : "";
   return {
     testsSubdir,
+    testsSubdirNone: !testsSubdir,
     testsPrefix: testsSubdir ? `${testsSubdir}/` : "",
     // GitLab rules take /regex/ literals: slashes inside are escaped.
-    skipBranchesRe: c.ci.skipBranches.map((r) => r.replace(/\//g, "\\/")).join("|"),
-    skipBranchesMergeRe: c.ci.skipBranches.map((r) => r.replace(/^\^/, "").replace(/\//g, "\\/")).join("|"),
+    skipBranchesRe: c.ci.skipBranches.map((r) => r.replace(/(?<!\\)\//g, "\\/")).join("|"),
+    // In a merge commit the branch is followed by "' into …": no ^ or $ anchors there.
+    skipBranchesMergeRe: c.ci.skipBranches.map((r) => r.replace(/^\^/, "").replace(/\$$/, "").replace(/(?<!\\)\//g, "\\/")).join("|"),
     projectName: c.project.name,
     mode: c.mode,
     isScratch: c.mode === "scratch",

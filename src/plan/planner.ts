@@ -46,19 +46,19 @@ export const oracleOf = (req: RequirementSnapshot): "provided" | "ambiguous" | "
   req.source === "none" ? "missing" : req.acceptanceCriteria.length ? "provided" : "ambiguous";
 
 /** Deterministic contract diff for the service's OpenAPI spec, saved into the run dir. */
-export function computeContractDiff(i: Pick<PlanInput, "c" | "service" | "repo" | "cs" | "run" | "parts">): ContractDiff {
+export async function computeContractDiff(i: Pick<PlanInput, "c" | "service" | "repo" | "cs" | "run" | "parts">): Promise<ContractDiff> {
   const env = testEnv(i.c);
   /** The spec at base and head; a generated head spec is saved in the run dir so the agent can read it. */
-  const specs = (repo: string, cs: ChangeSet, s: ServiceConfig) => {
+  const specs = async (repo: string, cs: ChangeSet, s: ServiceConfig) => {
     const o = { env, timeoutMs: (s.openapiCommandTimeoutSeconds ?? 180) * 1000 };
-    const base = specAt(repo, cs.base, s, o);
-    const head = specAt(repo, cs.head, s, o);
+    const base = await specAt(repo, cs.base, s, o);
+    const head = await specAt(repo, cs.head, s, o);
     if (s.openapiCommand && head && s.openapi) fs.writeFileSync(path.join(i.run.dir, `spec-${s.name}${path.extname(s.openapi) || ".yaml"}`), head);
     return diffSpecs(base, head);
   };
   if (i.parts?.length) {
     // Story mode: one contract diff per service with a spec, merged; the markdown keeps a section per service.
-    const each = i.parts.map((p) => ({ p, d: p.service.openapi ? specs(p.repo, p.cs, p.service) : diffSpecs(undefined, undefined) }));
+    const each = await Promise.all(i.parts.map(async (p) => ({ p, d: p.service.openapi ? await specs(p.repo, p.cs, p.service) : diffSpecs(undefined, undefined) })));
     const compared = each.filter((x) => x.d.status !== "no-spec");
     const d: ContractDiff = {
       status: compared.find((x) => x.d.status === "compared")?.d.status ?? compared[0]?.d.status ?? "no-spec",
@@ -73,7 +73,7 @@ export function computeContractDiff(i: Pick<PlanInput, "c" | "service" | "repo" 
     return d;
   }
   const spec = i.service.openapi;
-  const d = spec ? specs(i.repo, i.cs, i.service) : diffSpecs(undefined, undefined);
+  const d = spec ? await specs(i.repo, i.cs, i.service) : diffSpecs(undefined, undefined);
   fs.writeFileSync(path.join(i.run.dir, "contract-diff.json"), JSON.stringify(d, null, 2));
   fs.writeFileSync(path.join(i.run.dir, "contract-diff.md"), contractDiffMarkdown(d, spec) + "\n");
   return d;
@@ -85,7 +85,7 @@ export function computeContractDiff(i: Pick<PlanInput, "c" | "service" | "repo" 
  */
 export async function planChange(i: PlanInput): Promise<PlanOutcome> {
   const { c, run } = i;
-  const contract = computeContractDiff(i);
+  const contract = await computeContractDiff(i);
   const planRel = `${run.rel}/test-plan.json`;
   const planAbs = path.join(i.cwd, planRel);
   const oracle = oracleOf(i.req);

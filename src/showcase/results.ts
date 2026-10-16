@@ -62,7 +62,7 @@ function fromJUnit(xml: string, baseDir: string): RunResult[] {
       return { kind: kindOf(path.basename(p).replace(/\.[^.]+$/, ""), "", p), name: path.basename(p), path: p };
     });
     const cls = attr("classname");
-    out.push({ file: attr("file") ?? (cls && /\.[cm]?[jt]sx?$/.test(cls.trim()) ? cls : undefined), title: (attr("name") ?? "").replace(/&quot;/g, '"').replace(/&amp;/g, "&"), status, evidence });
+    out.push({ file: attr("file") ?? (cls && /\.([cm]?[jt]sx?|py|java|kt|cs|rb|go|php|feature)$/.test(cls.trim()) ? cls : undefined), title: (attr("name") ?? "").replace(/&quot;/g, '"').replace(/&amp;/g, "&"), status, evidence });
   }
   return out;
 }

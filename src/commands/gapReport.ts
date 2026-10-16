@@ -53,7 +53,7 @@ export async function gapReportCommand(o: GapReportOptions): Promise<{ report: s
     sp.notes.forEach((n) => log.warn(n));
     if (!sp.parts.length) throw new Error(`No service changes found for ${o.story}: no branch or commit message mentions it in the service repos`);
     parts = sp.parts;
-    for (const p of parts) atLeast(p.repo, p.cs.head, Boolean(o.checkout));
+    for (const p of parts) atLeast(p.repo, p.cs.head, Boolean(o.checkout), cwd);
     ({ service, cs, relevant } = combinedChange(o.story, parts));
     repo = parts[0].repo;
     log.step(`story ${o.story}: ${parts.map((p) => `${p.service.name} (${p.relevant.length} file(s)${p.merged ? "" : ", not merged"})`).join(", ")}`);
@@ -63,7 +63,7 @@ export async function gapReportCommand(o: GapReportOptions): Promise<{ report: s
     if (!isGitRepo(repo)) throw new Error(`${repo} is not a git repository`);
     cs = changeSet(repo, o.base ?? mr.base ?? `origin/${c.ci.targetBranch}`, o.head ?? "HEAD");
     // The agent reads the working tree, so it must be exactly the commit whose diff it analyses.
-    ensureAtCommit(repo, cs.head, Boolean(o.checkout));
+    ensureAtCommit(repo, cs.head, Boolean(o.checkout), cwd);
     relevant = cs.files.filter((f) => !matchesAny(f, c.agent.skipPaths));
   }
 

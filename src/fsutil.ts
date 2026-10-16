@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import { createRequire } from "node:module";
 
 const IGNORED_DIRS = new Set([
   "node_modules",
@@ -89,4 +90,26 @@ export function writeFileSafe(
   ensureDir(path.dirname(file));
   fs.writeFileSync(file, content);
   return exists ? "overwritten" : "created";
+}
+
+/** Whether `pkg` resolves from `dir` the way Node would (also hoisted to a workspace root). */
+export function hasPackage(dir: string, pkg: string): boolean {
+  try {
+    createRequire(path.join(path.resolve(dir), "package.json")).resolve(`${pkg}/package.json`);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** The nearest `name` in `dir` or a folder above it (node_modules hoisted in a workspace). */
+export function findUp(dir: string, name: string): string | undefined {
+  let d = path.resolve(dir);
+  for (;;) {
+    const p = path.join(d, name);
+    if (fs.existsSync(p)) return p;
+    const up = path.dirname(d);
+    if (up === d) return undefined;
+    d = up;
+  }
 }

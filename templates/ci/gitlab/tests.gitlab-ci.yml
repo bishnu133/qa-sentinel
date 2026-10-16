@@ -43,10 +43,13 @@ variables:
   image: mcr.microsoft.com/playwright:v1.49.0-noble
   before_script:
 {{#if testsSubdir}}
-    # The test repo is a folder of this repository: run everything from there.
+    # The test repo is a folder of this repository: install (its own lockfile, else the workspace root's) and run from there.
     - cd "{{testsSubdir}}"
+    - if [ -f package-lock.json ]; then npm ci; else (cd "$CI_PROJECT_DIR" && npm ci); fi
 {{/if}}
+{{#if testsSubdirNone}}
     - npm ci
+{{/if}}
 {{#if webEnabled}}
     # Browser matching the @playwright/test version in the lockfile (a no-op when the image already has it).
     - npx playwright install chromium

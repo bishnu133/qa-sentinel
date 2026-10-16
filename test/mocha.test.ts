@@ -45,6 +45,9 @@ describe("Mocha test repos", () => {
     expect(runCommandRunsEverything("mocha --require ts-node/register tests/*.spec.ts --grep ccdev")).toBe(true);
     expect(runCommandRunsEverything("mocha --require ts-node/register --grep ccdev")).toBe(false);
     expect(runCommandRunsEverything("npx wdio run wdio.conf.ts")).toBe(false);
+    expect(runCommandRunsEverything("npx playwright test --project=api")).toBe(false);
+    expect(runCommandRunsEverything("npx jest --testPathIgnorePatterns '*.e2e.ts'")).toBe(false);
+    expect(runCommandRunsEverything("npx mocha test/")).toBe(true);
   });
 
   it("verifies only the changed spec, keeps the team's --grep filter, and reads per-test results", async () => {

@@ -17,8 +17,6 @@ variables:
   # "github:bishnu133/qa-sentinel#main" until it is on npm. Default: qa-sentinel@$QA_SENTINEL_VERSION.
   # (Not defined here on purpose: trigger jobs forward YAML variables downstream, where they override CI/CD variables.)
   QA_SERVICE_NAME: "$CI_PROJECT_NAME"
-  # The test repo's folder inside its repository (a monorepo package), or the repository itself.
-  QA_TESTS_DIR: "/tmp/qa-tests{{#if testsSubdir}}/{{testsSubdir}}{{/if}}"
 
 # Install qa-sentinel from QA_SENTINEL_PACKAGE. A GitHub source ("github:owner/repo#branch") is cloned, built and
 # packed here first: npm's own build-on-install for git dependencies is unreliable for global installs.
@@ -44,6 +42,9 @@ variables:
   image: node:22
   variables:
     GIT_DEPTH: 0
+    # The test repo's folder inside its repository (a monorepo package), or the repository itself. A job variable,
+    # so trigger jobs don't forward it downstream.
+    QA_TESTS_DIR: "/tmp/qa-tests{{#if testsSubdir}}/{{testsSubdir}}{{/if}}"
   before_script:
     - npm i -g --no-audit --no-fund --loglevel=error @anthropic-ai/claude-code
     - !reference [.qa-sentinel-install, script]

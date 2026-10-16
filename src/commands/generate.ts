@@ -81,7 +81,7 @@ export async function generateCommand(o: GenerateOptions): Promise<number> {
 
   let cs: ChangeSet, relevant: string[];
   if (parts) {
-    for (const p of parts) atLeast(p.repo, p.cs.head, Boolean(o.checkout));
+    for (const p of parts) atLeast(p.repo, p.cs.head, Boolean(o.checkout), cwd);
     ({ cs, relevant } = combinedChange(o.story!, parts));
     log.step(`story ${o.story}: ${parts.map((p) => `${p.service.name} (${p.relevant.length} file(s))`).join(", ")}`);
   } else {
@@ -89,7 +89,7 @@ export async function generateCommand(o: GenerateOptions): Promise<number> {
     // GitLab sends 0000… as the "before" SHA for new branches; fall back to the previous commit.
     const baseRef = !o.base || /^0+$/.test(o.base) ? `${headRef}~1` : o.base;
     cs = changeSet(repo, baseRef, headRef);
-    ensureAtCommit(repo, cs.head, Boolean(o.checkout));
+    ensureAtCommit(repo, cs.head, Boolean(o.checkout), cwd);
     relevant = cs.files.filter((f) => !matchesAny(f, c.agent.skipPaths));
   }
   if (relevant.length === 0) {
