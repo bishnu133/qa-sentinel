@@ -1,3 +1,4 @@
+import { isGitRepo, repoPrefix } from "../git.js";
 import fs from "node:fs";
 import path from "node:path";
 import YAML from "yaml";
@@ -207,7 +208,7 @@ export async function initCommand(opts: InitOptions): Promise<Config> {
   writeConfig(cwd, config);
   log.ok(`wrote ${CONFIG_FILE}`);
 
-  const vars = templateVars(config);
+  const vars = templateVars(config, cwd);
   const written = writeTemplates(cwd, config, vars, Boolean(opts.force));
   for (const [file, status] of written) {
     if (status === "skipped") log.dim(`  kept     ${file}`);
@@ -247,8 +248,12 @@ function guessHelpersDir(cwd: string): string {
   return "src/api";
 }
 
-export function templateVars(c: Config): TemplateVars {
+export function templateVars(c: Config, cwd?: string): TemplateVars {
+  // A test repo that is a folder of a larger repository (a monorepo package): CI runs from that folder.
+  const testsSubdir = cwd && isGitRepo(cwd) ? repoPrefix(cwd) : "";
   return {
+    testsSubdir,
+    testsPrefix: testsSubdir ? `${testsSubdir}/` : "",
     projectName: c.project.name,
     mode: c.mode,
     isScratch: c.mode === "scratch",
@@ -518,7 +523,7 @@ export function addWebCommand(o: { cwd: string; healing?: "none" | "bubblegum" }
   if (o.healing) doc.setIn(["tests", "web", "healing"], o.healing);
   fs.writeFileSync(file, doc.toString());
   const c = loadConfig(cwd);
-  const vars = templateVars(c);
+  const vars = templateVars(c, cwd);
   const results = writeWebScaffold(cwd, c, vars);
   for (const f of listTemplateDir("skills")) {
     if (f.startsWith("write-web-test/")) results.push([`.claude/skills/${f}`, writeFileSafe(path.join(cwd, ".claude/skills", f), render(readTemplate(`skills/${f}`), vars), false)]);
@@ -559,7 +564,7 @@ export function addWebCommand(o: { cwd: string; healing?: "none" | "bubblegum" }
  * team's edited copy). Called by the commands that rely on them.
  */
 export function ensureAgentFiles(cwd: string, c: Config): string[] {
-  const vars = templateVars(c);
+  const vars = templateVars(c, cwd);
   const added: string[] = [];
   const put = (rel: string, tpl: string) => {
     if (fs.existsSync(path.join(cwd, rel))) return;
@@ -584,7 +589,7 @@ export function ensureAgentFiles(cwd: string, c: Config): string[] {
 export function upgradeCommand(o: { cwd: string }): number {
   const cwd = path.resolve(o.cwd);
   const c = loadConfig(cwd);
-  const vars = templateVars(c);
+  const vars = templateVars(c, cwd);
   const changed: string[] = [];
   const write = (rel: string, content: string, overwrite: boolean) => {
     const abs = path.join(cwd, rel);
@@ -627,7 +632,7 @@ export function addMobileCommand(o: { cwd: string; platform?: "android" | "ios" 
   if (o.platform) doc.setIn(["tests", "mobile", "platform"], o.platform);
   fs.writeFileSync(file, doc.toString());
   const c = loadConfig(cwd);
-  const vars = templateVars(c);
+  const vars = templateVars(c, cwd);
   const results = writeMobileScaffold(cwd, c, vars);
   for (const f of listTemplateDir("skills")) {
     if (f.startsWith("write-mobile-test/")) results.push([`.claude/skills/${f}`, writeFileSafe(path.join(cwd, ".claude/skills", f), render(readTemplate(`skills/${f}`), vars), false)]);

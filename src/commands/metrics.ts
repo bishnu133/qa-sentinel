@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { loadConfig } from "../config.js";
-import { git } from "../git.js";
+import { fromRoot, git } from "../git.js";
 import type { Manifest } from "../run.js";
 import { log } from "../log.js";
 
@@ -129,7 +129,7 @@ export function agentCommits(repo: string, target: string, since?: Date): AgentC
   for (const [k, xs] of groups) {
     const x = xs.find((y) => onMainline.has(y.sha)) ?? xs.find((y) => reachable(y.sha)) ?? xs[0];
     seenRuns.add(k);
-    const files = tryGit(repo, ["diff-tree", "--no-commit-id", "--name-only", "-r", "--root", x.sha]).split("\n").filter(Boolean);
+    const files = tryGit(repo, ["diff-tree", "--no-commit-id", "--name-only", "-r", "--root", x.sha]).split("\n").filter(Boolean).map((f) => fromRoot(repo, f));
     let state: AgentCommit["state"];
     let mergedBy: string | undefined;
     if (onMainline.has(x.sha)) [state, mergedBy] = ["merged-unedited", x.sha];

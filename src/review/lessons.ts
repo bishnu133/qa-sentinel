@@ -5,7 +5,7 @@ import { execFileSync } from "node:child_process";
 import { z } from "zod";
 import type { Config } from "../config.js";
 import type { AgentEngine, AgentResult } from "../engines/AgentEngine.js";
-import { git } from "../git.js";
+import { fromRoot, git } from "../git.js";
 import type { AgentCommit } from "../commands/metrics.js";
 import { type RunDir, agentEnv } from "../run.js";
 
@@ -67,7 +67,7 @@ export function reviewerEdits(repo: string, commits: AgentCommit[], maxDiffChars
         .reverse()
         .map((sha) => tryGit(repo, ["show", "--unified=4", "--format=commit %h %s", sha, "--", ...c.files]))
         .join("\n");
-      files = [...new Set(reviewCommits.flatMap((sha) => tryGit(repo, ["show", "--name-only", "--format=", sha, "--", ...c.files]).split("\n").filter(Boolean)))];
+      files = [...new Set(reviewCommits.flatMap((sha) => tryGit(repo, ["show", "--name-only", "--format=", sha, "--", ...c.files]).split("\n").filter(Boolean).map((f) => fromRoot(repo, f))))];
     } else {
       const parts: string[] = [];
       for (const f of c.files) {
@@ -90,7 +90,7 @@ export function reviewerEdits(repo: string, commits: AgentCommit[], maxDiffChars
 function squashInterdiff(repo: string, agentSha: string, squash: string, file: string): string {
   const show = (ref: string) => {
     try {
-      return git(repo, ["show", `${ref}:${file}`]);
+      return git(repo, ["show", `${ref}:./${file}`]);
     } catch {
       return undefined;
     }

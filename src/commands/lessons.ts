@@ -39,7 +39,7 @@ export async function lessonsCommand(o: LessonsOptions): Promise<number> {
   const at = (ref: string) => {
     try {
       // Quietly: a missing file is the normal first run, not an error worth printing.
-      return execFileSync("git", ["show", `${ref}:${lessonsPath}`], { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
+      return execFileSync("git", ["show", `${ref}:./${lessonsPath}`], { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
     } catch {
       return undefined;
     }

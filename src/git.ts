@@ -1,7 +1,35 @@
 import { execFileSync } from "node:child_process";
+import path from "node:path";
 
 export function git(cwd: string, args: string[], env?: NodeJS.ProcessEnv): string {
   return execFileSync("git", args, { cwd, encoding: "utf8", maxBuffer: 64 * 1024 * 1024, env: env ?? process.env }).trim();
+}
+
+/**
+ * Git reports paths from the repository root; qa-sentinel works with paths relative to its folder (the test repo may
+ * be a folder of a monorepo, e.g. packages/api-tests). These convert root paths to folder paths: files elsewhere in the
+ * repo come back as ../…, so guards see them as outside the test repo.
+ */
+const prefixes = new Map<string, string>();
+export function repoPrefix(cwd: string): string {
+  const key = cwd;
+  if (!prefixes.has(key)) {
+    let p = "";
+    try {
+      p = git(cwd, ["rev-parse", "--show-prefix"]);
+    } catch {
+      // not a repo: no prefix
+    }
+    prefixes.set(key, p.replace(/\/$/, ""));
+  }
+  return prefixes.get(key)!;
+}
+export function fromRoot(cwd: string, p: string): string {
+  const prefix = repoPrefix(cwd);
+  if (!prefix) return p;
+  if (p === prefix) return ".";
+  if (p.startsWith(`${prefix}/`)) return p.slice(prefix.length + 1);
+  return path.posix.relative(prefix, p);
 }
 
 export function isGitRepo(cwd: string): boolean {
@@ -34,8 +62,9 @@ export function changeSet(repo: string, baseRef: string, headRef: string): Chang
   const base = resolveSha(repo, baseRef);
   const head = resolveSha(repo, headRef);
   const range = `${base}...${head}`;
-  const files = git(repo, ["diff", "--name-only", range]).split("\n").filter(Boolean);
-  const diff = git(repo, ["diff", "--unified=5", range]);
+  // --relative: a service that is a folder of a monorepo sees only its own changes, with paths from its folder.
+  const files = git(repo, ["diff", "--relative", "--name-only", range]).split("\n").filter(Boolean);
+  const diff = git(repo, ["diff", "--relative", "--unified=5", range]);
   return { base, head, files, diff };
 }
 
@@ -82,10 +111,10 @@ export function workingChanges(repo: string): FileChange[] {
     const p = entries[i].slice(3);
     const letter = xy === "??" ? "?" : (xy.trim()[0] ?? "M");
     if (letter === "R" || letter === "C") {
-      out.push({ path: p, status: letter, from: entries[i + 1] });
+      out.push({ path: fromRoot(repo, p), status: letter, from: fromRoot(repo, entries[i + 1]) });
       i++;
     } else {
-      out.push({ path: p, status: letter });
+      out.push({ path: fromRoot(repo, p), status: letter });
     }
   }
   return out.filter((c) => !OS_JUNK.test(c.path));
@@ -104,10 +133,10 @@ export function changesSince(repo: string, base: string): FileChange[] {
   for (let i = 0; i < parts.length; i++) {
     const letter = parts[i][0];
     if (letter === "R" || letter === "C") {
-      out.push({ path: parts[i + 2], status: letter, from: parts[i + 1] });
+      out.push({ path: fromRoot(repo, parts[i + 2]), status: letter, from: fromRoot(repo, parts[i + 1]) });
       i += 2;
     } else {
-      out.push({ path: parts[i + 1], status: letter });
+      out.push({ path: fromRoot(repo, parts[i + 1]), status: letter });
       i += 1;
     }
   }
@@ -118,14 +147,16 @@ export function changesSince(repo: string, base: string): FileChange[] {
 /** File content at a ref, or undefined if it did not exist there. */
 export function showFile(repo: string, ref: string, file: string): string | undefined {
   try {
-    return execFileSync("git", ["show", `${ref}:${file}`], { cwd: repo, encoding: "utf8", maxBuffer: 16 * 1024 * 1024, stdio: ["ignore", "pipe", "ignore"] });
+    // ref:./path is relative to the folder we're in (ref:path would be from the repo root).
+    return execFileSync("git", ["show", `${ref}:./${file}`], { cwd: repo, encoding: "utf8", maxBuffer: 16 * 1024 * 1024, stdio: ["ignore", "pipe", "ignore"] });
   } catch {
     return undefined;
   }
 }
 
 export function hasChanges(repo: string): boolean {
-  return git(repo, ["status", "--porcelain"]).length > 0;
+  // Only this folder: in a monorepo, work in other packages is not ours to worry about.
+  return git(repo, ["status", "--porcelain", "--", "."]).length > 0;
 }
 
 /** Commit subjects and bodies in base..head (story keys often live here). */
