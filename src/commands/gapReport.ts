@@ -19,7 +19,7 @@ import { gapSummary } from "../reporting/jiraSummary.js";
 import { indexTests, readTestMap, traceMarkdown, traceStory } from "../analysis/testIndex.js";
 import { mergeSelections, regressionCommands, regressionMarkdown, selectRegression } from "../analysis/regression.js";
 import { contractDiffMarkdown } from "../analysis/contractDiff.js";
-import { contractCheckMarkdown } from "../contracts.js";
+import { contractCheckMarkdown, deviationsIn } from "../contracts.js";
 import { log } from "../log.js";
 import { bugsFromPlan, fileBugs } from "../bugs/bugs.js";
 import { jiraContext } from "../scm/jira.js";
@@ -187,9 +187,11 @@ export async function gapReportCommand(o: GapReportOptions): Promise<{ report: s
       regressionTests: selection.runFullSuite ? undefined : selection.tests.length,
     });
     if (featureLine) jiraSummary += `\n\n${featureLine}`;
-    const mismatched = (outcome.contract.agreed ?? []).filter((k) => k.deviations.some((d) => d.severity === "mismatch"));
+    // Only what this MR touches: old deviations elsewhere are for `contract-check`, not for every story.
+    const touched = new Set(outcome.contract.changes.map((x) => x.endpoint));
+    const mismatched = (outcome.contract.agreed ?? []).map((k) => ({ k, n: deviationsIn(k, touched).filter((d) => d.severity === "mismatch").length })).filter((x) => x.n);
     if (mismatched.length)
-      jiraSummary += `\n\n**The code differs from the agreed API spec:** ${mismatched.map((k) => `${k.service} (${k.deviations.filter((d) => d.severity === "mismatch").length} mismatch${k.deviations.filter((d) => d.severity === "mismatch").length === 1 ? "" : "es"})`).join(", ")}. Details in the gap report.`;
+      jiraSummary += `\n\n**The code differs from the agreed API spec on endpoints this change touches:** ${mismatched.map((x) => `${x.k.service} (${x.n} mismatch${x.n === 1 ? "" : "es"})`).join(", ")}. Details in the gap report.`;
     // The story names services (tech notes) that have no change for it: not started, or commits without the key.
     const changedServices = parts ? parts.map((p) => p.service.name) : [service.name, ...featureServices];
     const silent = (req.servicesNamed ?? []).filter((n) => !changedServices.includes(n));

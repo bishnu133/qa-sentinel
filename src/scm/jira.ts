@@ -345,11 +345,25 @@ export async function storyAttachments(ctx: JiraContext, key: string): Promise<J
 const MAX_ATTACHMENT = 5 * 1024 * 1024;
 
 /** Download a text attachment. Only from this Jira site: the URL comes from Jira, but the credentials must not follow it elsewhere. */
-export async function downloadAttachment(ctx: JiraContext, url: string): Promise<string> {
+export async function downloadAttachment(ctx: JiraContext, url: string, size?: number): Promise<string> {
   if (new URL(url).origin !== new URL(ctx.baseUrl).origin) throw new Error(`attachment URL is not on ${new URL(ctx.baseUrl).origin}`);
+  if (size !== undefined && size > MAX_ATTACHMENT) throw new Error(`attachment larger than ${MAX_ATTACHMENT / 1024 / 1024} MB`);
   const res = await netFetch(url, { headers: { Authorization: ctx.authHeader }, redirect: "follow" });
   if (!res.ok) throw new Error(`Jira attachment download: ${res.status}`);
-  const text = await res.text();
-  if (text.length > MAX_ATTACHMENT) throw new Error("attachment larger than 5 MB");
-  return text;
+  // Read with a byte cap: the size Jira reports is not trusted to stop a huge body.
+  const reader = res.body?.getReader();
+  if (!reader) return "";
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > MAX_ATTACHMENT) {
+      await reader.cancel().catch(() => undefined);
+      throw new Error(`attachment larger than ${MAX_ATTACHMENT / 1024 / 1024} MB`);
+    }
+    chunks.push(value);
+  }
+  return Buffer.concat(chunks).toString("utf8");
 }

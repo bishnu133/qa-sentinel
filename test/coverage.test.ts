@@ -71,7 +71,7 @@ describe("coverage and backfill", () => {
     expect(f("GET /customers/{}")).toContain("personal-data");
     expect(f("GET /health")).toEqual(["read-only"]);
     // A health check in the payments service is not money code.
-    expect(endpointFactors({ endpoint: "GET /payments/health", method: "GET", path: "/payments/health", statuses: ["200"], hasBody: false, deprecated: false, words: "/payments/health" })).toEqual(["read-only"]);
+    expect(endpointFactors({ endpoint: "GET /payments/health", fullEndpoint: "GET /payments/health", method: "GET", path: "/payments/health", statuses: ["200"], hasBody: false, deprecated: false, words: "/payments/health" })).toEqual(["read-only"]);
   });
 
   it("finds each endpoint's tests by tag or test-map, tells untested, pending and status-only apart, riskiest first", () => {

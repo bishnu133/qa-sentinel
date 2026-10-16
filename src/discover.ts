@@ -78,6 +78,8 @@ export function dependencyEvidenceFiles(files: string[], max = 12): string[] {
 
 export interface ProjectEvidence {
   name: string;
+  /** How other projects' config names it, when that differs from `name` (the repository name). */
+  match?: string;
   texts: { file: string; text: string }[];
 }
 
@@ -115,7 +117,7 @@ export function suggestDependencies(projects: ProjectEvidence[]): DependencySugg
   for (const a of projects) {
     for (const b of projects) {
       if (a.name === b.name) continue;
-      const res = nameVariants(b.name);
+      const res = nameVariants(b.match ?? b.name);
       let found: string | undefined;
       for (const t of a.texts) {
         const lines = t.text.split(/\r?\n/);

@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { loadConfig, type Config, type ServiceConfig } from "../config.js";
-import { testEnv } from "../run.js";
+import { findService, testEnv } from "../run.js";
 import { specAt } from "../specs.js";
 import { loadContract } from "../contracts.js";
 import { indexTests, readTestMap } from "../analysis/testIndex.js";
@@ -11,6 +11,7 @@ import { log } from "../log.js";
 export interface CoverageOptions {
   cwd: string;
   service?: string;
+  servicePath?: string;
   out?: string;
   json?: boolean;
 }
@@ -22,21 +23,23 @@ export interface CoverageResult {
 }
 
 /** The spec an API service's coverage is measured against: what the code implements, else the agreed contract. */
-async function specFor(c: Config, cwd: string, s: ServiceConfig): Promise<{ text?: string; from?: string }> {
+async function specFor(c: Config, cwd: string, s: ServiceConfig, ref = "HEAD"): Promise<{ text?: string; from?: string; missingRepo?: string }> {
   const repo = path.resolve(cwd, s.path);
+  let missingRepo: string | undefined;
   if (s.openapi && fs.existsSync(repo)) {
-    const text = await specAt(repo, "HEAD", s, { env: testEnv(c), timeoutMs: (s.openapiCommandTimeoutSeconds ?? 180) * 1000 });
+    const text = await specAt(repo, ref, s, { env: testEnv(c), timeoutMs: (s.openapiCommandTimeoutSeconds ?? 180) * 1000 });
     if (text) return { text, from: s.openapi };
-  }
+  } else if (s.openapi) missingRepo = repo;
   if (s.contract) {
     const { contract } = await loadContract(c, s.contract, { cwd });
     if (contract) return { text: contract.text, from: contract.from };
   }
-  return {};
+  return { missingRepo };
 }
 
-export async function computeCoverage(cwd: string, c: Config, only?: string): Promise<CoverageResult> {
-  const services = c.workspace.services.filter((s) => !only || s.name === only);
+/** `servicePath` (CI): where `only` is checked out, as for gap-report and generate (`subdir` joined on). */
+export async function computeCoverage(cwd: string, c: Config, only?: string, servicePath?: string, ref = "HEAD"): Promise<CoverageResult> {
+  const services = c.workspace.services.filter((s) => !only || s.name === only).map((s) => (servicePath && only ? findService(c, s.name, cwd, servicePath) : s));
   if (only && !services.length) throw new Error(`service ${only} is not in qa-sentinel.config.yaml`);
   const index = indexTests(cwd, c);
   const map = readTestMap(cwd);
@@ -46,9 +49,13 @@ export async function computeCoverage(cwd: string, c: Config, only?: string): Pr
       r.pages.push(...pageCoverage(s, index, map));
       continue;
     }
-    const spec = await specFor(c, cwd, s);
+    const spec = await specFor(c, cwd, s, ref);
     if (!spec.text) {
-      r.notes.push(`${s.name}: no OpenAPI spec (set openapi, openapiCommand or contract), so its endpoints can't be listed`);
+      r.notes.push(
+        spec.missingRepo
+          ? `${s.name}: the service repo isn't at ${spec.missingRepo} (clone it there, or pass --service-path), so its endpoints can't be listed`
+          : `${s.name}: no OpenAPI spec (set openapi, openapiCommand or contract), so its endpoints can't be listed`,
+      );
       continue;
     }
     try {
@@ -64,7 +71,7 @@ export async function computeCoverage(cwd: string, c: Config, only?: string): Pr
 export async function coverageCommand(o: CoverageOptions): Promise<number> {
   const cwd = path.resolve(o.cwd);
   const c = loadConfig(cwd);
-  const r = await computeCoverage(cwd, c, o.service);
+  const r = await computeCoverage(cwd, c, o.service, o.servicePath);
   const md = coverageMarkdown(r);
   const out = path.resolve(cwd, o.out ?? "qa-coverage.md");
   fs.writeFileSync(out, md);

@@ -140,9 +140,10 @@ program
   .command("coverage")
   .description("every endpoint (and page) with the tests that exercise it; untested ones ranked by risk (no agent, no cost)")
   .option("--service <name>", "only this service")
+  .option("--service-path <path>", "where that service is checked out (CI)")
   .option("--json", "print the result as JSON")
   .option("-o, --out <file>", "markdown output (a .json next to it)", "qa-coverage.md")
-  .action(wrap(async (o) => coverageCommand({ cwd: cwd(), service: o.service, json: o.json, out: o.out })));
+  .action(wrap(async (o) => coverageCommand({ cwd: cwd(), service: o.service, servicePath: o.servicePath, json: o.json, out: o.out })));
 
 program
   .command("backfill")
@@ -173,7 +174,7 @@ data
   .command("sweep")
   .description("delete what killed runs left behind, newest first, on the test environment")
   .option("--dry-run", "list what would be deleted")
-  .option("--older-than <minutes>", "skip runs active in the last N minutes (another run may still use them)", (v) => Number(v))
+  .option("--older-than <minutes>", "skip runs active in the last N minutes, which may still use their data (default 30; 0 right after your own run)", (v) => Number(v))
   .option("-o, --out <file>", "markdown report")
   .action(wrap(async (o) => dataSweepCommand({ cwd: cwd(), dryRun: o.dryRun, olderThan: o.olderThan, out: o.out })));
 
@@ -181,12 +182,13 @@ program
   .command("contract-check")
   .description("spec-first: check each service's implemented OpenAPI spec against its agreed spec (`contract`), every endpoint")
   .option("--service <name>", "only this service")
+  .option("--service-path <path>", "where that service is checked out (CI)")
   .option("--story <key>", "Jira story (for contracts attached to the story)")
   .option("--ref <ref>", "service commit, branch or tag to check", "HEAD")
   .option("--strict", "exit 1 on any mismatch (CI gate)")
   .option("--json", "print the result as JSON")
   .option("-o, --out <file>", "markdown output", "qa-contract-check.md")
-  .action(wrap(async (o) => contractCheckCommand({ cwd: cwd(), service: o.service, story: o.story, ref: o.ref, strict: o.strict, json: o.json, out: o.out })));
+  .action(wrap(async (o) => contractCheckCommand({ cwd: cwd(), service: o.service, servicePath: o.servicePath, story: o.story, ref: o.ref, strict: o.strict, json: o.json, out: o.out })));
 
 program
   .command("story-check")

@@ -2,6 +2,7 @@ import YAML from "yaml";
 import type { ServiceConfig } from "../config.js";
 import type { RiskFactor, RiskLevel } from "../plan/schema.js";
 import { normaliseEndpoint, riskOf } from "../plan/risk.js";
+import { pathPrefix } from "./contractDiff.js";
 import { type IndexedTest, normPage, type readTestMap } from "./testIndex.js";
 
 /**
@@ -15,6 +16,8 @@ export type CoverageStatus = "untested" | "pending" | "weak" | "tested";
 
 export interface SpecOperation {
   endpoint: string; // normalised "POST /orders/{}"
+  /** With the spec's basePath/server path ("POST /api/v1/orders/{}"): tests may name it either way. */
+  fullEndpoint: string;
   method: string;
   path: string; // as written in the spec
   summary?: string;
@@ -64,6 +67,7 @@ function fieldNames(node: any, root: any, out: Set<string>, depth = 0, seen = ne
 /** Every operation in an OpenAPI (3.x or Swagger 2) document. */
 export function specOperations(text: string): SpecOperation[] {
   const spec = YAML.parse(text);
+  const prefix = pathPrefix(spec);
   const out: SpecOperation[] = [];
   for (const [p, item] of Object.entries<any>(spec?.paths ?? {})) {
     for (const m of METHODS) {
@@ -78,6 +82,7 @@ export function specOperations(text: string): SpecOperation[] {
       for (const r of Object.values<any>(op.responses ?? {})) fieldNames(r, spec, names);
       out.push({
         endpoint: normaliseEndpoint(`${m.toUpperCase()} ${p}`),
+        fullEndpoint: normaliseEndpoint(`${m.toUpperCase()} ${prefix}${p}`),
         method: m.toUpperCase(),
         path: p,
         summary: op.summary ?? op.description?.split("\n")[0],
@@ -122,10 +127,11 @@ type TestMap = ReturnType<typeof readTestMap>;
 export function endpointCoverage(service: ServiceConfig, ops: SpecOperation[], index: IndexedTest[], map: TestMap): EndpointCoverage[] {
   const mapped = new Map<string, string[]>();
   for (const [ep, files] of Object.entries(map?.services?.[service.name]?.endpoints ?? {})) mapped.set(normaliseEndpoint(ep), files ?? []);
+  const mappedFiles = (op: SpecOperation) => [...(mapped.get(op.endpoint) ?? []), ...(mapped.get(op.fullEndpoint) ?? [])];
   return ops.map((op) => {
     const tests = index.filter((t) => {
-      const tagged = t.endpoints.some((e) => normaliseEndpoint(e) === op.endpoint) && (!t.services.length || t.services.includes(service.name));
-      return tagged || (mapped.get(op.endpoint) ?? []).includes(t.file);
+      const tagged = t.endpoints.some((e) => normaliseEndpoint(e) === op.endpoint || normaliseEndpoint(e) === op.fullEndpoint) && (!t.services.length || t.services.includes(service.name));
+      return tagged || mappedFiles(op).includes(t.file);
     });
     const active = tests.filter((t) => t.status === "active");
     const status: CoverageStatus = !tests.length ? "untested" : !active.length ? "pending" : active.every((t) => t.statusOnly) ? "weak" : "tested";

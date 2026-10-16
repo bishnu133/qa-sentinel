@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import YAML from "yaml";
-import { configPath, loadConfig } from "../config.js";
+import { ConfigSchema, configPath, loadConfig } from "../config.js";
 import { type Classified, type DependencySuggestion, classifyProject, dependencyEvidenceFiles, suggestDependencies } from "../discover.js";
 import { type GitLabContext, gitlabContext, groupProjects, projectFiles, rawFile } from "../scm/gitlab.js";
 import { log } from "../log.js";
@@ -75,22 +75,29 @@ export async function discoverCommand(o: DiscoverOptions): Promise<number> {
   log.step(`${o.group}: ${projects.length} project(s)${all.length > projects.length ? ` (of ${all.length})` : ""}`);
 
   const found: DiscoveredService[] = [];
-  const evidence: { name: string; texts: { file: string; text: string }[] }[] = [];
+  const evidence = new Map<DiscoveredService, { file: string; text: string }[]>();
   for (const p of projects) {
     try {
       const r = await inspect(ctx, p);
       found.push(r.service);
-      evidence.push({ name: r.service.name, texts: r.texts });
+      evidence.set(r.service, r.texts);
       log.dim(`  ${r.service.name.padEnd(28)} ${r.service.kind}${r.service.specs[0] ? ` · ${r.service.specs[0]}` : ""}`);
     } catch (e) {
       found.push({ name: slug(p), gitlabProject: String(p.path_with_namespace), kind: "unknown", specs: [], why: "could not be read", dependsOn: [], error: (e as Error).message.split("\n")[0] });
     }
   }
+  // Same project name in two subgroups (team-a/orders, team-b/orders): prefix with the parent group to keep names unique.
+  const counts = new Map<string, number>();
+  for (const s of found) counts.set(s.name, (counts.get(s.name) ?? 0) + 1);
+  for (const s of found) {
+    const other = c.workspace.services.find((x) => x.name === s.name && x.gitlabProject && x.gitlabProject.toLowerCase() !== s.gitlabProject.toLowerCase());
+    if ((counts.get(s.name) ?? 0) > 1 || other) s.name = s.gitlabProject.split("/").slice(-2).join("-").toLowerCase();
+  }
   const services = found.filter((s) => s.kind === "api" || s.kind === "web" || s.kind === "mobile");
-  const deps = suggestDependencies(evidence.filter((e) => services.some((s) => s.name === e.name)));
+  const deps = suggestDependencies(services.map((s) => ({ name: s.name, match: s.gitlabProject.split("/").pop()!.toLowerCase(), texts: evidence.get(s) ?? [] })));
   for (const s of services) s.dependsOn = deps.filter((d) => d.from === s.name);
   for (const s of services) {
-    const match = c.workspace.services.find((x) => x.gitlabProject?.toLowerCase() === s.gitlabProject.toLowerCase() || x.name === s.name);
+    const match = c.workspace.services.find((x) => x.gitlabProject?.toLowerCase() === s.gitlabProject.toLowerCase() || (!x.gitlabProject && x.name === s.name));
     if (match) s.configured = match.name;
   }
 
@@ -106,8 +113,13 @@ export async function discoverCommand(o: DiscoverOptions): Promise<number> {
     const doc = YAML.parseDocument(fs.readFileSync(file, "utf8"));
     const fresh = services.filter((s) => !s.configured);
     for (const s of fresh) doc.addIn(["workspace", "services"], entryOf(s));
+    // Validate before writing: a failure must leave the team's config untouched.
+    const check = ConfigSchema.safeParse(doc.toJS());
+    if (!check.success) {
+      log.fail(`not applied, the result would be invalid: ${check.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("; ")}`);
+      return 1;
+    }
     fs.writeFileSync(file, doc.toString());
-    loadConfig(cwd); // validates
     log.ok(`added ${fresh.length} service(s) to qa-sentinel.config.yaml; review them with git diff (paths assume clones next to the test repo)`);
   } else log.info("Review the draft, delete what isn't right, then copy the entries into workspace.services (or rerun with --apply).");
   return 0;

@@ -302,10 +302,11 @@ export async function generateCommand(o: GenerateOptions): Promise<number> {
 
   // Phase 4: independent verification.
   log.step(`verifying ${changes.length} changed file(s) independently`);
+  const verifyStarted = Date.now() - 1000;
   const verification = await verifyChanges({ cwd, c, changes, runDir: run.dir, env: testEnv(c) });
   const discrepancies = findDiscrepancies(cwd, startSha, changes);
   // Data the verified tests created and couldn't delete (or a killed test left): sweep it now, report what stays.
-  if (c.testData.cleanup === "ledger") findings.push(...(await sweepAfterRun(cwd, c)));
+  if (c.testData.cleanup === "ledger") findings.push(...(await sweepAfterRun(cwd, c, verifyStarted)));
   // Traceability from the tests' own tags: what each AC is now proven by, and tests that don't say what they prove.
   const index = indexTests(cwd, c);
   fs.writeFileSync(path.join(run.dir, "test-index.json"), JSON.stringify(index, null, 2));

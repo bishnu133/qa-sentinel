@@ -30,8 +30,11 @@ export interface BackfillOptions {
 export async function backfillCommand(o: BackfillOptions): Promise<number> {
   const cwd = path.resolve(o.cwd);
   const c = loadConfig(cwd);
-  const r = await computeCoverage(cwd, c, o.service);
-  r.notes.forEach((n) => log.warn(n));
+  const r = await computeCoverage(cwd, c, o.service, o.servicePath);
+  if (!r.endpoints.length && r.notes.length) {
+    log.fail(`can't list ${o.service}'s endpoints: ${r.notes.join("; ")}`);
+    return 2;
+  }
   let gaps = rankGaps(r.endpoints).filter((g) => (o.includeWeak || g.status === "untested") && atLeastRisk(g.risk, o.minRisk ?? "low"));
   if (o.endpoints?.length) {
     const want = o.endpoints.map((e) => e.trim().replace(/\s+/, " ").toUpperCase());

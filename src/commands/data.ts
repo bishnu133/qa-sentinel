@@ -28,7 +28,11 @@ export function dataStatusCommand(o: DataOptions): number {
 }
 
 /** `qa-sentinel data sweep`: delete what killed runs left behind, newest first, on the test environment only. */
+export const DEFAULT_SWEEP_AGE_MINUTES = 30;
+
 export async function dataSweepCommand(o: DataOptions): Promise<number> {
+  // By default, leave runs active in the last half hour alone: another run on this machine may still use that data.
+  o = { ...o, olderThan: o.olderThan ?? DEFAULT_SWEEP_AGE_MINUTES };
   const cwd = path.resolve(o.cwd);
   const c = loadConfig(cwd);
   const env = o.env ?? process.env;

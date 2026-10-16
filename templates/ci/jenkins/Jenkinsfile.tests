@@ -18,7 +18,7 @@ pipeline {
       steps {
         sh '''
           # Install qa-sentinel from QA_SENTINEL_PACKAGE; a GitHub source is cloned, built and packed first.
-          qa_pkg="${QA_SENTINEL_PACKAGE:-qa-sentinel@0.7.2}"
+          qa_pkg="${QA_SENTINEL_PACKAGE:-qa-sentinel@0.8.0-beta.1}"
           case "$qa_pkg" in
             github:*|git+https://github.com/*|https://github.com/*)
               src="${qa_pkg#github:}"; src="${src#git+}"; src="${src#https://github.com/}"
@@ -55,8 +55,28 @@ pipeline {
   }
   post {
     always {
-      // Test data a failed or killed test left behind (testData.cleanup: ledger).
-      sh 'if [ -d "{{ledgerDir}}" ] && command -v qa-sentinel >/dev/null; then qa-sentinel data sweep || true; fi'
+      // Test data a failed or killed test left behind (testData.cleanup: ledger): qa-sentinel is installed only when there is some.
+      sh '''
+        if ls "{{ledgerDir}}"/*.jsonl >/dev/null 2>&1; then
+          export PATH="$WORKSPACE/.npm-global/bin:$PATH"
+          if ! command -v qa-sentinel >/dev/null 2>&1; then
+            qa_pkg="${QA_SENTINEL_PACKAGE:-qa-sentinel@0.8.0-beta.1}"
+            case "$qa_pkg" in
+              github:*|git+https://github.com/*|https://github.com/*)
+                src="${qa_pkg#github:}"; src="${src#git+}"; src="${src#https://github.com/}"
+                repo="${src%%#*}"; repo="${repo%.git}"; ref="main"
+                case "$src" in *"#"*) ref="${src#*#}" ;; esac
+                rm -rf "$WORKSPACE/.qa-sentinel-src" "$WORKSPACE"/qa-sentinel-*.tgz
+                git clone -q --depth 1 --branch "$ref" "https://github.com/${repo}.git" "$WORKSPACE/.qa-sentinel-src"
+                (cd "$WORKSPACE/.qa-sentinel-src" && npm ci --no-audit --no-fund --loglevel=error && npm pack --silent --pack-destination "$WORKSPACE" > /dev/null)
+                qa_pkg="$(ls "$WORKSPACE"/qa-sentinel-*.tgz | head -n 1)"
+                ;;
+            esac
+            npm i -g --prefix "$WORKSPACE/.npm-global" --no-audit --no-fund --loglevel=error "$qa_pkg"
+          fi
+          qa-sentinel data sweep --older-than 0 --out qa-data-sweep.md || echo "WARNING qa-sentinel: test data was left behind on the test environment (see qa-data-sweep.md)"
+        fi
+      '''
       junit testResults: 'test-results/junit.xml, .qa-sentinel/runs/*/junit*.xml{{#if mobileEnabled}}, test-results/mobile/junit/*.xml, .qa-sentinel/runs/*/junit-mobile/*.xml{{/if}}', allowEmptyResults: true
       archiveArtifacts artifacts: 'playwright-report/**, test-results/**, qa-verify.md, .qa-sentinel/runs/**', allowEmptyArchive: true
     }

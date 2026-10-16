@@ -44,7 +44,11 @@ export function readLedger(file: string): LedgerLine[] {
 }
 
 /** Records created and not deleted yet, newest first (the order to delete them in). */
-export function pendingRecords(dir: string, o: { olderThanMinutes?: number; now?: number } = {}): PendingRecord[] {
+/**
+ * olderThanMinutes: skip ledgers written to in the last N minutes (another run may still be using that data).
+ * startedAfter: only ledgers whose first record is from this time on (this run's own tests).
+ */
+export function pendingRecords(dir: string, o: { olderThanMinutes?: number; startedAfter?: number; now?: number } = {}): PendingRecord[] {
   if (!fs.existsSync(dir)) return [];
   const cutoff = (o.now ?? Date.now()) - (o.olderThanMinutes ?? 0) * 60_000;
   const out: PendingRecord[] = [];
@@ -52,6 +56,10 @@ export function pendingRecords(dir: string, o: { olderThanMinutes?: number; now?
     const file = path.join(dir, name);
     if (o.olderThanMinutes && fs.statSync(file).mtimeMs > cutoff) continue; // a run that may still be going
     const lines = readLedger(file);
+    if (o.startedAfter !== undefined) {
+      const first = lines.find((l) => l.op === "create" && l.at)?.at;
+      if (!first || Date.parse(first) < o.startedAfter) continue;
+    }
     const deleted = new Set(lines.filter((l) => l.op === "delete").map((l) => l.seq));
     for (const l of lines) if (l.op === "create" && !deleted.has(l.seq)) out.push({ ...l, file });
   }
@@ -73,6 +81,7 @@ export interface SweepOptions {
   authHeader?: string;
   dryRun?: boolean;
   olderThanMinutes?: number;
+  startedAfter?: number;
   fetchImpl?: typeof fetch;
 }
 
@@ -90,18 +99,27 @@ function appendLine(file: string, line: object): void {
   fs.appendFileSync(file, lead + JSON.stringify(line) + "\n");
 }
 
-const safePath = (p: string) => p.startsWith("/") && !p.startsWith("//") && !/[\r\n]/.test(p);
+/** A path on the test environment: one leading slash, no backslashes, scheme, encoded slashes or control characters. */
+const safePath = (p: string) => /^\/(?!\/)/.test(p) && !/[\\\s]|%5c|%2f%2f|^\/[^/?#]*:/i.test(p);
+
+/** The test environment's URL for a recorded path; undefined when it would land on another origin. */
+export function sweepUrl(baseUrl: string, p: string): string | undefined {
+  if (!safePath(p)) return undefined;
+  const base = new URL(baseUrl);
+  const url = new URL(base.pathname.replace(/\/?$/, "/") + p.slice(1), base.origin);
+  return url.origin === base.origin ? url.toString() : undefined;
+}
 
 export async function sweep(o: SweepOptions): Promise<SweepResult> {
   const r: SweepResult = { deleted: [], failed: [], manual: [] };
-  const pending = pendingRecords(o.dir, { olderThanMinutes: o.olderThanMinutes });
+  const pending = pendingRecords(o.dir, { olderThanMinutes: o.olderThanMinutes, startedAfter: o.startedAfter });
   const doFetch = o.fetchImpl ?? netFetch;
   for (const rec of pending) {
     if (!rec.remove?.path) {
       r.manual.push(rec);
       continue;
     }
-    if (!safePath(rec.remove.path)) {
+    if (!safePath(rec.remove.path) || (o.baseUrl && !sweepUrl(o.baseUrl, rec.remove.path))) {
       r.failed.push({ ...rec, error: `not a path on the test environment: ${rec.remove.path.slice(0, 80)}` });
       continue;
     }
@@ -114,7 +132,7 @@ export async function sweep(o: SweepOptions): Promise<SweepResult> {
       continue;
     }
     try {
-      const url = new URL(rec.remove.path.replace(/^\//, ""), o.baseUrl.replace(/\/?$/, "/")).toString();
+      const url = sweepUrl(o.baseUrl, rec.remove.path)!;
       const res = await doFetch(url, { method: (rec.remove.method ?? "DELETE").toUpperCase(), headers: o.authHeader ? { Authorization: o.authHeader } : {} });
       // Gone already (the test's own cleanup got there, or someone deleted it) counts as deleted.
       if (res.ok || res.status === 404 || res.status === 410) {
@@ -153,11 +171,14 @@ export function sweepMarkdown(r: SweepResult, dryRun = false): string {
   ].join("\n");
 }
 
-/** After qa-sentinel's own test runs (verify, generate): sweep this run's leftovers; what can't be deleted becomes a finding. */
-export async function sweepAfterRun(cwd: string, c: Config, env: NodeJS.ProcessEnv = process.env): Promise<Finding[]> {
+/**
+ * After qa-sentinel's own test runs (verify, generate): sweep the leftovers of tests started since `startedAt` (not
+ * those of another run on the same machine); what can't be deleted becomes a finding.
+ */
+export async function sweepAfterRun(cwd: string, c: Config, startedAt: number, env: NodeJS.ProcessEnv = process.env): Promise<Finding[]> {
   const dir = path.resolve(cwd, c.testData.ledgerDir);
-  if (!pendingRecords(dir).length) return [];
-  const r = await sweep({ dir, baseUrl: env[c.tests.api.baseUrlEnv], authHeader: env[c.testData.sweepAuthEnv] });
+  if (!pendingRecords(dir, { startedAfter: startedAt }).length) return [];
+  const r = await sweep({ dir, baseUrl: env[c.tests.api.baseUrlEnv], authHeader: env[c.testData.sweepAuthEnv], startedAfter: startedAt });
   return [...r.failed, ...r.manual].map((p) => ({
     level: "warning" as const,
     rule: "test-data" as const,

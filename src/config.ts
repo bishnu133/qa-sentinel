@@ -405,6 +405,13 @@ export const ConfigSchema = z.object({
       }),
     )
     .default({}),
+}).superRefine((c, ctx) => {
+  // Services are looked up by name (CLI flags, dependsOn, stories, CI): two with one name would silently use the first.
+  const seen = new Set<string>();
+  for (const s of c.workspace.services) {
+    if (seen.has(s.name)) ctx.addIssue({ code: "custom", path: ["workspace", "services"], message: `two services are named "${s.name}"; names must be unique` });
+    seen.add(s.name);
+  }
 });
 
 export type Config = z.infer<typeof ConfigSchema>;

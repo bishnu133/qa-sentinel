@@ -27,7 +27,7 @@ pipeline {
         sh 'npm ci'
         sh '''
           # Install qa-sentinel from QA_SENTINEL_PACKAGE; a GitHub source is cloned, built and packed first.
-          qa_pkg="${QA_SENTINEL_PACKAGE:-qa-sentinel@0.7.2}"
+          qa_pkg="${QA_SENTINEL_PACKAGE:-qa-sentinel@0.8.0-beta.1}"
           case "$qa_pkg" in
             github:*|git+https://github.com/*|https://github.com/*)
               src="${qa_pkg#github:}"; src="${src#git+}"; src="${src#https://github.com/}"
@@ -66,7 +66,7 @@ pipeline {
   post {
     always {
       // Test data a failed or killed test left behind (testData.cleanup: ledger).
-      sh 'if [ -d "{{ledgerDir}}" ] && command -v qa-sentinel >/dev/null; then qa-sentinel data sweep || true; fi'
+      sh 'export PATH="$WORKSPACE/.npm-global/bin:$PATH"; if ls "{{ledgerDir}}"/*.jsonl >/dev/null 2>&1; then qa-sentinel data sweep --older-than 0 --out qa-data-sweep.md || echo "WARNING qa-sentinel: test data was left behind on the test environment (see qa-data-sweep.md)"; fi'
       archiveArtifacts artifacts: 'qa-sentinel-summary.md, .qa-sentinel/runs/**', allowEmptyArchive: true
     }
   }

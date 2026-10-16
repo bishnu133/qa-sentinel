@@ -2,7 +2,8 @@ import fs from "node:fs";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
 import type { Config, ServiceConfig } from "./config.js";
-import { type ContractChange, type ContractChangeKind, diffSpecs } from "./analysis/contractDiff.js";
+import YAML from "yaml";
+import { type ContractChange, type ContractChangeKind, diffSpecs, pathPrefix } from "./analysis/contractDiff.js";
 import { globToRegExp } from "./fsutil.js";
 import { netFetch } from "./net.js";
 import { gitlabContext } from "./scm/gitlab.js";
@@ -87,7 +88,7 @@ export async function loadContract(c: Config, s: ContractSource, o: LoadOptions)
       if (!matches.length) return { reason: `${from}: no attachment matches` };
       // Several versions attached: the newest one is the agreed spec.
       const newest = matches.sort((a, b) => (b.created ?? "").localeCompare(a.created ?? ""))[0];
-      return { contract: { text: await downloadAttachment(ctx, newest.content), from: `Jira ${o.storyKey} attachment ${newest.filename}` } };
+      return { contract: { text: await downloadAttachment(ctx, newest.content, newest.size), from: `Jira ${o.storyKey} attachment ${newest.filename}` } };
     }
   } catch (e) {
     return { reason: `${from}: ${(e as Error).message.split("\n")[0]}` };
@@ -99,7 +100,10 @@ export async function loadContract(c: Config, s: ContractSource, o: LoadOptions)
 // Conformance: the implemented spec against the agreed one.
 
 export interface Deviation {
+  /** Under the specs' base paths ("GET /api/v1/orders/{}"), so differently written specs compare. */
   endpoint: string;
+  /** As the service's own spec names it, without its base path: how gap reports, plans and tests name it. */
+  localEndpoint: string;
   /** mismatch: a client built to the agreed spec breaks, or a promised response (errors included) is missing. extra: the code does more than agreed. */
   severity: "mismatch" | "extra";
   location: string;
@@ -157,20 +161,37 @@ export function checkContract(service: string, agreed: LoadedContract | undefine
       deviations: [],
       note: "the service has no OpenAPI spec of its own (set openapi, and openapiCommand if it is generated), so the code is checked against the agreed spec by the tests only",
     };
-  const d = diffSpecs(agreed.text, implemented);
+  const d = diffSpecs(agreed.text, implemented, { fullPaths: true });
+  // Multi-file specs: references to other files aren't followed, so fields behind them weren't compared.
+  const external = [agreed.text, implemented].some((t) => /\$ref["']?\s*:\s*["']?(?!#)[^\s"']+/.test(t));
+  const partial = external ? "references to other files ($ref) aren't followed: fields defined there were not compared" : undefined;
   if (d.status === "unparseable") return { service, status: "unparseable", from: agreed.from, deviations: [], note: d.note };
-  if (d.status === "unchanged") return { service, status: "conforms", from: agreed.from, deviations: [] };
+  if (d.status === "unchanged") return { service, status: "conforms", from: agreed.from, deviations: [], note: partial };
+  let prefix = "";
+  try {
+    prefix = pathPrefix(YAML.parse(implemented));
+  } catch {
+    // unparseable is reported above
+  }
+  const local = (ep: string) => (prefix && ep.includes(` ${prefix}/`) ? ep.replace(` ${prefix}/`, " /") : ep);
   const deviations = d.changes.map((c) => ({
     endpoint: c.endpoint,
+    localEndpoint: local(c.endpoint),
     kind: c.kind,
     location: c.location,
     severity: c.breaking || ALWAYS_MISMATCH.has(c.kind) ? ("mismatch" as const) : ("extra" as const),
     detail: WORDS[c.kind](c),
   }));
-  return { service, status: deviations.length ? "checked" : "conforms", from: agreed.from, deviations };
+  return { service, status: deviations.length ? "checked" : "conforms", from: agreed.from, deviations, note: partial };
 }
 
-/** Endpoints this change touches first; the rest are counted so a per-MR report stays about the MR. */
+/** Deviations on the endpoints a change touches (all of them when `touched` is not given: `contract-check`). */
+export const deviationsIn = (k: ContractCheck, touched?: Set<string>) => (touched ? k.deviations.filter((d) => touched.has(d.endpoint) || touched.has(d.localEndpoint)) : k.deviations);
+
+/**
+ * Per MR (`touched` given, possibly empty): only the endpoints the change touches are listed, the rest are counted,
+ * so a report stays about the MR. Without `touched`: every deviation.
+ */
 export function contractCheckMarkdown(checks: ContractCheck[], touched?: Set<string>): string {
   const lines: string[] = [];
   for (const k of checks) {
@@ -180,23 +201,24 @@ export function contractCheckMarkdown(checks: ContractCheck[], touched?: Set<str
       continue;
     }
     if (k.status === "conforms") {
-      lines.push(`${head} the implemented spec matches it.`);
+      lines.push(`${head} the implemented spec matches it${k.note ? ` (${k.note})` : ""}.`);
       continue;
     }
     if (k.status !== "checked") {
       lines.push(`${head} ${k.note ?? k.status}.`);
       continue;
     }
-    const inScope = touched?.size ? k.deviations.filter((d) => touched.has(d.endpoint)) : k.deviations;
+    const inScope = deviationsIn(k, touched);
     const others = k.deviations.length - inScope.length;
     const mismatches = inScope.filter((d) => d.severity === "mismatch").length;
     lines.push(
-      `${head} ${mismatches} mismatch${mismatches === 1 ? "" : "es"} and ${inScope.length - mismatches} extra${touched?.size ? " on the endpoints this change touches" : ""}.`,
+      `${head} ${mismatches} mismatch${mismatches === 1 ? "" : "es"} and ${inScope.length - mismatches} extra${touched ? " on the endpoints this change touches" : ""}.`,
     );
+    if (k.note) lines.push("", `_${k.note}._`);
     if (inScope.length) {
       lines.push("", "| | Endpoint | Where | Agreed spec vs code |", "| --- | --- | --- | --- |");
       for (const d of inScope.sort((a, b) => (a.severity === b.severity ? a.endpoint.localeCompare(b.endpoint) : a.severity === "mismatch" ? -1 : 1)))
-        lines.push(`| ${d.severity === "mismatch" ? "❌ mismatch" : "➕ extra"} | ${d.endpoint} | \`${d.location || "–"}\` | ${d.detail} |`);
+        lines.push(`| ${d.severity === "mismatch" ? "❌ mismatch" : "➕ extra"} | ${touched ? d.localEndpoint : d.endpoint} | \`${d.location || "–"}\` | ${d.detail} |`);
     }
     if (others > 0) lines.push("", `${others} more deviation${others === 1 ? "" : "s"} on endpoints this change doesn't touch (\`qa-sentinel contract-check\` lists them all).`);
     lines.push("");

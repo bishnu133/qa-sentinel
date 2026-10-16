@@ -83,9 +83,25 @@ function jsonSchemaOf(content: Json, root: Json): Json | undefined {
   return media ? deref((media as Json).schema, root) : undefined;
 }
 
-function operations(spec: Json): Map<string, Op> {
+/** The path every operation sits under: Swagger 2 basePath, or the path of the first OpenAPI 3 server URL. */
+export function pathPrefix(spec: Json): string {
+  let p = typeof spec?.basePath === "string" ? spec.basePath : "";
+  const server = spec?.servers?.[0]?.url;
+  if (!p && typeof server === "string") {
+    try {
+      p = new URL(server.replace(/\{[^}]*\}/g, "x"), "http://h").pathname;
+    } catch {
+      p = "";
+    }
+  }
+  return p.replace(/\/+$/, "");
+}
+
+function operations(spec: Json, withPrefix = false): Map<string, Op> {
   const out = new Map<string, Op>();
-  for (const [p, item0] of Object.entries<Json>(spec?.paths ?? {})) {
+  const prefix = withPrefix ? pathPrefix(spec) : "";
+  for (const [p0, item0] of Object.entries<Json>(spec?.paths ?? {})) {
+    const p = prefix + p0;
     const item = deref(item0, spec);
     const shared: Json[] = (item.parameters ?? []).map((x: Json) => deref(x, spec));
     for (const m of METHODS) {
@@ -190,7 +206,12 @@ function compareSchema(a: Json, b: Json, rootA: Json, rootB: Json, dir: "request
   if (a.items || b.items) compareSchema(a.items, b.items, rootA, rootB, dir, `${loc}[]`, endpoint, out, depth + 1);
 }
 
-export function diffSpecs(baseText: string | undefined, headText: string | undefined): ContractDiff {
+/**
+ * `fullPaths`: compare operations under their basePath/server path, for two specs written differently (an agreed
+ * spec with `servers: [{ url: /api/v1 }]` and a generated one with `/api/v1/orders`). Off for base → head diffs,
+ * whose endpoints must match how tests and plans name them.
+ */
+export function diffSpecs(baseText: string | undefined, headText: string | undefined, o: { fullPaths?: boolean } = {}): ContractDiff {
   if (baseText === undefined && headText === undefined) return { status: "no-spec", changes: [] };
   let a: Json;
   let b: Json;
@@ -205,8 +226,8 @@ export function diffSpecs(baseText: string | undefined, headText: string | undef
   if (baseText === headText) return { status: "unchanged", changes: [] };
 
   const out: ContractChange[] = [];
-  const oa = operations(a);
-  const ob = operations(b);
+  const oa = operations(a, o.fullPaths);
+  const ob = operations(b, o.fullPaths);
   for (const [ep, opB] of ob) {
     const opA = oa.get(ep);
     if (!opA) {
@@ -248,7 +269,7 @@ export function diffSpecs(baseText: string | undefined, headText: string | undef
 
 /** Endpoints a client can break on: breaking changes base → head, and (spec-first) mismatches with the agreed spec. */
 export const breakingEndpoints = (d: ContractDiff) =>
-  new Set([...d.changes.filter((c) => c.breaking).map((c) => c.endpoint), ...(d.agreed ?? []).flatMap((k) => k.deviations.filter((x) => x.severity === "mismatch").map((x) => x.endpoint))]);
+  new Set([...d.changes.filter((c) => c.breaking).map((c) => c.endpoint), ...(d.agreed ?? []).flatMap((k) => k.deviations.filter((x) => x.severity === "mismatch").map((x) => x.localEndpoint))]);
 
 export function contractDiffMarkdown(d: ContractDiff, specPath?: string): string {
   const head = `**Contract changes (computed from \`${specPath ?? "OpenAPI spec"}\`, base → head):**`;
