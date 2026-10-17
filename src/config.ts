@@ -244,6 +244,24 @@ export const ConfigSchema = z.object({
       environments: z.array(z.string()).default([]),
       /** A story with a fixme/skip test (known product discrepancy) is not showcased. */
       requireNoPending: z.boolean().default(true),
+      /**
+       * Personal data guard: before evidence goes to Jira, its text (API requests and responses, the PDF, title cards,
+       * summaries) is scanned for NRIC/FIN, email, phone (international form or under phone-like keys) and card
+       * numbers. block (default): attach nothing and report what was found (masked); warn: attach and report; off.
+       * Video frames and screenshots are not read: run showcases on test data.
+       */
+      pii: z
+        .object({
+          mode: z.enum(["block", "warn", "off"]).default("block"),
+          detect: z.array(z.enum(["nric", "email", "phone", "card"])).default(["nric", "email", "phone", "card"]),
+          /** Regexes for values that are known test data, e.g. "^\\+65 ?9000 ?00\\d\\d$". */
+          allow: z.array(z.string()).default([]),
+          /** Test email domains besides example.com/.org/.net and the reserved .test, .example, .invalid, .localhost, .local. */
+          allowEmailDomains: z.array(z.string()).default([]),
+          /** Other patterns to treat as personal data, e.g. { name: "member-id", pattern: "\\bMBR\\d{8}\\b" }. */
+          custom: z.array(z.object({ name: z.string(), pattern: z.string() })).default([]),
+        })
+        .default({}),
     })
     .default({}),
   /**

@@ -1,3 +1,4 @@
+import { type PiiFinding, piiMarkdown, scanEvidence } from "../showcase/pii.js";
 import fs from "node:fs";
 import path from "node:path";
 import { loadConfig } from "../config.js";
@@ -88,6 +89,11 @@ export async function showcaseCommand(o: ShowcaseOptions): Promise<number> {
         fs.mkdirSync(dir, { recursive: true });
         for (const f of files) fs.writeFileSync(path.join(dir, f.name), f.data);
         skipped.forEach((x) => log.warn(`  ${story}: would not attach: ${x}`));
+        const pii = piiGuard(cwd, c, r, files);
+        if (pii.length) {
+          report.push(`**Personal data in the evidence** (would ${c.showcase.pii.mode === "block" ? "not be attached" : "be attached, mode warn"}):`, "", piiMarkdown(pii), "");
+          log.warn(`  ${story}: ${pii.length} value(s) that look like personal data in the evidence (${[...new Set(pii.map((f) => f.kind))].join(", ")})`);
+        }
         log.ok(`  ${story}: ready (all ${r.acs.length} AC passed); ${ctx ? "dry run" : "Jira not configured"}: ${files.length} evidence file(s) saved in ${path.relative(cwd, dir)}`);
         continue;
       }
@@ -101,6 +107,15 @@ export async function showcaseCommand(o: ShowcaseOptions): Promise<number> {
       }
       const { files, skipped } = await evidence(cwd, c, r, { title: src.title, environment, commit, runUrl: process.env.CI_PIPELINE_URL, at, approach: parsed.showcase });
       skipped.forEach((s) => log.warn(`  ${story}: ${s}`));
+      const pii = piiGuard(cwd, c, r, files);
+      if (pii.length) {
+        report.push(`**Personal data in the evidence** (${c.showcase.pii.mode === "block" ? "nothing attached" : "attached anyway: showcase.pii.mode is warn"}):`, "", piiMarkdown(pii), "");
+        log.warn(`  ${story}: ${pii.length} value(s) that look like personal data in the evidence (${[...new Set(pii.map((f) => f.kind))].join(", ")}); see ${o.out ?? "qa-showcase.md"}`);
+        if (c.showcase.pii.mode === "block") {
+          log.info("  Use test data, or allow known test values in showcase.pii.allow / allowEmailDomains, then run again.");
+          continue;
+        }
+      }
       if (previous && c.showcase.replaceOnRefresh) {
         for (const a of previous.attachments) await deleteAttachment(ctx, a.id).catch((e) => log.warn(`  could not delete old attachment ${a.filename}: ${(e as Error).message}`));
       }
@@ -132,6 +147,21 @@ async function issueText(ctx: NonNullable<ReturnType<typeof jiraContext>>, c: Co
 function storyFromFile(text: string): { text: string; title?: string } {
   const h = text.match(/^#\s+(.+)$/m)?.[1]?.trim();
   return { text, title: h?.replace(/^[A-Z][A-Z0-9]+-\d+:\s*/, "") };
+}
+
+/** Personal data in what would be attached: text files, the pack's HTML (PDF source, title cards) and the API logs. */
+export function piiGuard(cwd: string, c: Config, r: StoryReadiness, files: EvidenceFile[]): PiiFinding[] {
+  if (c.showcase.pii.mode === "off") return [];
+  const items: { where: string; text: string; json?: boolean }[] = [];
+  for (const f of files)
+    if (/^text\/|json|html|xml|yaml/i.test(f.contentType ?? "") || /\.(md|txt|json|html?|csv|ya?ml|log)$/i.test(f.name)) items.push({ where: f.name, text: f.data.toString("utf8"), json: /\.json$/i.test(f.name) });
+  const work = path.join(cwd, ".qa-sentinel", "showcase", r.story);
+  if (fs.existsSync(work)) for (const f of fs.readdirSync(work).filter((x) => /\.html?$/i.test(x))) items.push({ where: `${f} (video card / PDF)`, text: fs.readFileSync(path.join(work, f), "utf8") });
+  for (const a of r.acs)
+    for (const t of a.tests)
+      for (const ev of t.result?.evidence ?? [])
+        if (ev.kind === "api-log" && fs.existsSync(ev.path)) items.push({ where: `API evidence of "${t.test.title}"`, text: fs.readFileSync(ev.path, "utf8"), json: true });
+  return scanEvidence(items, c.showcase.pii);
 }
 
 /**
