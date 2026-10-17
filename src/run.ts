@@ -88,6 +88,7 @@ export const ARTIFACT_GLOBS = [
   ".qa-data/**",
   "qa-contract-check.md",
   "qa-coverage.md",
+  "qa-post-deploy.md",
   "qa-coverage.json",
   "qa-services.draft.yaml",
   "qa-services.draft.md",

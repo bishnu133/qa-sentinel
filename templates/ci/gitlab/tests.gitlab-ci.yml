@@ -71,6 +71,8 @@ qa-generate:
   extends: .qa-node
   stage: test
   rules:
+    - if: $QA_POST_DEPLOY == "true"   # a post-deploy pipeline runs only qa-post-deploy
+      when: never
     - if: $CI_PIPELINE_SOURCE == "pipeline" && $QA_SERVICE_NAME
   # ONE write-enabled generation at a time for the whole test repo: services share test-map.yaml, clients and fixtures.
   resource_group: qa-sentinel-generate
@@ -160,6 +162,8 @@ api-tests:
     QA_HEALING: "{{healingVar}}"
 {{/if}}
   rules:
+    - if: $QA_POST_DEPLOY == "true"   # a post-deploy pipeline runs only qa-post-deploy
+      when: never
     - if: $QA_STORY_REVIEW_KEY   # a story-review pipeline runs only that job
       when: never
     - if: $CI_PIPELINE_SOURCE == "schedule"
@@ -189,6 +193,8 @@ mobile-tests:
   extends: .qa-node
   stage: test
   rules:
+    - if: $QA_POST_DEPLOY == "true"   # a post-deploy pipeline runs only qa-post-deploy
+      when: never
     - if: $QA_STORY_REVIEW_KEY
       when: never
     - if: $QA_APPIUM_URL == null || $QA_APPIUM_URL == ""
@@ -215,6 +221,8 @@ qa-healed:
   stage: test
   needs: [api-tests]
   rules:
+    - if: $QA_POST_DEPLOY == "true"   # a post-deploy pipeline runs only qa-post-deploy
+      when: never
     - if: $QA_STORY_REVIEW_KEY   # a story-review pipeline runs only that job
       when: never
     # Also (especially) when tests failed: a step Bubblegum could not heal is listed too.
@@ -254,6 +262,33 @@ qa-lessons:
     expire_in: 4 weeks
 
 {{/if}}
+# After a deployment: for each story the deployed service touches, check every service the story needs is deployed in
+# that environment, run the story's tests there and comment the result on the story; re-verify agent MRs that were
+# "waiting for deployment". Triggered by the service's deploy pipeline (.qa-trigger-post-deploy in the service
+# template) with QA_POST_DEPLOY=true and QA_ENVIRONMENT; also add a schedule (e.g. every 2 h) with QA_POST_DEPLOY=true
+# and QA_ENVIRONMENT to re-check what was still waiting.
+qa-post-deploy:
+  extends: .qa-node
+  stage: test
+  rules:
+    - if: $QA_POST_DEPLOY == "true" && $QA_ENVIRONMENT
+  script:
+    - !reference [.qa-sentinel-install, script]
+    - git config user.name "qa-sentinel" && git config user.email "qa-sentinel@noreply.local"
+    - if [ -n "$QA_SERVICE_PROJECT" ]; then git clone -q "https://gitlab-ci-token:${CI_JOB_TOKEN}@${CI_SERVER_HOST}/${QA_SERVICE_PROJECT}.git" "/tmp/services/$QA_SERVICE_NAME" && git -C "/tmp/services/$QA_SERVICE_NAME" remote remove origin; fi
+    - git remote set-url origin "${CI_SERVER_URL}/${CI_PROJECT_PATH}.git"
+    # Exit 75: a part of a story isn't deployed yet; the schedule (or the next deployment) checks again.
+    - |
+      set +e
+      qa-sentinel post-deploy --env "$QA_ENVIRONMENT" --post --mrs --wait "${QA_POST_DEPLOY_WAIT:-20}" ${QA_SERVICE_NAME:+--service "$QA_SERVICE_NAME" --service-path "/tmp/services/$QA_SERVICE_NAME" --sha "$QA_SERVICE_SHA"}
+      code=$?
+      if [ "$code" = "75" ]; then echo "Waiting for deployment: checked again by the next deployment or schedule."; exit 0; fi
+      exit $code
+  artifacts:
+    when: always
+    paths: [{{testsPrefix}}qa-post-deploy.md, {{testsPrefix}}.qa-sentinel/runs/]
+    expire_in: 2 weeks
+
 # Showcase: after a full run of the suite, attach test evidence to every Jira story whose acceptance criteria all
 # passed, once per story (QA can ask again with the "qa-showcase-refresh" label). Turn on with QA_SHOWCASE=true
 # (needs requirements.jira in qa-sentinel.config.yaml and JIRA_EMAIL + JIRA_API_TOKEN, or JIRA_PAT).
@@ -262,6 +297,8 @@ qa-showcase:
   stage: test
   needs: [api-tests{{#if mobileEnabled}}, { job: mobile-tests, optional: true }{{/if}}]
   rules:
+    - if: $QA_POST_DEPLOY == "true"   # a post-deploy pipeline runs only qa-post-deploy
+      when: never
     - if: $QA_STORY_REVIEW_KEY   # a story-review pipeline runs only that job
       when: never
     - if: $QA_SHOWCASE == "true" && ($CI_PIPELINE_SOURCE == "schedule" || $CI_PIPELINE_SOURCE == "trigger" || $CI_PIPELINE_SOURCE == "api" || $CI_COMMIT_BRANCH == "{{targetBranch}}")

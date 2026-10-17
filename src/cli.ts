@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { postDeployCommand } from "./commands/postDeploy.js";
 import { discoverCommand } from "./commands/discover.js";
 import { coverageCommand } from "./commands/coverage.js";
 import { backfillCommand } from "./commands/backfill.js";
@@ -125,6 +126,22 @@ program
   .option("--limit <n>", "at most this many tests", (v) => Number(v))
   .option("--dry-run", "list the untagged tests")
   .action(wrap(async (o) => tagCommand({ cwd: cwd(), push: o.push, limit: o.limit, dryRun: o.dryRun })));
+
+program
+  .command("post-deploy")
+  .description("after a deployment: for each story it touches, check every service is deployed, run the story's tests there, report (and re-check later)")
+  .requiredOption("--env <name>", "environment from `environments:` that was deployed to")
+  .option("--story <key...>", "these stories")
+  .option("--service <name>", "the service just deployed (its stories come from its commits)")
+  .option("--service-path <path>", "where that service is checked out (CI)")
+  .option("--sha <sha>", "the deployed commit of --service")
+  .option("--wait <minutes>", "keep checking this long while a part isn't deployed yet", (v) => Number(v))
+  .option("--mrs", "also re-verify open agent MRs that were waiting for deployment (GitLab)")
+  .option("--post", "comment the results on the Jira stories")
+  .option("-o, --out <file>", "markdown report", "qa-post-deploy.md")
+  .action(
+    wrap(async (o) => postDeployCommand({ cwd: cwd(), env: o.env, stories: o.story, service: o.service, servicePath: o.servicePath, sha: o.sha, waitMinutes: o.wait, mrs: o.mrs, post: o.post, out: o.out })),
+  );
 
 program
   .command("discover")

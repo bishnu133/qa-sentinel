@@ -22,6 +22,7 @@ import { actionable } from "../plan/validate.js";
 import { decisionTable } from "../plan/render.js";
 import { log } from "../log.js";
 import { sweepAfterRun } from "../testData.js";
+import { applyDeploymentGate, deploymentStates, notDeployed } from "../deployment.js";
 import { bugsFromDiscrepancies, fileBugs } from "../bugs/bugs.js";
 import { jiraContext } from "../scm/jira.js";
 import { runCommandsFor } from "../layers.js";
@@ -303,7 +304,13 @@ export async function generateCommand(o: GenerateOptions): Promise<number> {
   // Phase 4: independent verification.
   log.step(`verifying ${changes.length} changed file(s) independently`);
   const verifyStarted = Date.now() - 1000;
-  const verification = await verifyChanges({ cwd, c, changes, runDir: run.dir, env: testEnv(c) });
+  const verified0 = await verifyChanges({ cwd, c, changes, runDir: run.dir, env: testEnv(c) });
+  // Tests written for a change that isn't deployed where they ran fail for that reason alone: say so (C1).
+  const deployBase = process.env[c.tests.api.baseUrlEnv];
+  const deployNeeds = (parts ? parts.map((p) => ({ service: p.service, sha: p.cs.head, repo: p.repo })) : o.backfill ? [] : [{ service, sha: cs.head, repo }]).filter((n) => n.service.version);
+  const deployStates = deployBase && deployNeeds.length ? await deploymentStates(deployNeeds, environment ?? "test environment", deployBase) : [];
+  const verification = applyDeploymentGate(verified0, deployStates);
+  if (verification.status === "WAITING_FOR_DEPLOYMENT") log.warn(`the change isn't deployed on ${environment ?? deployBase} yet: ${notDeployed(deployStates).map((d) => d.service).join(", ")}; failed tests may only be waiting for it`);
   const discrepancies = findDiscrepancies(cwd, startSha, changes);
   // Data the verified tests created and couldn't delete (or a killed test left): sweep it now, report what stays.
   if (c.testData.cleanup === "ledger") findings.push(...(await sweepAfterRun(cwd, c, verifyStarted)));
@@ -376,7 +383,7 @@ export async function generateCommand(o: GenerateOptions): Promise<number> {
     }
   }
 
-  if (o.push && c.verification.requireVerifiedToPush && verification.status !== "VERIFIED") {
+  if (o.push && c.verification.requireVerifiedToPush && verification.status !== "VERIFIED" && verification.status !== "WAITING_FOR_DEPLOYMENT") {
     log.warn(`not pushed: verification is ${verification.status}${environment ? ` on ${environment}` : ""} and verification.requireVerifiedToPush is on. The branch ${branch} stays local for inspection.`);
     return finish(`not-pushed-${verification.status.toLowerCase()}`, 1);
   }
@@ -394,7 +401,7 @@ export async function generateCommand(o: GenerateOptions): Promise<number> {
       const mr = await createOrUpdateMergeRequest(ctx, project, {
         source: branch,
         target: c.ci.targetBranch,
-        title: `${verified ? "" : "Draft: "}QA agent: tests for ${subject}${verified ? "" : ` (${verification.status})`}`,
+        title: `${verified ? "" : "Draft: "}QA agent: tests for ${subject}${verified ? "" : ` (${verification.status === "WAITING_FOR_DEPLOYMENT" ? "waiting for deployment" : verification.status})`}`,
         description,
         labels: [
           "qa-agent",

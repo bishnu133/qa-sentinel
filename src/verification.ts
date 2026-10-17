@@ -8,11 +8,12 @@ import { TEST_FILE, addedLines } from "./guardrails.js";
 import { runProcess } from "./proc.js";
 import { type Layer, type LayerConfig, junitReporter, layerOfFile, layers, runnerOf, specArgs } from "./layers.js";
 
-export type VerificationStatus = "VERIFIED" | "FAILED" | "BLOCKED" | "NOT_RUN";
+/** WAITING_FOR_DEPLOYMENT: only test runs failed, and the change they test isn't deployed in that environment yet. */
+export type VerificationStatus = "VERIFIED" | "FAILED" | "BLOCKED" | "NOT_RUN" | "WAITING_FOR_DEPLOYMENT";
 export type CheckStatus = "passed" | "failed" | "blocked" | "not-run" | "skipped";
 
 export interface Check {
-  name: "preflight" | "typecheck" | "lint" | "tests";
+  name: "preflight" | "typecheck" | "lint" | "tests" | "deployment";
   /** Which test layer a preflight or tests check belongs to (api, web). */
   layer?: Layer;
   status: CheckStatus;
@@ -317,6 +318,7 @@ export const STATUS_BADGE: Record<VerificationStatus, string> = {
   FAILED: "❌ FAILED",
   BLOCKED: "⛔ BLOCKED",
   NOT_RUN: "⚪ NOT_RUN",
+  WAITING_FOR_DEPLOYMENT: "⏳ WAITING FOR DEPLOYMENT",
 };
 
 export function verificationMarkdown(r: VerificationReport): string {

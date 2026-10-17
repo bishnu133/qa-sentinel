@@ -100,6 +100,25 @@ qa-gap-report:
     project: "$QA_TESTS_PROJECT"
     branch: {{targetBranch}}
 
+# After deploying this service to an environment, have the test repo check the stories it touches (every service
+# deployed? then run their tests there and comment on the story). Add after your deploy job:
+#
+#   qa-after-deploy-sit:
+#     extends: .qa-trigger-post-deploy
+#     stage: <a stage after deploy>
+#     needs: [<your deploy job>]
+#     variables: { QA_ENVIRONMENT: sit }   # a name from environments: in qa-sentinel.config.yaml
+#     rules:
+#       - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+.qa-trigger-post-deploy:
+  variables:
+    QA_POST_DEPLOY: "true"
+    QA_SERVICE_PROJECT: "$CI_PROJECT_PATH"
+    QA_SERVICE_SHA: "$CI_COMMIT_SHA"
+  trigger:
+    project: "$QA_TESTS_PROJECT"
+    branch: {{targetBranch}}
+
 qa-trigger-generation:
   extends: .qa-trigger-generation
   stage: test
