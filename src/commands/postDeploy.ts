@@ -95,7 +95,7 @@ export async function postDeployCommand(o: PostDeployOptions): Promise<number> {
       log.step(`${story}: every part is deployed on ${environment}; running ${tests.length} test(s)`);
       const run = createRunDir(cwd, `post-deploy-${story}`);
       const files = [...new Set(tests.map((t) => t.file))].map((p) => ({ path: p, status: "M" }));
-      const report = await verifyChanges({ cwd, c, changes: files, runDir: run.dir, env: testEnv(c, process.env, { healing: true }) });
+      const report = await verifyChanges({ cwd, c, changes: files, runDir: run.dir, env: testEnv(c, process.env, { healing: true }), environment });
       outcomes.push({ story, status: report.status === "VERIFIED" ? "passed" : report.status === "FAILED" ? "failed" : "blocked", manifest, report });
     }
   }
@@ -168,7 +168,7 @@ async function recheckAgentMrs(cwd: string, c: Config, environment: string, base
       git(cwd, ["checkout", "-q", "-B", branch, `origin/${branch}`]);
       const run = createRunDir(cwd, `post-deploy-mr-${mr.iid}`);
       const changes = git(cwd, ["diff", "--name-status", base, "HEAD"]).split("\n").filter(Boolean).map((l) => ({ status: l[0], path: l.split("\t").at(-1)! }));
-      const report = applyDeploymentGate(await verifyChanges({ cwd, c, changes, runDir: run.dir, env: testEnv(c) }), states);
+      const report = applyDeploymentGate(await verifyChanges({ cwd, c, changes, runDir: run.dir, env: testEnv(c), environment }), states);
       const ok = report.status === "VERIFIED";
       if (!ok) failed++;
       lines.push(`- !${mr.iid} ${branch}: ${report.status}`);

@@ -200,6 +200,32 @@ export const ConfigSchema = z.object({
       notes: z.string().optional(),
     })
     .default({}),
+  /**
+   * Feature toggles. Tests say what they need in their title (@toggle:new-checkout=on). Before qa-sentinel runs them,
+   * it sets those toggles with these shell commands ({toggle} and {value} are filled in) for the environment ("*" for
+   * any), and always puts them back afterwards. A lock (lockAcquire/lockRelease) keeps runs on a shared environment
+   * from flipping toggles under each other.
+   */
+  toggles: z
+    .object({
+      environments: z
+        .record(
+          z.object({
+            get: z.string().optional(),
+            set: z.string(),
+            reset: z.string().optional(),
+            lockAcquire: z.string().optional(),
+            lockRelease: z.string().optional(),
+          }),
+        )
+        .default({}),
+      /** A toggle's normal value, for putting it back when there is no `get` command. */
+      defaults: z.record(z.string()).default({}),
+      /** Credentials the toggle commands need (e.g. FLAGS_TOKEN): passed to them only, never to tests or agents. */
+      passEnv: z.array(z.string()).default([]),
+      timeoutSeconds: z.number().int().positive().default(60),
+    })
+    .default({}),
   /** Independent review of generated tests (assertion strength against the acceptance criteria). */
   review: z
     .object({

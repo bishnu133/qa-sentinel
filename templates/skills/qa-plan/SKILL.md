@@ -105,7 +105,7 @@ Plain strings in `setup` are still accepted and read as API steps in order.
 - `not-applicable`: no code is needed (e.g. wording, process).
 - Scope items only: `coveredByAcs` lists the ACs that already express it; `[]` means no AC covers it (the report asks the PO to add one).
 - What `story.md` lists as **OUT OF SCOPE** is not a requirement: no scenarios for it, no `not-found` for it. If the change does it anyway, say so in `openQuestions`.
-- The story's context sections (assumptions, questions, feature toggles) are evidence: e.g. a feature toggle the tests need on goes into the scenario's `setup`.
+- The story's context sections (assumptions, questions, feature toggles) are evidence: e.g. a feature toggle the tests need goes into the scenario as `@toggle:<name>=<value>` in its notes (qa-sentinel sets and resets toggles around the run; see `toggles` in qa-sentinel.config.yaml), not as a setup step.
 Scope items can be cited in `requirementIds` like ACs. They are weaker oracles than ACs: when an item contradicts an AC, the AC wins and you add an open question.
 
 ### Shapes of the list entries

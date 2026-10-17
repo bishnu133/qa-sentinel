@@ -304,7 +304,7 @@ export async function generateCommand(o: GenerateOptions): Promise<number> {
   // Phase 4: independent verification.
   log.step(`verifying ${changes.length} changed file(s) independently`);
   const verifyStarted = Date.now() - 1000;
-  const verified0 = await verifyChanges({ cwd, c, changes, runDir: run.dir, env: testEnv(c) });
+  const verified0 = await verifyChanges({ cwd, c, changes, runDir: run.dir, env: testEnv(c), environment });
   // Tests written for a change that isn't deployed where they ran fail for that reason alone: say so (C1).
   const deployBase = process.env[c.tests.api.baseUrlEnv];
   const deployNeeds = (parts ? parts.map((p) => ({ service: p.service, sha: p.cs.head, repo: p.repo })) : o.backfill ? [] : [{ service, sha: cs.head, repo }]).filter((n) => n.service.version);

@@ -18,6 +18,7 @@ These conventions ship with the qa-sentinel Playwright scaffold. Change them her
 - **Setup data:** use builders in `src/data/` and setup helpers in `{{helpersDir}}`; every test creates the data it needs.
 - **Structure:** `test.describe('<METHOD> <path>')` per endpoint; test titles state the behaviour: `returns 400 when deliverySlot is missing`.
 - **Assertions:** status first, then schema (`expectSchema(body, schema)` from `src/schemas`), then the specific values the test is about.
+- **Feature toggles:** a test that needs a toggle in a given state says so in its title: `@toggle:new-checkout=on` (several: `@toggle:a=on,b=off`). Don't switch toggles inside the test: qa-sentinel sets them before the run and puts them back after. Keep tests that need a toggle on and off in separate files. The story's feature-toggle section says which toggles a feature sits behind.
 - **Tags (required on every new or changed test, fixme tests included):** in the title, e.g.
   `test('rejects the 4th order in a slot @service:orders-service @endpoint:POST_/orders @story:SHOP-123 @ac:AC-3', …)`.
   `@ac:` lists the acceptance criteria the test proves (comma-separated, `@ac:AC-1,AC-2`), using the ids from the story.

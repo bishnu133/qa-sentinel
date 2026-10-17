@@ -55,7 +55,7 @@ export async function verifyCommand(o: VerifyOptions): Promise<number> {
   }
 
   const run = createRunDir(cwd, "verify");
-  const ran = await verifyChanges({ cwd, c, changes, runDir: run.dir, env: testEnv(c) });
+  const ran = await verifyChanges({ cwd, c, changes, runDir: run.dir, env: testEnv(c), environment });
   // Agent branches name the service commits they were written for: are those deployed where the tests ran? (C1)
   const needs = needsFromCommits(c, cwd, base);
   const baseUrl = process.env[c.tests.api.baseUrlEnv];

@@ -23,6 +23,7 @@ The site's base URL comes from `process.env.{{webBaseUrlEnv}}`; API calls for te
 - Import `test` and `expect` from `src/fixtures/web` (fixtures: `page`, `ui`, `api`, `data`).
 - **Test data through the API, never through UI steps.** Follow the scenario's `setup` steps from the validated plan in their `dependsOn` order, using `api` and `data` (the same helpers as the API tests). Only a step with `"via": "ui"` (and a `why`) may use the browser for setup.
 - One behaviour per test, through the browser: open the page, do the user action, assert what the user sees (text, state, navigation) and, when the story says so, the resulting data through `api`.
+- **Feature toggles:** a test that needs a toggle in a given state says so in its title: `@toggle:new-checkout=on` (several: `@toggle:a=on,b=off`). Don't switch toggles inside the test: qa-sentinel sets them before the run and puts them back after. Keep tests that need a toggle on and off in separate files. The story's feature-toggle section says which toggles a feature sits behind.
 - **Tags in the title (required):** `@service:<front end> @page:/orders/:id @story:SHOP-123 @ac:AC-2`. Use the route as in the page object (`:param` style). `@ac:none` for tests beyond the ACs.
 - Waits: rely on Playwright's auto-waiting and web-first assertions (`await expect(locator).toHaveText(…)`). No `waitForTimeout`, no sleeps.
 - Known product bug / AC mismatch: `test.fixme(...)` with `// QA-AGENT: <mismatch>` above it, written to the requirement.

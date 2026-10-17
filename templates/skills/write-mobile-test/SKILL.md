@@ -23,6 +23,7 @@ The device and app come from the environment (`QA_APPIUM_URL`, `QA_MOBILE_PLATFO
 - One `describe` per screen or flow; call `const t = useMobile()` inside it (from `src/fixtures/mobile`: `t.ui`, and `t.api` / `t.data` for setup).
 - **Test data through the API, never through app steps.** Follow the scenario's `setup` steps from the validated plan in their `dependsOn` order, using `t.api` and `t.data` (the same helpers as the API tests). Only a step with `"via": "ui"` (and a `why`) may use the app for setup.
 - One behaviour per test: open the screen, do the user action, assert what the user sees (text, state, the next screen) and, when the story says so, the resulting data through `t.api`.
+- **Feature toggles:** a test that needs a toggle in a given state says so in its title: `@toggle:new-checkout=on` (several: `@toggle:a=on,b=off`). Don't switch toggles inside the test: qa-sentinel sets them before the run and puts them back after. Keep tests that need a toggle on and off in separate files. The story's feature-toggle section says which toggles a feature sits behind.
 - **Tags in the title (required):** `@service:<app> @screen:orders/new @story:SHOP-123 @ac:AC-2`. Use the same value as the screen object's `screen`. `@ac:none` for tests beyond the ACs.
 - Waits: `await el.waitForDisplayed()` and `expect(el).toHaveText(…)` (they retry). No `driver.pause()` for waiting.
 - Known product bug / AC mismatch: `it.skip(...)` with `// QA-AGENT: <mismatch>` above it, written to the requirement.
