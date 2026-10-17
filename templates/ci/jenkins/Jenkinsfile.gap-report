@@ -9,6 +9,8 @@ pipeline {
     string(name: 'QA_SERVICE_NAME', defaultValue: '', description: 'Service name in qa-sentinel.config.yaml (default: job name)')
   }
   environment {
+    // Bedrock/Vertex instead: remove this line and set CLAUDE_CODE_USE_BEDROCK=1 + AWS_REGION (+ an agent role or AWS credentials),
+    // or CLAUDE_CODE_USE_VERTEX=1 + CLOUD_ML_REGION + ANTHROPIC_VERTEX_PROJECT_ID (+ GCP credentials).
     ANTHROPIC_API_KEY = credentials('anthropic-api-key')
     QA_SENTINEL_GITLAB_TOKEN = credentials('qa-sentinel-gitlab-token')
     CI_PROJECT_ID = "${env.gitlabMergeRequestTargetProjectId}"
@@ -32,7 +34,7 @@ pipeline {
       steps {
         sh '''
           # Install qa-sentinel from QA_SENTINEL_PACKAGE; a GitHub source is cloned, built and packed first.
-          qa_pkg="${QA_SENTINEL_PACKAGE:-qa-sentinel@0.8.0-beta.1}"
+          qa_pkg="${QA_SENTINEL_PACKAGE:-qa-sentinel@0.8.0-beta.2}"
           case "$qa_pkg" in
             github:*|git+https://github.com/*|https://github.com/*)
               src="${qa_pkg#github:}"; src="${src#git+}"; src="${src#https://github.com/}"

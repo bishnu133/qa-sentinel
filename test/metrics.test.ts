@@ -132,3 +132,77 @@ describe("metrics trend", () => {
     expect(metricsMarkdown(m)).toContain("| 2026-09 | 1 | 100% (1) |");
   });
 });
+
+describe("metrics with merge request heads (GitLab refs/merge-requests/*/head)", () => {
+  it("judges fast-forward merges and squash merges with deleted branches from the MR heads", async () => {
+    const { fetchReviewRefs } = await import("../src/commands/metrics.js");
+    const origin = tmp();
+    sh(origin, "init", "-q", "--bare", "-b", "main");
+    const repo = tmp();
+    sh(repo, "init", "-q", "-b", "main");
+    sh(repo, "remote", "add", "origin", origin);
+    write(repo, "README.md", "x\n");
+    sh(repo, "add", "-A");
+    sh(repo, "commit", "-q", "-m", "init");
+
+    // MR 1: fast-forward merge, a reviewer fixed the agent's test in the MR.
+    agent(repo, "qa-sentinel/ff", "tests/ff.spec.ts", "run-ff");
+    write(repo, "tests/ff.spec.ts", "// reviewer fix\n");
+    sh(repo, "commit", "-qam", "review fix");
+    sh(repo, "push", "-q", "origin", "qa-sentinel/ff:refs/merge-requests/1/head");
+    sh(repo, "checkout", "-q", "main");
+    sh(repo, "merge", "-q", "--ff-only", "qa-sentinel/ff");
+    sh(repo, "branch", "-q", "-D", "qa-sentinel/ff");
+
+    // MR 2: fast-forward merge as the agent wrote it.
+    agent(repo, "qa-sentinel/ff2", "tests/ff2.spec.ts", "run-ff2");
+    sh(repo, "push", "-q", "origin", "qa-sentinel/ff2:refs/merge-requests/2/head");
+    sh(repo, "checkout", "-q", "main");
+    sh(repo, "merge", "-q", "--ff-only", "qa-sentinel/ff2");
+    sh(repo, "branch", "-q", "-D", "qa-sentinel/ff2");
+
+    // A later human MR, branched after MR 2 was merged, touching MR 2's spec: not the agent MR's review.
+    sh(repo, "checkout", "-q", "-b", "human", "main");
+    write(repo, "tests/ff2.spec.ts", "// later work by someone else\n");
+    sh(repo, "commit", "-qam", "later change");
+    sh(repo, "push", "-q", "origin", "human:refs/merge-requests/10/head");
+    sh(repo, "checkout", "-q", "main");
+    sh(repo, "merge", "-q", "--ff-only", "human");
+    sh(repo, "branch", "-q", "-D", "human");
+
+    // MR 3: squash, reviewer edit, source branch deleted (only the MR ref keeps the commits).
+    agent(repo, "qa-sentinel/sq", "tests/sq.spec.ts", "run-sq");
+    const msg = sh(repo, "log", "-1", "--format=%B");
+    write(repo, "tests/sq.spec.ts", "// reviewer\n");
+    sh(repo, "commit", "-qam", "review");
+    sh(repo, "push", "-q", "origin", "qa-sentinel/sq:refs/merge-requests/3/head");
+    sh(repo, "checkout", "-q", "main");
+    sh(repo, "merge", "-q", "--squash", "qa-sentinel/sq");
+    sh(repo, "commit", "-q", "-m", `Squashed\n\n${msg}`);
+    sh(repo, "branch", "-q", "-D", "qa-sentinel/sq");
+    sh(repo, "reflog", "expire", "--expire=now", "--all");
+    sh(repo, "gc", "-q", "--prune=now");
+
+    const before = Object.fromEntries(agentCommits(repo, "main").map((x) => [x.runId, x.state]));
+    expect(before).toMatchObject({ "run-ff": "merged-unedited", "run-ff2": "merged-unedited", "run-sq": "merged-unknown" });
+
+    expect(fetchReviewRefs(repo)).toBe(true);
+    const after = Object.fromEntries(agentCommits(repo, "main").map((x) => [x.runId, x.state]));
+    expect(after).toEqual({ "run-ff": "merged-edited", "run-ff2": "merged-unedited", "run-sq": "merged-edited" });
+  });
+});
+
+describe("cost by change size (B6)", () => {
+  it("groups cost by diff size and suggests budgets from p90 once there are enough runs", async () => {
+    const { computeMetrics, metricsMarkdown } = await import("../src/commands/metrics.js");
+    const run = (kind: string, diffLines: number, costUsd: number, status = "ok") => ({ kind, runId: "r", startedAt: "2026-10-01T00:00:00Z", finishedAt: "x", outcome: "reported", agent: { status, costUsd }, size: { changedFiles: 1, diffLines } }) as never;
+    const runs = [...Array.from({ length: 9 }, (_, i) => run("gap-report", 20, 0.2 + i * 0.01)), run("gap-report", 2000, 1.9, "max-budget")];
+    const m = computeMetrics(runs, []);
+    expect(m.bySize.map((x) => [x.bucket, x.runs, x.hitBudget])).toEqual([
+      ["< 50 lines", 9, 0],
+      ["> 1000", 1, 1],
+    ]);
+    expect(m.suggestedBudgets).toEqual([{ kind: "gap-report", runs: 10, p90CostUsd: 0.28, suggestedUsd: 0.5 }]);
+    expect(metricsMarkdown(m)).toContain("Budgets these runs suggest");
+  });
+});

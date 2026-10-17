@@ -1,3 +1,4 @@
+import { readManualCards } from "../manualTests.js";
 import fs from "node:fs";
 import path from "node:path";
 import { loadConfig } from "../config.js";
@@ -25,7 +26,7 @@ export async function traceCommand(o: TraceOptions): Promise<number> {
   const story = o.story ?? (o.storyFile ? fs.readFileSync(path.resolve(cwd, o.storyFile), "utf8").match(new RegExp(c.requirements.storyKeyPattern))?.[0] : undefined);
   // Without a story file, list the ACs the tests themselves claim for this story.
   const acList = acs.length ? acs : [...new Set(index.filter((t) => story && t.stories.includes(story)).flatMap((t) => t.acs))].sort().map((id) => ({ id, text: "" }));
-  const trace = traceStory(index, story, acList);
+  const trace = traceStory(index, story, acList, readManualCards(cwd, c.tests.manualDir));
 
   if (o.json) {
     process.stdout.write(JSON.stringify({ tests: index, testMap: mapFindings, story, trace }, null, 2) + "\n");

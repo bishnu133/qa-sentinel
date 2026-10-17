@@ -14,7 +14,7 @@ import { formatUsage } from "../claude.js";
 import { log } from "../log.js";
 
 /** Tags as qa-sentinel writes them: `@key` or `@key:value`, value limited to route/id characters (no `${`, quotes or code). */
-const TAGS = /\s+@[\w-]+(?::[\w./:{},-]+)?(?=[\s"'`]|$)/g;
+const TAGS = /\s+@[\w-]+(?::[\w./:{},=-]+)?(?=[\s"'`]|$)/g;
 const tagsIn = (line: string) => (line.match(TAGS) ?? []).map((t) => t.trim());
 /** A line with its @tags removed: what must stay identical when only tags were added. */
 export const untagged = (line: string) => line.replace(TAGS, "").replace(/\s+$/, "");

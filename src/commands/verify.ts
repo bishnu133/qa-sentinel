@@ -1,3 +1,4 @@
+import { gitlabContext } from "../scm/gitlab.js";
 import { useEnvironment } from "../run.js";
 import fs from "node:fs";
 import path from "node:path";
@@ -8,6 +9,7 @@ import { ARTIFACT_GLOBS, createRunDir, testEnv } from "../run.js";
 import { checkContent, checkPaths, findingsMarkdown, generatePolicy, violations } from "../guardrails.js";
 import { findDiscrepancies, verificationMarkdown, verifyChanges } from "../verification.js";
 import { layers } from "../layers.js";
+import { applyDeploymentGate, deploymentStates, needsFromCommits } from "../deployment.js";
 import { log } from "../log.js";
 
 export interface VerifyOptions {
@@ -27,7 +29,7 @@ export interface VerifyOptions {
 export async function verifyCommand(o: VerifyOptions): Promise<number> {
   const cwd = path.resolve(o.cwd);
   const c = loadConfig(cwd);
-  useEnvironment(c, o.env);
+  const environment = useEnvironment(c, o.env);
   const baseRef = o.base ?? process.env.CI_MERGE_REQUEST_DIFF_BASE_SHA ?? `origin/${c.ci.targetBranch}`;
   const base = git(cwd, ["merge-base", resolveSha(cwd, baseRef), "HEAD"]);
   const changes = changesSince(cwd, base).filter((x) => !matchesAny(x.path, ARTIFACT_GLOBS));
@@ -54,7 +56,11 @@ export async function verifyCommand(o: VerifyOptions): Promise<number> {
   }
 
   const run = createRunDir(cwd, "verify");
-  const report = await verifyChanges({ cwd, c, changes, runDir: run.dir, env: testEnv(c) });
+  const ran = await verifyChanges({ cwd, c, changes, runDir: run.dir, env: testEnv(c), environment });
+  // Agent branches name the service commits they were written for: are those deployed where the tests ran? (C1)
+  const needs = needsFromCommits(c, cwd, base);
+  const baseUrl = process.env[c.tests.api.baseUrlEnv];
+  const report = applyDeploymentGate(ran, baseUrl && needs.length ? await deploymentStates(needs, environment ?? "test environment", baseUrl, gitlabContext(c.ci.gitlabUrl)) : []);
   const discrepancies = findDiscrepancies(cwd, base, changes);
   const md = [
     verificationMarkdown(report),
@@ -62,6 +68,7 @@ export async function verifyCommand(o: VerifyOptions): Promise<number> {
   ].join("\n");
   log.info(md);
   if (o.out) fs.writeFileSync(path.resolve(cwd, o.out), md + "\n");
-  if (report.status !== "VERIFIED") exit = 1;
+  // Waiting for deployment is not a pass: the MR gate stays red until the change is deployed and the tests run green.
+  if (report.status !== "VERIFIED") exit = report.status === "WAITING_FOR_DEPLOYMENT" ? 4 : 1;
   return exit;
 }

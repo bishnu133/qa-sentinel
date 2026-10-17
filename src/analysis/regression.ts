@@ -1,3 +1,4 @@
+import { exposures } from "./gateway.js";
 import type { Config } from "../config.js";
 import type { ContractDiff } from "./contractDiff.js";
 import { type IndexedTest, normPage } from "./testIndex.js";
@@ -16,7 +17,7 @@ import type { RiskedChange } from "../plan/risk.js";
  * Every selected test carries its reasons, so a reviewer can see why it is in the list.
  */
 
-export type SelectionReason = "named-by-plan" | "changed-endpoint" | "changed-page" | "test-map" | "consumer" | "service-wide";
+export type SelectionReason = "named-by-plan" | "changed-endpoint" | "changed-page" | "test-map" | "consumer" | "service-wide" | "via-gateway";
 
 export interface SelectedTest {
   test: IndexedTest;
@@ -89,6 +90,16 @@ export function selectRegression(i: {
       if (normEndpoint(mapped) === ep) for (const f of files) for (const t of i.index.filter((x) => x.file === f && !x.endpoints.length)) add(t, "test-map", ep);
   }
 
+  // 2a. The same endpoints reached through a gateway or BFF: tests that call the BFF, not the service.
+  for (const ep of endpoints) {
+    for (const x of exposures(i.c, i.service, ep, i.map as never)) {
+      for (const t of i.index)
+        if (t.endpoints.some((e) => normEndpoint(e) === normEndpoint(x.endpoint)) && (!t.services.length || t.services.includes(x.service))) add(t, "via-gateway", `${ep} as ${x.service} ${x.endpoint}`);
+      for (const [mapped, files] of Object.entries(i.map?.services?.[x.service]?.endpoints ?? {}))
+        if (normEndpoint(mapped) === normEndpoint(x.endpoint)) for (const f of files) for (const t of i.index.filter((y) => y.file === f && !y.endpoints.length)) add(t, "via-gateway", `${ep} as ${x.service} ${x.endpoint}`);
+    }
+  }
+
   // 2b. Changed pages and screens (front ends, apps): UI tests tagged with the page or mapped to it under screens.
   // A page belongs to its service: an app screen "orders/:id" is not the web route /orders/:id of another front end.
   const pages = new Set<string>();
@@ -117,7 +128,10 @@ export function selectRegression(i: {
     notes.push(unpinned.length ? `${unpinned.length} change(s) not tied to an endpoint or page: ran selection over the whole ${i.service} suite` : "no endpoint- or page-level signal: selected the whole service suite");
   }
 
-  const tests = [...picked.values()].sort((a, b) => a.test.file.localeCompare(b.test.file) || a.test.line - b.test.line);
+  // Cucumber scenarios are run by the team's BDD job: listed in the notes, not in the commands.
+  const bdd = [...picked.values()].filter((p) => p.test.bdd);
+  if (bdd.length) notes.push(`${bdd.length} Cucumber scenario(s) also cover this change: run them with your BDD job (${[...new Set(bdd.map((b) => b.test.file))].slice(0, 5).join(", ")})`);
+  const tests = [...picked.values()].filter((p) => !p.test.bdd).sort((a, b) => a.test.file.localeCompare(b.test.file) || a.test.line - b.test.line);
   const runFullSuite = tests.length === 0;
   if (runFullSuite) notes.push("nothing could be selected from tags or test-map.yaml: run the full suite");
   return { tests, serviceWide, runFullSuite, args: tests.map((s) => `${s.test.file}:${s.test.line}`), notes };
@@ -146,6 +160,7 @@ export function mergeSelections(sels: RegressionSelection[]): RegressionSelectio
 const REASON_LABEL: Record<SelectionReason, string> = {
   "named-by-plan": "named by the plan",
   "changed-endpoint": "changed endpoint",
+  "via-gateway": "same endpoint through a gateway or BFF",
   "changed-page": "changed page",
   "test-map": "test-map.yaml",
   consumer: "consumer service",

@@ -8,7 +8,7 @@ import { type FileChange, showFile, workingChanges } from "./git.js";
 
 export interface Finding {
   level: "violation" | "warning";
-  rule: "blocked-path" | "outside-allowed" | "service-repo-modified" | "url-host" | "secret" | "assertion-removed" | "test-deleted" | "traceability" | "test-data";
+  rule: "blocked-path" | "outside-allowed" | "service-repo-modified" | "url-host" | "secret" | "assertion-removed" | "test-deleted" | "traceability" | "test-data" | "fixed-wait";
   file: string;
   message: string;
 }
@@ -32,7 +32,8 @@ export const PROTECTED_MOBILE_FILES = ["wdio.conf.ts", "src/mobile/evidence.ts",
 export function generatePolicy(c: Config): WritePolicy {
   const derived = [...layers(c).flatMap((t) => [`${t.dir}/**`, `${t.helpersDir}/**`, ...t.extraWritePaths]), "test-map.yaml"];
   return {
-    allowed: c.guardrails.allowedWritePaths.length ? c.guardrails.allowedWritePaths : derived,
+    // Manual test cards (qa-sentinel writes them from the plan) are part of every agent MR.
+    allowed: [...(c.guardrails.allowedWritePaths.length ? c.guardrails.allowedWritePaths : derived), `${c.tests.manualDir}/**`],
     blocked: [...c.guardrails.blockedWritePaths, ...(c.tests.web.enabled ? PROTECTED_WEB_FILES : []), ...(c.tests.mobile.enabled ? PROTECTED_MOBILE_FILES : [])],
   };
 }
@@ -121,6 +122,9 @@ export interface ContentCheckOptions {
 }
 
 /** Content rules on what the agent added: URL hosts, secrets, assertion removal, deleted tests. */
+/** waitForTimeout(3000), sleep(2000), setTimeout(r, 5000), Thread.sleep(…), time.sleep(…): waits of a second or more. */
+const FIXED_WAIT = /\b(?:waitForTimeout|sleep|delay|pause)\s*\(\s*(?:[1-9]\d{3,}|[1-9]\d*_?\d{3}|\d+\s*\*\s*1000)\s*\)|\bsetTimeout\s*\([^,]+,\s*(?:[1-9]\d{3,})\s*\)|\b(?:Thread|time)\.sleep\s*\(/;
+
 export function checkContent(changes: FileChange[], o: ContentCheckOptions): Finding[] {
   const findings: Finding[] = [];
   const hosts = [...o.allowedHosts];
@@ -147,6 +151,11 @@ export function checkContent(changes: FileChange[], o: ContentCheckOptions): Fin
       }
       for (const [name, re] of SECRET_PATTERNS) {
         if (re.test(line)) findings.push({ level: "violation", rule: "secret", file: ch.path, message: `looks like a ${name}` });
+      }
+      // Fixed sleeps make async tests slow and flaky: poll for the state instead (pollUntil, expect.poll).
+      if (TEST_FILE.test(ch.path) || /\/(api|helpers?|support|pages|screens)\//.test(ch.path)) {
+        const wait = line.match(FIXED_WAIT);
+        if (wait && !/QA_SHOWCASE|showcase/i.test(line)) findings.push({ level: "warning", rule: "fixed-wait", file: ch.path, message: `fixed wait \`${wait[0].trim()}\`: poll for the expected state instead (pollUntil / expect.poll)` });
       }
     }
     if (TEST_FILE.test(ch.path)) {

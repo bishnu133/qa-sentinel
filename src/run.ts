@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { log } from "./log.js";
 import crypto from "node:crypto";
 import fs from "node:fs";
@@ -6,10 +7,10 @@ import { CONFIG_FILE, type Config, type ServiceConfig } from "./config.js";
 import { ensureDir } from "./fsutil.js";
 import { resolveSha } from "./git.js";
 import { scrubbedEnv } from "./env.js";
-import { layerEnvNames, layers } from "./layers.js";
+import { layerEnvNames, layers, testOnlyEnvNames } from "./layers.js";
 import type { RequirementSnapshot } from "./requirements.js";
 
-export const VERSION = "0.8.0-beta.1";
+export const VERSION = "0.8.0-beta.2";
 
 export interface RunDir {
   id: string;
@@ -44,7 +45,9 @@ export function findService(c: Config, nameOrPath: string, cwd: string, override
 
 /** Environment for the agent process and for test runs: allowlisted, never carrying publisher credentials. */
 export function agentEnv(c: Config, env: NodeJS.ProcessEnv = process.env) {
-  const out = scrubbedEnv({ baseUrlEnv: c.tests.api.baseUrlEnv, passEnv: [...c.guardrails.passEnv, ...layerEnvNames(c)], forAgent: true }, env);
+  // Login credentials and the cleanup token stay out of the model-driven process unless the team opts in.
+  const shared = c.tests.auth.shareWithAgent ? testOnlyEnvNames(c) : [];
+  const out = scrubbedEnv({ baseUrlEnv: c.tests.api.baseUrlEnv, passEnv: [...c.guardrails.passEnv, ...layerEnvNames(c), ...shared], forAgent: true }, env);
   // The agent's own test runs must not heal either (and an explicit value beats a .env file's QA_HEALING).
   if (c.tests.web.enabled) out.QA_HEALING = "off";
   return out;
@@ -54,7 +57,7 @@ export function agentEnv(c: Config, env: NodeJS.ProcessEnv = process.env) {
  * tests the agent just wrote must pass on their own locators.
  */
 export function testEnv(c: Config, env: NodeJS.ProcessEnv = process.env, o: { healing?: boolean } = {}) {
-  const out = scrubbedEnv({ baseUrlEnv: c.tests.api.baseUrlEnv, passEnv: [...c.guardrails.passEnv, ...layerEnvNames(c)], forAgent: false }, env);
+  const out = scrubbedEnv({ baseUrlEnv: c.tests.api.baseUrlEnv, passEnv: [...c.guardrails.passEnv, ...layerEnvNames(c), ...testOnlyEnvNames(c)], forAgent: false }, env);
   if (c.tests.web.enabled) out.QA_HEALING = o.healing && c.tests.web.healing !== "none" ? c.tests.web.healing : "off";
   return out;
 }
@@ -88,6 +91,7 @@ export const ARTIFACT_GLOBS = [
   ".qa-data/**",
   "qa-contract-check.md",
   "qa-coverage.md",
+  "qa-post-deploy.md",
   "qa-coverage.json",
   "qa-services.draft.yaml",
   "qa-services.draft.md",
@@ -123,14 +127,24 @@ export interface Manifest {
   verification?: { status: string };
   plan?: { status: string; risk?: string; corrections: number };
   outcome?: string;
+  /** How big the change and the service are, to see how cost grows with them (metrics). */
+  size?: { changedFiles: number; diffLines: number; serviceFiles?: number };
 }
+
+const countFiles = (repo: string) => {
+  try {
+    return execFileSync("git", ["ls-files"], { cwd: repo, encoding: "utf8", maxBuffer: 64 * 1024 * 1024 }).split("\n").filter(Boolean).length;
+  } catch {
+    return undefined;
+  }
+};
 
 export function startManifest(
   cwd: string,
   c: Config,
   run: RunDir,
   kind: string,
-  svc: { service: ServiceConfig; base: string; head: string; changedFiles: string[] },
+  svc: { service: ServiceConfig; base: string; head: string; changedFiles: string[]; diff?: string },
   req: RequirementSnapshot,
 ): Manifest {
   const cfg = fs.readFileSync(path.join(cwd, CONFIG_FILE));
@@ -153,6 +167,11 @@ export function startManifest(
       storyKey: req.storyKey,
       approvalStatus: req.approvalStatus,
       acCount: req.acceptanceCriteria.length,
+    },
+    size: {
+      changedFiles: svc.changedFiles.length,
+      diffLines: (svc.diff ?? "").split("\n").filter((l) => /^[+-](?![+-]{2} )/.test(l)).length,
+      serviceFiles: countFiles(path.resolve(cwd, svc.service.path)),
     },
   };
   writeManifest(run, m);

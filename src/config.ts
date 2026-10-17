@@ -7,6 +7,15 @@ import { ContractSourceSchema } from "./contractSource.js";
 
 export const CONFIG_FILE = "qa-sentinel.config.yaml";
 
+const validRegex = (r: string) => {
+  try {
+    new RegExp(r);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
 export const API_FRAMEWORKS = [
   "playwright",
   "supertest",
@@ -42,6 +51,12 @@ const ServiceSchema = z.object({
    */
   contract: ContractSourceSchema.optional(),
   dependsOn: z.array(z.string()).default([]),
+  /**
+   * For a gateway or BFF: which paths it forwards to which service. `path` here is served as `servicePath` there
+   * (default: the same path), e.g. { path: /api/orders, service: orders-service, servicePath: /orders }. A change to
+   * orders-service GET /orders/{id} then also selects tests of this service's GET /api/orders/{id}.
+   */
+  gateway: z.array(z.object({ path: z.string(), service: z.string(), servicePath: z.string().optional(), methods: z.array(z.string()).optional() })).optional(),
   /** api: a backend service (API tests); web: a front end (web UI tests through page objects); mobile: an app (WebdriverIO + Appium, screen objects). UI layers set data up via the API. */
   kind: z.enum(["api", "web", "mobile"]).default("api"),
   /** Web front ends: the routes this service serves (e.g. /orders/new), used when a change doesn't name its page. */
@@ -75,6 +90,32 @@ export const ConfigSchema = z.object({
     .default({}),
   tests: z.object({
     language: z.enum(["typescript", "javascript"]).default("typescript"),
+    /** Manual test cards (one markdown file per story) for requirements that can't be automated. */
+    manualDir: z.string().default("manual-tests"),
+    /**
+     * Test hooks the system offers for behaviour tests can't reach directly: run a scheduled job now, move the
+     * clock, read the emails sent, publish a queue message. Agents use these instead of waiting, and story review
+     * flags requirements that need a hook nobody has built yet.
+     */
+    /**
+     * Logging in: where the project's auth helpers live (agents reuse them, never invent a login), and the roles
+     * tests may log in as. Each role's credentials come from environment variables (masked CI variables), passed to
+     * test runs and never written into tests or reports.
+     */
+    auth: z
+      .object({
+        helpers: z.string().optional().describe("e.g. src/api/auth.ts or src/support/login.ts"),
+        roles: z.array(z.object({ name: z.string(), env: z.array(z.string()).default([]).describe("e.g. [QA_ADMIN_USER, QA_ADMIN_PASSWORD]") })).default([]),
+        notes: z.string().optional().describe("How login works here: SSO, OTP, DPoP, MockPass in test environments…"),
+        /**
+         * false (default): the roles' credentials reach qa-sentinel's own test runs only; the agent's runs while it
+         * writes tests go without them (tests needing a login fail there, and qa-sentinel verifies them with the
+         * credentials). true: the agent gets them too, so it can run those tests itself.
+         */
+        shareWithAgent: z.boolean().default(false),
+      })
+      .default({}),
+    hooks: z.array(z.object({ name: z.string(), how: z.string().describe("e.g. POST /test/jobs/{job}/run (test environments only)"), notes: z.string().optional() })).default([]),
     api: z.object({
       framework: z.enum(API_FRAMEWORKS),
       dir: z.string().default("tests/api"),
@@ -200,6 +241,32 @@ export const ConfigSchema = z.object({
       notes: z.string().optional(),
     })
     .default({}),
+  /**
+   * Feature toggles. Tests say what they need in their title (@toggle:new-checkout=on). Before qa-sentinel runs them,
+   * it sets those toggles with these shell commands ({toggle} and {value} are filled in) for the environment ("*" for
+   * any), and always puts them back afterwards. A lock (lockAcquire/lockRelease) keeps runs on a shared environment
+   * from flipping toggles under each other.
+   */
+  toggles: z
+    .object({
+      environments: z
+        .record(
+          z.object({
+            get: z.string().optional(),
+            set: z.string(),
+            reset: z.string().optional(),
+            lockAcquire: z.string().optional(),
+            lockRelease: z.string().optional(),
+          }),
+        )
+        .default({}),
+      /** A toggle's normal value, for putting it back when there is no `get` command. */
+      defaults: z.record(z.string()).default({}),
+      /** Credentials the toggle commands need (e.g. FLAGS_TOKEN): passed to them only, never to tests or agents. */
+      passEnv: z.array(z.string()).default([]),
+      timeoutSeconds: z.number().int().positive().default(60),
+    })
+    .default({}),
   /** Independent review of generated tests (assertion strength against the acceptance criteria). */
   review: z
     .object({
@@ -244,6 +311,24 @@ export const ConfigSchema = z.object({
       environments: z.array(z.string()).default([]),
       /** A story with a fixme/skip test (known product discrepancy) is not showcased. */
       requireNoPending: z.boolean().default(true),
+      /**
+       * Personal data guard: before evidence goes to Jira, its text (API requests and responses, the PDF, title cards,
+       * summaries) is scanned for NRIC/FIN, email, phone (international form or under phone-like keys) and card
+       * numbers. block (default): attach nothing and report what was found (masked); warn: attach and report; off.
+       * Video frames and screenshots are not read: run showcases on test data.
+       */
+      pii: z
+        .object({
+          mode: z.enum(["block", "warn", "off"]).default("block"),
+          detect: z.array(z.enum(["nric", "email", "phone", "card"])).default(["nric", "email", "phone", "card"]),
+          /** Regexes for values that are known test data, e.g. "^\\+65 ?9000 ?00\\d\\d$". */
+          allow: z.array(z.string().refine(validRegex, "not a valid regex")).default([]),
+          /** Test email domains besides example.com/.org/.net and the reserved .test, .example, .invalid, .localhost, .local. */
+          allowEmailDomains: z.array(z.string()).default([]),
+          /** Other patterns to treat as personal data, e.g. { name: "member-id", pattern: "\\bMBR\\d{8}\\b" }. */
+          custom: z.array(z.object({ name: z.string(), pattern: z.string().refine(validRegex, "not a valid regex") })).default([]),
+        })
+        .default({}),
     })
     .default({}),
   /**
@@ -412,6 +497,10 @@ export const ConfigSchema = z.object({
     if (seen.has(s.name)) ctx.addIssue({ code: "custom", path: ["workspace", "services"], message: `two services are named "${s.name}"; names must be unique` });
     seen.add(s.name);
   }
+  const names = new Set(c.workspace.services.map((s) => s.name));
+  for (const s of c.workspace.services)
+    for (const r of s.gateway ?? [])
+      if (!names.has(r.service)) ctx.addIssue({ code: "custom", path: ["workspace", "services"], message: `${s.name}: gateway route ${r.path} points to "${r.service}", which is not a service in workspace.services` });
 });
 
 export type Config = z.infer<typeof ConfigSchema>;

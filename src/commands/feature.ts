@@ -1,3 +1,4 @@
+import { readManualCards } from "../manualTests.js";
 import fs from "node:fs";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
@@ -48,7 +49,7 @@ export async function featureCommand(o: FeatureOptions): Promise<number> {
   const tests = index.filter((t) => t.stories.includes(story));
   const active = tests.filter((t) => t.status === "active");
   const extra = ["", `**Feature tests:** ${active.length} tagged @story:${story}${tests.length > active.length ? ` (+${tests.length - active.length} waiting for a product fix)` : ""}, across ${new Set(tests.flatMap((t) => t.services)).size} service(s).`];
-  if (acs.length) extra.push("", traceMarkdown(story, traceStory(index, story, acs)).replace(/^### /, "#### "));
+  if (acs.length) extra.push("", traceMarkdown(story, traceStory(index, story, acs, readManualCards(cwd, c.tests.manualDir))).replace(/^### /, "#### "));
   const md = featureMarkdown(manifest, extra);
 
   const base = path.join(cwd, `qa-feature-${story}`);
@@ -77,7 +78,7 @@ export async function featureCommand(o: FeatureOptions): Promise<number> {
     log.step(`running ${active.length} feature test(s)${environment ? ` on ${environment}` : ""}`);
     // API and web tests in one run where possible; healing is allowed here: these are existing, reviewed tests.
     let status = 0;
-    for (const cmd of runCommandsFor(c, active.map((t) => `${t.file}:${t.line}`))) {
+    for (const cmd of runCommandsFor(c, active.filter((t) => !t.bdd).map((t) => `${t.file}:${t.line}`))) {
       const r = spawnSync(cmd, { cwd, shell: true, stdio: "inherit", env: testEnv(c, process.env, { healing: true }) });
       if ((r.status ?? 1) !== 0) status = r.status ?? 1;
     }

@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { postDeployCommand } from "./commands/postDeploy.js";
 import { discoverCommand } from "./commands/discover.js";
 import { coverageCommand } from "./commands/coverage.js";
 import { backfillCommand } from "./commands/backfill.js";
@@ -127,6 +128,23 @@ program
   .action(wrap(async (o) => tagCommand({ cwd: cwd(), push: o.push, limit: o.limit, dryRun: o.dryRun })));
 
 program
+  .command("post-deploy")
+  .description("after a deployment: for each story it touches, check every service is deployed, run the story's tests there, report (and re-check later)")
+  .requiredOption("--env <name>", "environment from `environments:` that was deployed to")
+  .option("--story <key...>", "these stories")
+  .option("--service <name>", "the service just deployed (its stories come from its commits)")
+  .option("--service-path <path>", "where that service is checked out (CI)")
+  .option("--sha <sha>", "the deployed commit of --service")
+  .option("--before <sha>", "the commit deployed before it (only stories in between count)")
+  .option("--wait <minutes>", "keep checking this long while a part isn't deployed yet", (v) => Number(v))
+  .option("--mrs", "also re-verify open agent MRs that were waiting for deployment (GitLab)")
+  .option("--post", "comment the results on the Jira stories")
+  .option("-o, --out <file>", "markdown report", "qa-post-deploy.md")
+  .action(
+    wrap(async (o) => postDeployCommand({ cwd: cwd(), env: o.env, stories: o.story, service: o.service, servicePath: o.servicePath, sha: o.sha, before: o.before, waitMinutes: o.wait, mrs: o.mrs, post: o.post, out: o.out })),
+  );
+
+program
   .command("discover")
   .description("list a GitLab group's projects and draft service entries: kind, OpenAPI spec, dependencies with evidence")
   .requiredOption("--gitlab-group <group>", "group path or id, e.g. acme/platform")
@@ -215,7 +233,8 @@ program
   .option("--since <when>", "30d, 12w or a date")
   .option("-o, --out <file>", "markdown output", "qa-metrics.md")
   .option("--json", "print the numbers as JSON instead")
-  .action(wrap(async (o) => metricsCommand({ cwd: cwd(), runs: o.runs, since: o.since, out: o.out, json: o.json })));
+  .option("--no-fetch", "don't fetch merge request heads from origin")
+  .action(wrap(async (o) => metricsCommand({ cwd: cwd(), runs: o.runs, since: o.since, out: o.out, json: o.json, fetch: o.fetch })));
 
 program
   .command("healed")

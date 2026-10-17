@@ -1,5 +1,6 @@
 import { hasPackage } from "./fsutil.js";
-import { constSubstituter } from "./analysis/testIndex.js";
+import { constSubstituter, indexSource } from "./analysis/testIndex.js";
+import { groupByToggles, withToggles } from "./toggles.js";
 import fs from "node:fs";
 import path from "node:path";
 import type { Config } from "./config.js";
@@ -8,11 +9,12 @@ import { TEST_FILE, addedLines } from "./guardrails.js";
 import { runProcess } from "./proc.js";
 import { type Layer, type LayerConfig, junitReporter, layerOfFile, layers, runnerOf, specArgs } from "./layers.js";
 
-export type VerificationStatus = "VERIFIED" | "FAILED" | "BLOCKED" | "NOT_RUN";
+/** WAITING_FOR_DEPLOYMENT: only test runs failed, and the change they test isn't deployed in that environment yet. */
+export type VerificationStatus = "VERIFIED" | "FAILED" | "BLOCKED" | "NOT_RUN" | "WAITING_FOR_DEPLOYMENT";
 export type CheckStatus = "passed" | "failed" | "blocked" | "not-run" | "skipped";
 
 export interface Check {
-  name: "preflight" | "typecheck" | "lint" | "tests";
+  name: "preflight" | "typecheck" | "lint" | "tests" | "deployment";
   /** Which test layer a preflight or tests check belongs to (api, web). */
   layer?: Layer;
   status: CheckStatus;
@@ -101,6 +103,8 @@ export function overallStatus(checks: Check[]): VerificationStatus {
 export interface VerifyOptions {
   cwd: string;
   c: Config;
+  /** Named environment the tests run against (for toggle commands). */
+  environment?: string;
   changes: FileChange[];
   runDir: string;
   env: NodeJS.ProcessEnv;
@@ -182,71 +186,94 @@ export async function verifyChanges(o: VerifyOptions): Promise<VerificationRepor
   if (!specs.length) {
     checks.push({ name: "tests", status: "not-run", detail: codeFiles.length ? "helpers changed but no spec files changed" : "no spec files changed" });
   }
-  for (const [l, layerSpecs] of specsByLayer) {
-    if (checks.some((x) => x.name === "preflight" && x.layer === l.layer && x.status === "blocked")) {
-      checks.push({ name: "tests", layer: l.layer, status: "not-run", detail: "skipped because the environment is unreachable" });
-      continue;
+  // Tests behind feature toggles (@toggle:name=value) run in groups, each with its toggles set and then put back.
+  const specIndex = specs.flatMap((f) => {
+    try {
+      return indexSource(f, fs.readFileSync(path.join(cwd, f), "utf8"));
+    } catch {
+      return [];
     }
-    // API keeps junit.xml (what pipelines built for v0.4 collect); other layers get junit-<layer>.xml (or a folder).
-    // Other runners: JUnit through their own reporter when qa-sentinel can switch it on (mocha, vitest, jest-junit).
-    const auto =
-      !l.isPlaywright && !l.junitDirEnv && !c.verification.junitPath
-        ? junitReporter(runnerOf(l.runCommand, packageScripts(cwd)), l.runCommand, path.join(o.runDir, l.layer === "api" ? "junit.xml" : `junit-${l.layer}.xml`), (pkg) => hasPackage(cwd, pkg), shq)
-        : undefined;
-    const junit = l.isPlaywright
-      ? path.join(o.runDir, l.layer === "api" ? "junit.xml" : `junit-${l.layer}.xml`)
-      : l.junitDirEnv
-        ? path.join(o.runDir, `junit-${l.layer}`)
-        : c.verification.junitPath
-          ? path.resolve(cwd, c.verification.junitPath)
-          : auto
-            ? path.join(o.runDir, l.layer === "api" ? "junit.xml" : `junit-${l.layer}.xml`)
-            : undefined;
-    if (junit && fs.existsSync(junit)) fs.rmSync(junit, { recursive: true, force: true });
-    const env = {
-      ...o.env,
-      ...(l.isPlaywright && junit ? { PLAYWRIGHT_JUNIT_OUTPUT_NAME: junit } : {}),
-      ...(auto?.env ?? {}),
-      ...(l.junitDirEnv && junit ? { [l.junitDirEnv]: junit } : {}),
-      ...(l.resultsDirEnv ? { [l.resultsDirEnv]: path.join(o.runDir, `results-${l.layer}`) } : {}),
-      ...(!o.env[l.baseUrlEnv] && l.defaultBaseUrl ? { [l.baseUrlEnv]: l.defaultBaseUrl } : {}),
-    };
-    const runArgs = (files: string[]) => `${l.runCommand} ${specArgs(l, files, shq)}${l.isPlaywright ? " --reporter=line,junit" : (auto?.args ?? "")}`;
-    const cmd = runArgs(layerSpecs);
-    let r = await runProcess(cmd, [], { cwd, env, timeoutMs, shell: true });
-    let mine = readJUnitAt(junit).map((x) => ({ ...x, layer: l.layer }));
-    // One retry of the failed specs before calling it a failure: a test that passes on retry is flaky, not a bug.
-    const firstFailed = mine.filter((x) => x.status === "failed" && !ENV_ERROR.test(x.message ?? ""));
-    if (c.verification.retryFailed && firstFailed.length && !r.timedOut && junit) {
-      const retrySpecs = layerSpecs.filter((sp) => firstFailed.some((f) => f.file && (sp.endsWith(f.file) || f.file.endsWith(sp))));
-      if (retrySpecs.length) {
-        fs.rmSync(junit, { recursive: true, force: true });
-        const r2 = await runProcess(runArgs(retrySpecs), [], { cwd, env, timeoutMs, shell: true });
-        const again = readJUnitAt(junit);
-        // Same test = same file and name: two specs may hold tests with the same title.
-        const key = (x: TestCase) => `${x.file ?? ""}::${x.name}`;
-        const passedAgain = new Set(again.filter((a) => a.status === "passed").map(key));
-        const healed = firstFailed.filter((f) => passedAgain.has(key(f)));
-        if (healed.length) {
-          flaky.push(...healed.map((f) => f.name));
-          const healedKeys = new Set(healed.map(key));
-          mine = mine.map((x) => (x.status === "failed" && healedKeys.has(key(x)) ? { ...x, status: "passed" as const, message: "passed on retry (flaky)" } : x));
-          if (mine.every((x) => x.status !== "failed")) r = { ...r2, code: 0 };
+  });
+  const runLayer = async (l: LayerConfig, layerSpecs: string[], sfx: string, label: string) => {
+    if (checks.some((x) => x.name === "preflight" && x.layer === l.layer && x.status === "blocked")) {
+        checks.push({ name: "tests", layer: l.layer, status: "not-run", detail: "skipped because the environment is unreachable" });
+        return;
+      }
+      // API keeps junit.xml (what pipelines built for v0.4 collect); other layers get junit-<layer>.xml (or a folder).
+      // Other runners: JUnit through their own reporter when qa-sentinel can switch it on (mocha, vitest, jest-junit).
+      const auto =
+        !l.isPlaywright && !l.junitDirEnv && !c.verification.junitPath
+          ? junitReporter(runnerOf(l.runCommand, packageScripts(cwd)), l.runCommand, path.join(o.runDir, l.layer === "api" ? `junit${sfx}.xml` : `junit-${l.layer}${sfx}.xml`), (pkg) => hasPackage(cwd, pkg), shq)
+          : undefined;
+      const junit = l.isPlaywright
+        ? path.join(o.runDir, l.layer === "api" ? `junit${sfx}.xml` : `junit-${l.layer}${sfx}.xml`)
+        : l.junitDirEnv
+          ? path.join(o.runDir, `junit-${l.layer}${sfx}`)
+          : c.verification.junitPath
+            ? path.resolve(cwd, c.verification.junitPath)
+            : auto
+              ? path.join(o.runDir, l.layer === "api" ? `junit${sfx}.xml` : `junit-${l.layer}${sfx}.xml`)
+              : undefined;
+      if (junit && fs.existsSync(junit)) fs.rmSync(junit, { recursive: true, force: true });
+      const env = {
+        ...o.env,
+        ...(l.isPlaywright && junit ? { PLAYWRIGHT_JUNIT_OUTPUT_NAME: junit } : {}),
+        ...(auto?.env ?? {}),
+        ...(l.junitDirEnv && junit ? { [l.junitDirEnv]: junit } : {}),
+        ...(l.resultsDirEnv ? { [l.resultsDirEnv]: path.join(o.runDir, `results-${l.layer}${sfx}`) } : {}),
+        ...(!o.env[l.baseUrlEnv] && l.defaultBaseUrl ? { [l.baseUrlEnv]: l.defaultBaseUrl } : {}),
+      };
+      const runArgs = (files: string[]) => `${l.runCommand} ${specArgs(l, files, shq)}${l.isPlaywright ? " --reporter=line,junit" : (auto?.args ?? "")}`;
+      const cmd = runArgs(layerSpecs);
+      let r = await runProcess(cmd, [], { cwd, env, timeoutMs, shell: true });
+      let mine = readJUnitAt(junit).map((x) => ({ ...x, layer: l.layer }));
+      // One retry of the failed specs before calling it a failure: a test that passes on retry is flaky, not a bug.
+      const firstFailed = mine.filter((x) => x.status === "failed" && !ENV_ERROR.test(x.message ?? ""));
+      if (c.verification.retryFailed && firstFailed.length && !r.timedOut && junit) {
+        const retrySpecs = layerSpecs.filter((sp) => firstFailed.some((f) => f.file && (sp.endsWith(f.file) || f.file.endsWith(sp))));
+        if (retrySpecs.length) {
+          fs.rmSync(junit, { recursive: true, force: true });
+          const r2 = await runProcess(runArgs(retrySpecs), [], { cwd, env, timeoutMs, shell: true });
+          const again = readJUnitAt(junit);
+          // Same test = same file and name: two specs may hold tests with the same title.
+          const key = (x: TestCase) => `${x.file ?? ""}::${x.name}`;
+          const passedAgain = new Set(again.filter((a) => a.status === "passed").map(key));
+          const healed = firstFailed.filter((f) => passedAgain.has(key(f)));
+          if (healed.length) {
+            flaky.push(...healed.map((f) => f.name));
+            const healedKeys = new Set(healed.map(key));
+            mine = mine.map((x) => (x.status === "failed" && healedKeys.has(key(x)) ? { ...x, status: "passed" as const, message: "passed on retry (flaky)" } : x));
+            if (mine.every((x) => x.status !== "failed")) r = { ...r2, code: 0 };
+          }
         }
       }
+      cases = cases.concat(mine);
+      const failed = mine.filter((x) => x.status === "failed");
+      const envFailures = failed.length > 0 && failed.every((x) => ENV_ERROR.test(x.message ?? ""));
+      let status: CheckStatus;
+      let detail: string;
+      if (r.timedOut) [status, detail] = ["blocked", `test run exceeded ${c.verification.timeoutMinutes} min`];
+      else if (junit && mine.length === 0) [status, detail] = [r.code === 0 ? "not-run" : "failed", `no test results produced (exit ${r.code})${r.code ? `: ${tail(r.stdout + r.stderr)}` : ""}`];
+      else if (envFailures) [status, detail] = ["blocked", `environment errors: ${failed[0].message}`];
+      else if (r.code !== 0 || failed.length) [status, detail] = ["failed", `${failed.length} failed${failed[0] ? `: ${failed[0].name}` : `, exit ${r.code}`}`];
+      else [status, detail] = ["passed", mine.length ? `${mine.filter((x) => x.status === "passed").length} passed, ${mine.filter((x) => x.status === "skipped").length} skipped${mine.some((x) => x.message === "passed on retry (flaky)") ? `, ${mine.filter((x) => x.message === "passed on retry (flaky)").length} only on retry (flaky)` : ""}` : "exit 0 (no JUnit report configured)"];
+      checks.push({ name: "tests", ...(specsByLayer.size > 1 || l.layer !== "api" ? { layer: l.layer } : {}), status, detail: label ? `${detail} (${label})` : detail, durationMs: r.durationMs });
+      outputs.push(`### ${l.layer}: ${cmd}\n${r.stdout}\n${r.stderr}`);
+  
+  };
+  for (const [l, layerSpecs] of specsByLayer) {
+    const { groups, conflicts } = groupByToggles(layerSpecs, specIndex);
+    for (const x of conflicts) checks.push({ name: "tests", layer: l.layer, status: "blocked", detail: `${x.file} needs toggle ${x.toggle} both on and off: split it into two files` });
+    const plain = groups.length === 1 && !Object.keys(groups[0].toggles).length;
+    for (const [i, g] of groups.entries()) {
+      const label = Object.entries(g.toggles).map(([k, v]) => `${k}=${v}`).join(", ");
+      const sfx = plain || i === 0 ? "" : `-${i}`;
+      try {
+        await withToggles(c, o.environment, g.toggles, o.env, () => runLayer(l, g.files, sfx, label ? `toggles ${label}` : ""));
+      } catch (e) {
+        checks.push({ name: "tests", layer: l.layer, status: "blocked", detail: `toggles ${label} could not be set: ${(e as Error).message}` });
+      }
     }
-    cases = cases.concat(mine);
-    const failed = mine.filter((x) => x.status === "failed");
-    const envFailures = failed.length > 0 && failed.every((x) => ENV_ERROR.test(x.message ?? ""));
-    let status: CheckStatus;
-    let detail: string;
-    if (r.timedOut) [status, detail] = ["blocked", `test run exceeded ${c.verification.timeoutMinutes} min`];
-    else if (junit && mine.length === 0) [status, detail] = [r.code === 0 ? "not-run" : "failed", `no test results produced (exit ${r.code})${r.code ? `: ${tail(r.stdout + r.stderr)}` : ""}`];
-    else if (envFailures) [status, detail] = ["blocked", `environment errors: ${failed[0].message}`];
-    else if (r.code !== 0 || failed.length) [status, detail] = ["failed", `${failed.length} failed${failed[0] ? `: ${failed[0].name}` : `, exit ${r.code}`}`];
-    else [status, detail] = ["passed", mine.length ? `${mine.filter((x) => x.status === "passed").length} passed, ${mine.filter((x) => x.status === "skipped").length} skipped${flaky.length ? `, ${flaky.length} only on retry (flaky)` : ""}` : "exit 0 (no JUnit report configured)"];
-    checks.push({ name: "tests", ...(specsByLayer.size > 1 || l.layer !== "api" ? { layer: l.layer } : {}), status, detail, durationMs: r.durationMs });
-    outputs.push(`### ${l.layer}: ${cmd}\n${r.stdout}\n${r.stderr}`);
   }
   if (outputs.length) fs.writeFileSync(path.join(o.runDir, "test-output.log"), outputs.join("\n\n"));
 
@@ -317,6 +344,7 @@ export const STATUS_BADGE: Record<VerificationStatus, string> = {
   FAILED: "❌ FAILED",
   BLOCKED: "⛔ BLOCKED",
   NOT_RUN: "⚪ NOT_RUN",
+  WAITING_FOR_DEPLOYMENT: "⏳ WAITING FOR DEPLOYMENT",
 };
 
 export function verificationMarkdown(r: VerificationReport): string {
