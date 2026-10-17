@@ -1,3 +1,4 @@
+import { hasPackage } from "./fsutil.js";
 import { constSubstituter } from "./analysis/testIndex.js";
 import fs from "node:fs";
 import path from "node:path";
@@ -5,7 +6,7 @@ import type { Config } from "./config.js";
 import type { FileChange } from "./git.js";
 import { TEST_FILE, addedLines } from "./guardrails.js";
 import { runProcess } from "./proc.js";
-import { type Layer, type LayerConfig, layerOfFile, layers, specArgs } from "./layers.js";
+import { type Layer, type LayerConfig, junitReporter, layerOfFile, layers, runnerOf, specArgs } from "./layers.js";
 
 export type VerificationStatus = "VERIFIED" | "FAILED" | "BLOCKED" | "NOT_RUN";
 export type CheckStatus = "passed" | "failed" | "blocked" | "not-run" | "skipped";
@@ -44,6 +45,18 @@ const attr = (attrs: string, name: string) => {
   return m ? decode(m[1]) : undefined;
 };
 
+/** Reporters put a file path or a suite title in classname (mocha xunit, jest-junit): only a path is a file. */
+export const fileLike = (s: string | undefined) => (s && /\.([cm]?[jt]sx?|py|java|kt|cs|rb|go|php|feature)$/.test(s.trim()) ? s : undefined);
+
+/** The package.json scripts of the test repo (to see which runner `npm run test` calls). */
+export function packageScripts(cwd: string): Record<string, string> {
+  try {
+    return JSON.parse(fs.readFileSync(path.join(cwd, "package.json"), "utf8")).scripts ?? {};
+  } catch {
+    return {};
+  }
+}
+
 /** Minimal JUnit XML reader (Playwright, jest-junit, mocha-junit-reporter all emit this shape). */
 export function parseJUnit(xml: string): TestCase[] {
   const cases: TestCase[] = [];
@@ -55,7 +68,7 @@ export function parseJUnit(xml: string): TestCase[] {
     const skipped = /<skipped\b/.test(body);
     cases.push({
       name: attr(attrs, "name") ?? "(unnamed)",
-      file: attr(attrs, "file") ?? attr(attrs, "classname"),
+      file: attr(attrs, "file") ?? fileLike(attr(attrs, "classname")),
       status: failure ? "failed" : skipped ? "skipped" : "passed",
       message: failure ? decode((attr(failure[2], "message") ?? failure[3] ?? "").trim()).slice(0, 400) : undefined,
     });
@@ -175,22 +188,30 @@ export async function verifyChanges(o: VerifyOptions): Promise<VerificationRepor
       continue;
     }
     // API keeps junit.xml (what pipelines built for v0.4 collect); other layers get junit-<layer>.xml (or a folder).
+    // Other runners: JUnit through their own reporter when qa-sentinel can switch it on (mocha, vitest, jest-junit).
+    const auto =
+      !l.isPlaywright && !l.junitDirEnv && !c.verification.junitPath
+        ? junitReporter(runnerOf(l.runCommand, packageScripts(cwd)), l.runCommand, path.join(o.runDir, l.layer === "api" ? "junit.xml" : `junit-${l.layer}.xml`), (pkg) => hasPackage(cwd, pkg), shq)
+        : undefined;
     const junit = l.isPlaywright
       ? path.join(o.runDir, l.layer === "api" ? "junit.xml" : `junit-${l.layer}.xml`)
       : l.junitDirEnv
         ? path.join(o.runDir, `junit-${l.layer}`)
         : c.verification.junitPath
           ? path.resolve(cwd, c.verification.junitPath)
-          : undefined;
+          : auto
+            ? path.join(o.runDir, l.layer === "api" ? "junit.xml" : `junit-${l.layer}.xml`)
+            : undefined;
     if (junit && fs.existsSync(junit)) fs.rmSync(junit, { recursive: true, force: true });
     const env = {
       ...o.env,
       ...(l.isPlaywright && junit ? { PLAYWRIGHT_JUNIT_OUTPUT_NAME: junit } : {}),
+      ...(auto?.env ?? {}),
       ...(l.junitDirEnv && junit ? { [l.junitDirEnv]: junit } : {}),
       ...(l.resultsDirEnv ? { [l.resultsDirEnv]: path.join(o.runDir, `results-${l.layer}`) } : {}),
       ...(!o.env[l.baseUrlEnv] && l.defaultBaseUrl ? { [l.baseUrlEnv]: l.defaultBaseUrl } : {}),
     };
-    const runArgs = (files: string[]) => `${l.runCommand} ${specArgs(l, files, shq)}${l.isPlaywright ? " --reporter=line,junit" : ""}`;
+    const runArgs = (files: string[]) => `${l.runCommand} ${specArgs(l, files, shq)}${l.isPlaywright ? " --reporter=line,junit" : (auto?.args ?? "")}`;
     const cmd = runArgs(layerSpecs);
     let r = await runProcess(cmd, [], { cwd, env, timeoutMs, shell: true });
     let mine = readJUnitAt(junit).map((x) => ({ ...x, layer: l.layer }));

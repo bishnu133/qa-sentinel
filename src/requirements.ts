@@ -18,6 +18,8 @@ export const RequirementSnapshotSchema = z.object({
   revision: z.string().optional(),
   storyKey: z.string().optional(),
   title: z.string().optional(),
+  /** Source branch of the MR the text came from (or the MR behind a merged commit). */
+  sourceBranch: z.string().optional(),
   acceptanceCriteria: z.array(z.object({ id: z.string(), text: z.string() })),
   /** What the story expects beyond its ACs (tech scope, expected results): TS-1, ER-1, … Not agreed as ACs. */
   scopeItems: z.array(z.object({ id: z.string(), text: z.string(), source: z.string(), service: z.string().optional() })).default([]),
@@ -177,7 +179,8 @@ export async function resolveRequirements(c: Config, o: ResolveOptions): Promise
     if (key && jctx) {
       const issue = await fetchIssue(jctx, key, c.requirements.jira.acceptanceCriteriaField, c.requirements.jira.scopeFields.map((f) => f.field));
       const text = jiraIssueText(c, issue);
-      const snap = snapshot("jira", text, c, { sourceUrl: issue.url, revision: issue.updated, title: issue.summary, trackerStatus: issue.status, storyKey: issue.key });
+      const branch = o.mr?.sourceBranch ?? looked?.source_branch;
+      const snap = snapshot("jira", text, c, { sourceUrl: issue.url, revision: issue.updated, title: issue.summary, trackerStatus: issue.status, storyKey: issue.key, ...(branch ? { sourceBranch: branch } : {}) });
       const approved = c.requirements.jira.approvedStatuses.some((s) => s.toLowerCase() === issue.status.toLowerCase());
       return { ...snap, approvalStatus: snap.rawText.trim() ? (approved ? "approved" : "unverified") : "missing" };
     }
@@ -188,6 +191,7 @@ export async function resolveRequirements(c: Config, o: ResolveOptions): Promise
       sourceUrl: o.mr.url,
       revision: o.mr.updatedAt,
       title: o.mr.title,
+      ...(o.mr.sourceBranch ? { sourceBranch: o.mr.sourceBranch } : {}),
       keyHints: [o.mr.sourceBranch, ...(o.keyHints ?? [])],
     });
   }
@@ -197,6 +201,7 @@ export async function resolveRequirements(c: Config, o: ResolveOptions): Promise
       sourceUrl: looked.web_url,
       revision: looked.updated_at,
       title: looked.title,
+      ...(looked.source_branch ? { sourceBranch: looked.source_branch } : {}),
       keyHints: [looked.source_branch, ...(o.keyHints ?? [])],
     });
   }
@@ -245,4 +250,18 @@ export function requirementsLine(s: RequirementSnapshot): string {
   const where = s.sourceUrl ? `[${s.source}](${s.sourceUrl})` : s.source;
   const status = s.trackerStatus ? ` (status "${s.trackerStatus}")` : "";
   return `**Requirements:** ${s.storyKey ?? s.title ?? "story"} from ${where}${s.revision ? ` @ ${s.revision}` : ""} · ${s.acceptanceCriteria.length} AC parsed${s.scopeItems?.length ? ` · ${s.scopeItems.length} scope item(s)` : ""} · approval ${s.approvalStatus}${status}`;
+}
+
+/**
+ * The branch to skip, if this change comes from one listed in ci.skipBranches (dependency bots by default). Candidates
+ * are branch names or commit messages: a merge commit names its branch ("Merge branch 'renovate/x' into 'main'").
+ */
+export function skippedBranch(c: Config, ...candidates: (string | undefined)[]): string | undefined {
+  const res = c.ci.skipBranches.map((r) => new RegExp(r));
+  for (const x of candidates) {
+    if (!x) continue;
+    const branch = x.match(/Merge branch '([^']+)'/)?.[1] ?? (/\s/.test(x.trim()) ? undefined : x.trim());
+    if (branch && res.some((r) => r.test(branch))) return branch;
+  }
+  return undefined;
 }

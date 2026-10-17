@@ -4,7 +4,8 @@ import { loadConfig } from "../config.js";
 import { indexTests } from "../analysis/testIndex.js";
 import { git, resolveSha, workingChanges } from "../git.js";
 import { matchesAny } from "../fsutil.js";
-import { ARTIFACT_GLOBS, agentEnv, createRunDir } from "../run.js";
+import { ARTIFACT_GLOBS, agentEnv, createRunDir, testEnv } from "../run.js";
+import { specAt } from "../specs.js";
 import { layers } from "../layers.js";
 import { engineFor } from "../engines/ClaudeCodeEngine.js";
 import { runProcess } from "../proc.js";
@@ -63,7 +64,14 @@ export async function tagCommand(o: TagOptions): Promise<number> {
   }
   if (workingChanges(cwd).some((x) => !matchesAny(x.path, ARTIFACT_GLOBS))) throw new Error("The test repo has uncommitted changes; commit or stash them first.");
   const run = createRunDir(cwd, "tag");
-  const services = c.workspace.services.map((s) => ({ name: s.name, kind: s.kind, openapi: s.openapi ? path.join(s.path, s.openapi) : undefined, routes: s.routes }));
+  const services = await Promise.all(c.workspace.services.map(async (s) => {
+    if (!s.openapi || !s.openapiCommand) return { name: s.name, kind: s.kind, openapi: s.openapi ? path.join(s.path, s.openapi) : undefined, routes: s.routes };
+    // Generated at build time: generate it for the current commit and hand the agent that copy.
+    const spec = await specAt(path.resolve(cwd, s.path), "HEAD", s, { env: testEnv(c), timeoutMs: (s.openapiCommandTimeoutSeconds ?? 180) * 1000 });
+    const file = `spec-${s.name}${path.extname(s.openapi) || ".yaml"}`;
+    if (spec) fs.writeFileSync(path.join(run.dir, file), spec);
+    return { name: s.name, kind: s.kind, openapi: spec ? `${run.rel}/${file}` : undefined, routes: s.routes };
+  }));
   fs.writeFileSync(path.join(run.dir, "tests-to-tag.json"), JSON.stringify({ services, tests: missing.map((t) => ({ file: t.file, line: t.line, title: t.title })) }, null, 2));
   if (o.dryRun) {
     missing.slice(0, 20).forEach((t) => log.info(`  ${t.file}:${t.line} ${t.title}`));

@@ -2,7 +2,7 @@
 #
 # Include from the test repo's .gitlab-ci.yml:
 #   include:
-#     - local: "ci/qa-sentinel/tests.gitlab-ci.yml"
+#     - local: "{{testsPrefix}}ci/qa-sentinel/tests.gitlab-ci.yml"
 #
 # CI/CD variables: ANTHROPIC_API_KEY, QA_SENTINEL_GITLAB_TOKEN (api + write_repository), {{baseUrlEnv}}{{#if webEnabled}}, {{webBaseUrlEnv}} (web){{/if}}{{#if mobileEnabled}}, QA_APPIUM_URL + QA_APP or QA_APP_PACKAGE/QA_BUNDLE_ID + QA_MOBILE_PLATFORM (mobile){{/if}}
 # Allow this project's CI_JOB_TOKEN to read the service repos (Settings › CI/CD › Job token permissions).
@@ -14,7 +14,7 @@
 #   the QA environment. Generated tests are code; isolate where they run.
 
 variables:
-  QA_SENTINEL_VERSION: "0.7.1"
+  QA_SENTINEL_VERSION: "0.7.2"
   # Where to install qa-sentinel from: set QA_SENTINEL_PACKAGE as a group/project CI/CD variable, e.g.
   # "github:bishnu133/qa-sentinel#main" until it is on npm. Default: qa-sentinel@$QA_SENTINEL_VERSION.
   # (Not defined here on purpose: trigger jobs forward YAML variables downstream, where they override CI/CD variables.)
@@ -42,7 +42,14 @@ variables:
 .qa-node:
   image: mcr.microsoft.com/playwright:v1.49.0-noble
   before_script:
+{{#if testsSubdir}}
+    # The test repo is a folder of this repository: install (its own lockfile, else the workspace root's) and run from there.
+    - cd "{{testsSubdir}}"
+    - if [ -f package-lock.json ]; then npm ci; else (cd "$CI_PROJECT_DIR" && npm ci); fi
+{{/if}}
+{{#if testsSubdirNone}}
     - npm ci
+{{/if}}
 {{#if webEnabled}}
     # Browser matching the @playwright/test version in the lockfile (a no-op when the image already has it).
     - npx playwright install chromium
@@ -85,7 +92,7 @@ qa-generate:
       ${QA_ENVIRONMENT:+--env "$QA_ENVIRONMENT"}
   artifacts:
     when: always
-    paths: [qa-sentinel-summary.md, .qa-sentinel/runs/]
+    paths: [{{testsPrefix}}qa-sentinel-summary.md, {{testsPrefix}}.qa-sentinel/runs/]
     expire_in: 2 weeks
 
 {{/if}}
@@ -102,7 +109,7 @@ qa-story-review:
     - qa-sentinel review-story --story "$QA_STORY_REVIEW_KEY" --post
   artifacts:
     when: always
-    paths: [qa-story-review.md, .qa-sentinel/runs/]
+    paths: [{{testsPrefix}}qa-story-review.md, {{testsPrefix}}.qa-sentinel/runs/]
     expire_in: 2 weeks
 
 # Blocking gate for agent MRs (and any MR touching tests): the same independent checks qa-sentinel runs after
@@ -116,7 +123,7 @@ qa-agent-mr-checks:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event" && $CI_MERGE_REQUEST_SOURCE_BRANCH_NAME =~ /^qa-sentinel\//
       variables: { QA_VERIFY_POLICY: "--policy" }
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
-      changes: ["{{apiDir}}/**/*"{{#if webEnabled}}, "{{webDir}}/**/*", "{{pagesDir}}/**/*"{{/if}}{{#if mobileEnabled}}, "{{mobileDir}}/**/*", "{{screensDir}}/**/*"{{/if}}]
+      changes: ["{{testsPrefix}}{{apiDir}}/**/*"{{#if webEnabled}}, "{{testsPrefix}}{{webDir}}/**/*", "{{testsPrefix}}{{pagesDir}}/**/*"{{/if}}{{#if mobileEnabled}}, "{{testsPrefix}}{{mobileDir}}/**/*", "{{testsPrefix}}{{screensDir}}/**/*"{{/if}}]
   script:
     - !reference [.qa-sentinel-install, script]
     # Optional ephemeral QA environment (e.g. start the services under test). Set QA_ENV_START in your
@@ -126,8 +133,8 @@ qa-agent-mr-checks:
   artifacts:
     when: always
     reports:
-      junit: [.qa-sentinel/runs/*/junit*.xml{{#if mobileEnabled}}, .qa-sentinel/runs/*/junit-mobile/*.xml{{/if}}]
-    paths: [qa-verify.md, .qa-sentinel/runs/, playwright-report/]
+      junit: [{{testsPrefix}}.qa-sentinel/runs/*/junit*.xml{{#if mobileEnabled}}, {{testsPrefix}}.qa-sentinel/runs/*/junit-mobile/*.xml{{/if}}]
+    paths: [{{testsPrefix}}qa-verify.md, {{testsPrefix}}.qa-sentinel/runs/, {{testsPrefix}}playwright-report/]
     expire_in: 2 weeks
 
 # Regular runs of the whole suite{{#if webEnabled}} (API and web, one report for the showcase stage){{/if}}: on schedule, or after a
@@ -158,8 +165,8 @@ api-tests:
   artifacts:
     when: always
     reports:
-      junit: test-results/junit.xml
-    paths: [playwright-report/, test-results/]
+      junit: {{testsPrefix}}test-results/junit.xml
+    paths: [{{testsPrefix}}playwright-report/, {{testsPrefix}}test-results/]
     expire_in: 2 weeks
 
 {{#if mobileEnabled}}
@@ -182,8 +189,8 @@ mobile-tests:
   artifacts:
     when: always
     reports:
-      junit: test-results/mobile/junit/*.xml
-    paths: [test-results/mobile/]
+      junit: {{testsPrefix}}test-results/mobile/junit/*.xml
+    paths: [{{testsPrefix}}test-results/mobile/]
     expire_in: 2 weeks
 
 {{/if}}
@@ -204,7 +211,7 @@ qa-healed:
     - qa-sentinel healed
   artifacts:
     when: always
-    paths: [qa-healed.md, qa-healed.json]
+    paths: [{{testsPrefix}}qa-healed.md, {{testsPrefix}}qa-healed.json]
     expire_in: 4 weeks
 
 {{/if}}
@@ -229,7 +236,7 @@ qa-lessons:
     - qa-sentinel lessons --since 90d --push
   artifacts:
     when: always
-    paths: [qa-lessons.md, .qa-sentinel/runs/]
+    paths: [{{testsPrefix}}qa-lessons.md, {{testsPrefix}}.qa-sentinel/runs/]
     expire_in: 4 weeks
 
 {{/if}}
@@ -253,5 +260,5 @@ qa-showcase:
     - qa-sentinel showcase ${QA_ENVIRONMENT:+--env "$QA_ENVIRONMENT"}
   artifacts:
     when: always
-    paths: [qa-showcase.md, qa-showcase/, .qa-sentinel/showcase/]
+    paths: [{{testsPrefix}}qa-showcase.md, {{testsPrefix}}qa-showcase/, {{testsPrefix}}.qa-sentinel/showcase/]
     expire_in: 2 weeks

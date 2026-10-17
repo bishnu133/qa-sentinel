@@ -46,6 +46,10 @@ workspace:
       gitlabProject: pay/payments-service
       dependsOn: [ledger-service]
       version: { path: /actuator/info, field: git.commit.id }   # optional: deployed commit, for `feature`
+    - name: ledger-service
+      path: ../ledger-service
+      openapi: build/swagger.yaml     # not committed: generated at build time…
+      openapiCommand: npx tsoa spec   # …so qa-sentinel runs this at the MR's base and head commits
     - name: payments-portal
       path: ../payments-portal
       kind: web                       # tested through the UI (page objects); data set up via the API
@@ -54,6 +58,14 @@ workspace:
       path: ../payments-app
       kind: mobile                    # tested through WebdriverIO + Appium (screen objects)
 ```
+
+**Specs generated at build time** (tsoa, swagger-jsdoc, NestJS, …): set `openapiCommand` to the command that writes the spec to `openapi`. qa-sentinel checks each commit (the MR's base and head) out in a throwaway worktree, runs the command in the service's folder there and diffs the two results. Things to know:
+- **Dependencies:** the worktree shares the service checkout's `node_modules` (also hoisted ones), so install the service's dependencies in the job before qa-sentinel runs (`npm ci` in the service). Both commits are generated with the same installed dependencies; if an MR changes the generator itself, check that diff by hand.
+- **Offline and quick:** no database, no secrets, no network installs (prefer `npx --no-install …`), default time limit 180 s (`openapiCommandTimeoutSeconds`). If it fails, the report simply has no contract diff.
+- **Security:** the command runs the MR's code. qa-sentinel turns git hooks off for the checkout and gives the command the test environment (no publishing credentials), but it still runs inside the CI job. Use it only where MR authors are trusted to run code in your CI, as they already do in the service's own pipeline.
+- Committing the spec (and checking it in lint) is still the cheapest and safest option.
+
+**Services that are folders of one repository** (a monorepo): set `path` to the folder locally and `subdir` to the folder inside the repository (e.g. `services/orders`), so CI (where the repository root is checked out) finds it. In the service pipeline, run one gap-report job per service with its own `QA_SERVICE_NAME` and `rules: changes:` for its folder (extend `qa-gap-report`), and switch off the default one.
 
 Stories often name services in their tech notes; qa-sentinel recognises a service by its `name`, the last part of its `path` or of its `gitlabProject`.
 
@@ -133,7 +145,13 @@ npx qa-sentinel doctor     # keys, access, services, specs, story template, laye
 | `QA_BASE_URL` (+ `QA_WEB_URL`, `QA_APPIUM_URL`, `QA_APP`) | test repo | the environment the tests run against |
 | `QA_SENTINEL_PACKAGE` | group | the qa-sentinel version to install |
 
-Include `ci/qa-sentinel/service.gitlab-ci.yml` from each service repo and `ci/qa-sentinel/tests.gitlab-ci.yml` from the test repo (Jenkins: one job per `Jenkinsfile.*`).
+Include `ci/qa-sentinel/service.gitlab-ci.yml` from each service repo and `ci/qa-sentinel/tests.gitlab-ci.yml` from the test repo (Jenkins: one job per `Jenkinsfile.*`). If your service repos already include a shared CI project, you can include the service template from there once for all services.
+
+**Options that fit most teams:**
+- **Dependency bots:** MRs from branches matching `ci.skipBranches` (default `^renovate/`, `^dependabot/`) get no gap report and no generation. Add your own bot or release branches there and run `qa-sentinel upgrade` to refresh the CI rules.
+- **Generate after deployment, not after merge:** when the tests must run against an environment the change has to be deployed to first, set `QA_GENERATE_AFTER: "deploy"` in the service project and add a job after your deploy job that `extends: .qa-trigger-generation` (the template shows it).
+- **Mocha, vitest, jest:** for its own verification runs, qa-sentinel adds a JUnit reporter (mocha's xunit, vitest's junit, jest-junit if installed) to read per-test results, which replaces the team's reporter in those runs only. Point the run command at the runner without a spec glob (spec paths are added), and keep `spec` out of `.mocharc`; `doctor` checks both.
+- **Test repo inside a monorepo** (e.g. `packages/api-tests`): run `qa-sentinel init` in that folder. The generated CI runs from it and keeps artifacts under it, and the service template finds it through `QA_TESTS_DIR`.
 
 ## 6. Roll out in steps
 

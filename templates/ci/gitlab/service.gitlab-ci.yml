@@ -4,7 +4,7 @@
 #   include:
 #     - project: "my-group/qa-tests"          # your test repo
 #       ref: {{targetBranch}}
-#       file: "ci/qa-sentinel/service.gitlab-ci.yml"
+#       file: "{{testsPrefix}}ci/qa-sentinel/service.gitlab-ci.yml"
 #   variables:
 #     QA_TESTS_PROJECT: "my-group/qa-tests"
 #
@@ -12,7 +12,7 @@
 # The service's name in qa-sentinel.config.yaml must equal $CI_PROJECT_NAME (or set QA_SERVICE_NAME).
 
 variables:
-  QA_SENTINEL_VERSION: "0.7.1"
+  QA_SENTINEL_VERSION: "0.7.2"
   # Where to install qa-sentinel from: set QA_SENTINEL_PACKAGE as a group/project CI/CD variable, e.g.
   # "github:bishnu133/qa-sentinel#main" until it is on npm. Default: qa-sentinel@$QA_SENTINEL_VERSION.
   # (Not defined here on purpose: trigger jobs forward YAML variables downstream, where they override CI/CD variables.)
@@ -42,24 +42,32 @@ variables:
   image: node:22
   variables:
     GIT_DEPTH: 0
+    # The test repo's folder inside its repository (a monorepo package), or the repository itself. A job variable,
+    # so trigger jobs don't forward it downstream.
+    QA_TESTS_DIR: "/tmp/qa-tests{{#if testsSubdir}}/{{testsSubdir}}{{/if}}"
   before_script:
     - npm i -g --no-audit --no-fund --loglevel=error @anthropic-ai/claude-code
     - !reference [.qa-sentinel-install, script]
     - git clone --depth 1 --branch {{targetBranch}} "https://gitlab-ci-token:${CI_JOB_TOKEN}@${CI_SERVER_HOST}/${QA_TESTS_PROJECT}.git" /tmp/qa-tests
     - git -C /tmp/qa-tests remote remove origin   # no token in .git/config for the agent to read
-    - (cd /tmp/qa-tests && npm ci --ignore-scripts)
+    - (cd "$QA_TESTS_DIR" && if [ -f package-lock.json ]; then npm ci --ignore-scripts; else cd /tmp/qa-tests && npm ci --ignore-scripts; fi)
 
 # Phase 1: read-only QA impact comment on every MR. Never blocks the MR.
 qa-gap-report:
   extends: .qa-sentinel
   stage: test
   rules:
+{{#if skipBranchesRe}}
+    # ci.skipBranches (dependency bots): no gap report.
+    - if: $CI_MERGE_REQUEST_SOURCE_BRANCH_NAME =~ /{{skipBranchesRe}}/
+      when: never
+{{/if}}
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
   allow_failure: true
   interruptible: true
   script:
     - >
-      qa-sentinel -C /tmp/qa-tests gap-report
+      qa-sentinel -C "$QA_TESTS_DIR" gap-report
       --service "$QA_SERVICE_NAME" --service-path "$CI_PROJECT_DIR"
       --base "$CI_MERGE_REQUEST_DIFF_BASE_SHA" --head "$CI_COMMIT_SHA" --checkout
       --out "$CI_PROJECT_DIR/qa-gap-report.md" --post
@@ -69,13 +77,17 @@ qa-gap-report:
     expire_in: 2 weeks
 
 {{#if isMaintenance}}
-# Phase 2: after merge to the default branch, ask the test repo to generate/update API tests.
-qa-trigger-generation:
-  stage: test
-  rules:
-    - if: $CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
-    # Re-run by hand: Build › Pipelines › New pipeline on the default branch (generates for its latest commit).
-    - if: $CI_PIPELINE_SOURCE == "web" && $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+# Phase 2: ask the test repo to generate/update tests for the merged change.
+# By default this runs right after the merge. If the tests must run against an environment the change is deployed to
+# first (dev/SIT), set QA_GENERATE_AFTER: "deploy" in this project and add a job after your deploy job:
+#
+#   qa-generate-after-deploy:
+#     extends: .qa-trigger-generation
+#     stage: <a stage after deploy>
+#     needs: [<your deploy job>]
+#     rules:
+#       - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+.qa-trigger-generation:
   # QA_SERVICE_NAME (global, above) is forwarded as-is; redefining it here as "$QA_SERVICE_NAME" would send the
   # literal text "$QA_SERVICE_NAME" downstream.
   variables:
@@ -85,4 +97,19 @@ qa-trigger-generation:
   trigger:
     project: "$QA_TESTS_PROJECT"
     branch: {{targetBranch}}
+
+qa-trigger-generation:
+  extends: .qa-trigger-generation
+  stage: test
+  rules:
+    - if: $QA_GENERATE_AFTER == "deploy"
+      when: never
+{{#if skipBranchesMergeRe}}
+    # ci.skipBranches: a merge commit names its branch.
+    - if: $CI_COMMIT_MESSAGE =~ /Merge branch '(?:{{skipBranchesMergeRe}})/
+      when: never
+{{/if}}
+    - if: $CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+    # Re-run by hand: Build › Pipelines › New pipeline on the default branch (generates for its latest commit).
+    - if: $CI_PIPELINE_SOURCE == "web" && $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
 {{/if}}

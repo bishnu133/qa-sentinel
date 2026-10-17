@@ -7,7 +7,7 @@ import { matchesAny } from "../fsutil.js";
 import { formatUsage } from "../claude.js";
 import { ARTIFACT_GLOBS, createRunDir, findService, startManifest, writeManifest } from "../run.js";
 import { checkServiceUntouched, diffSnapshots, findingsMarkdown, snapshotTree, type Finding } from "../guardrails.js";
-import { requirementsLine, resolveRequirements, storyMarkdown } from "../requirements.js";
+import { requirementsLine, resolveRequirements, skippedBranch, storyMarkdown } from "../requirements.js";
 import { gitlabContext, gitlabMrFromEnv } from "../scm/gitlab.js";
 import { assembleFeature } from "../feature/manifest.js";
 import { publish } from "../reporting/publish.js";
@@ -53,7 +53,7 @@ export async function gapReportCommand(o: GapReportOptions): Promise<{ report: s
     sp.notes.forEach((n) => log.warn(n));
     if (!sp.parts.length) throw new Error(`No service changes found for ${o.story}: no branch or commit message mentions it in the service repos`);
     parts = sp.parts;
-    for (const p of parts) atLeast(p.repo, p.cs.head, Boolean(o.checkout));
+    for (const p of parts) atLeast(p.repo, p.cs.head, Boolean(o.checkout), cwd);
     ({ service, cs, relevant } = combinedChange(o.story, parts));
     repo = parts[0].repo;
     log.step(`story ${o.story}: ${parts.map((p) => `${p.service.name} (${p.relevant.length} file(s)${p.merged ? "" : ", not merged"})`).join(", ")}`);
@@ -63,7 +63,7 @@ export async function gapReportCommand(o: GapReportOptions): Promise<{ report: s
     if (!isGitRepo(repo)) throw new Error(`${repo} is not a git repository`);
     cs = changeSet(repo, o.base ?? mr.base ?? `origin/${c.ci.targetBranch}`, o.head ?? "HEAD");
     // The agent reads the working tree, so it must be exactly the commit whose diff it analyses.
-    ensureAtCommit(repo, cs.head, Boolean(o.checkout));
+    ensureAtCommit(repo, cs.head, Boolean(o.checkout), cwd);
     relevant = cs.files.filter((f) => !matchesAny(f, c.agent.skipPaths));
   }
 
@@ -75,6 +75,13 @@ export async function gapReportCommand(o: GapReportOptions): Promise<{ report: s
     return { report, skipped: true, exitCode: 0 };
   }
 
+  const bot = o.story ? undefined : skippedBranch(c, mr.sourceBranch, process.env.CI_MERGE_REQUEST_SOURCE_BRANCH_NAME, process.env.gitlabSourceBranch);
+  if (bot) {
+    const report = `### QA impact – ${service.name} · skipped\n**Verdict:** changes from \`${bot}\` (listed in ci.skipBranches) get no gap report.\n`;
+    fs.writeFileSync(out, report);
+    log.ok(`${bot} is in ci.skipBranches; skipped`);
+    return { report, skipped: true, exitCode: 0 };
+  }
   const req = await resolveRequirements(c, {
     storyFile: o.storyFile,
     mr: { title: mr.title, description: mr.description, url: mr.url, sourceBranch: mr.sourceBranch },

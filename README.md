@@ -107,7 +107,7 @@ Risk is a fixed rule that you can read: **critical** for auth, money or personal
 
 ```bash
 # in your test repo; service repos are siblings in the same workspace folder
-npm i -g @anthropic-ai/claude-code qa-sentinel
+npm i -g @anthropic-ai/claude-code qa-sentinel   # until it is on npm: npm i -g github:bishnu133/qa-sentinel#v0.7.2
 
 qa-sentinel init            # detects framework, tests, services; asks a few questions (level 1 by default)
 qa-sentinel learn           # agent learns your conventions + drafts test-map.yaml → review with git diff
@@ -311,6 +311,7 @@ The order follows external review #1 ([response](docs/REVIEW-RESPONSE-1.md)):
 | **v0.4** ✅ | Plain-language Jira comments, lower-environment runs before the MR, Showcase evidence on the story (once), feature manifests with deployment readiness |
 | **v0.5** ✅ | Web (Playwright UI, page objects first, page snapshots for the agent), workflow planner (API-first setup graphs), video evidence, optional [Bubblegum](https://github.com/bishnu133/bubblegum) healing |
 | **v0.6** ✅ | One showcase video + evidence PDF per story, Mobile (WebdriverIO + Appium), tech scope / expected results and "is the story built?", story review, story-wide runs, bug cards, flaky retry, tag backfill, accessibility checks, metrics |
+| **v0.7.2** ✅ | Generated OpenAPI specs (`openapiCommand`), Mocha/vitest/jest test repos with per-test results, test repos inside a monorepo, skipping dependency-bot changes, generation after deployment, npm-ready package |
 | **v0.7** ✅ | Learning from review (`lessons`, merged-without-edits by month), mobile end to end in the sandbox (native Android app, SHOP-109, emulator CI) |
 | Later | App screen snapshots for the agent, iOS and a device farm, mutation checks in the benchmark, alternative engines |
 

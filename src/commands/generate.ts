@@ -6,7 +6,7 @@ import { matchesAny } from "../fsutil.js";
 import { formatUsage } from "../claude.js";
 import { useEnvironment, ARTIFACT_GLOBS, VERSION, agentEnv, bashRulesForTests, cleanAgentAnswer, createRunDir, findService, startManifest, testEnv, writeManifest } from "../run.js";
 import { checkContent, checkPaths, checkServiceUntouched, findingsMarkdown, generatePolicy, snapshotTree, violations } from "../guardrails.js";
-import { requirementItems, resolveRequirements, storyMarkdown } from "../requirements.js";
+import { requirementItems, resolveRequirements, skippedBranch, storyMarkdown } from "../requirements.js";
 import { findDiscrepancies, verifyChanges } from "../verification.js";
 import { mrDescription } from "../reporting.js";
 import { generationSummary } from "../reporting/jiraSummary.js";
@@ -81,7 +81,7 @@ export async function generateCommand(o: GenerateOptions): Promise<number> {
 
   let cs: ChangeSet, relevant: string[];
   if (parts) {
-    for (const p of parts) atLeast(p.repo, p.cs.head, Boolean(o.checkout));
+    for (const p of parts) atLeast(p.repo, p.cs.head, Boolean(o.checkout), cwd);
     ({ cs, relevant } = combinedChange(o.story!, parts));
     log.step(`story ${o.story}: ${parts.map((p) => `${p.service.name} (${p.relevant.length} file(s))`).join(", ")}`);
   } else {
@@ -89,7 +89,7 @@ export async function generateCommand(o: GenerateOptions): Promise<number> {
     // GitLab sends 0000… as the "before" SHA for new branches; fall back to the previous commit.
     const baseRef = !o.base || /^0+$/.test(o.base) ? `${headRef}~1` : o.base;
     cs = changeSet(repo, baseRef, headRef);
-    ensureAtCommit(repo, cs.head, Boolean(o.checkout));
+    ensureAtCommit(repo, cs.head, Boolean(o.checkout), cwd);
     relevant = cs.files.filter((f) => !matchesAny(f, c.agent.skipPaths));
   }
   if (relevant.length === 0) {
@@ -108,6 +108,12 @@ export async function generateCommand(o: GenerateOptions): Promise<number> {
     log.warn(`could not fetch requirements: ${(e as Error).message}`);
     return resolveRequirements(c, {});
   });
+  // Dependency-bot merges (ci.skipBranches): no generation. The branch comes from the merged MR or its merge commit.
+  const bot = parts ? undefined : skippedBranch(c, req.sourceBranch, git(repo, ["log", "-1", "--format=%B", cs.head]));
+  if (bot) {
+    log.ok(`${bot} is in ci.skipBranches; nothing to generate`);
+    return 0;
+  }
   if (req.source === "none") {
     if (c.requirements.required) throw new Error("No requirements found for this change and requirements.required is true. Pass --story-file or link the MR/story.");
     log.warn("no requirements found: tests can only be checked against the contract and code");

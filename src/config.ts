@@ -21,7 +21,20 @@ const ServiceSchema = z.object({
   name: z.string(),
   path: z.string().describe("Path to the service repo, relative to the test repo"),
   openapi: z.string().optional().describe("Path to the OpenAPI spec inside the service repo"),
+  /**
+   * For specs generated at build time (tsoa, swagger-jsdoc, springdoc, …): a shell command run in the service repo that
+   * writes the spec to `openapi`, e.g. "npx tsoa spec". qa-sentinel runs it at the base and the head commit (in a
+   * throwaway worktree that shares the repo's node_modules) and diffs the results, so the spec needn't be committed.
+   */
+  openapiCommand: z.string().optional(),
+  openapiCommandTimeoutSeconds: z.number().int().positive().optional(),
   gitlabProject: z.string().optional().describe("GitLab project path of the service, e.g. group/orders-service"),
+  /**
+   * For a service that is a folder of a larger repository (a monorepo): the folder inside that repository, e.g.
+   * services/orders. In CI the service is checked out at the repository root (--service-path), so qa-sentinel joins
+   * this folder onto it; `path` (local) already points at the folder.
+   */
+  subdir: z.string().optional(),
   dependsOn: z.array(z.string()).default([]),
   /** api: a backend service (API tests); web: a front end (web UI tests through page objects); mobile: an app (WebdriverIO + Appium, screen objects). UI layers set data up via the API. */
   kind: z.enum(["api", "web", "mobile"]).default("api"),
@@ -249,6 +262,20 @@ export const ConfigSchema = z.object({
     .default({}),
   ci: z.object({
     platform: z.enum(["gitlab", "jenkins"]),
+    /** MRs from these source branches (regexes) get no gap report and no generation: dependency bots, by default. */
+    skipBranches: z
+      .array(
+        z.string().refine((r) => {
+          try {
+            new RegExp(r);
+          } catch {
+            return false;
+          }
+          // Also written into GitLab rules (RE2, unquoted YAML): plain regex characters only.
+          return /^[A-Za-z0-9_.\-/^$|()?*+[\]\\]+$/.test(r) && !/\(\?[=!<]/.test(r);
+        }, "ci.skipBranches entries must be simple regexes (letters, digits, _ . - / ^ $ | ( ) ? * + [ ] and backslash; no lookarounds or spaces)"),
+      )
+      .default(["^renovate/", "^dependabot/"]),
     scm: z.enum(["gitlab", "github", "none"]).default("gitlab"),
     gitlabUrl: z.string().default("https://gitlab.com"),
     testRepoProject: z

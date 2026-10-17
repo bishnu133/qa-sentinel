@@ -24,7 +24,7 @@ pipeline {
         }
         dir('qa-tests') {
           git url: params.QA_TESTS_REPO, branch: '{{targetBranch}}', credentialsId: 'gitlab-checkout'
-          sh 'npm ci --ignore-scripts && git remote remove origin'
+          sh 'git remote remove origin && cd "./{{testsSubdir}}" && if [ -f package-lock.json ]; then npm ci --ignore-scripts; else (cd "$WORKSPACE/qa-tests" && npm ci --ignore-scripts); fi'
         }
       }
     }
@@ -32,7 +32,7 @@ pipeline {
       steps {
         sh '''
           # Install qa-sentinel from QA_SENTINEL_PACKAGE; a GitHub source is cloned, built and packed first.
-          qa_pkg="${QA_SENTINEL_PACKAGE:-qa-sentinel@0.7.1}"
+          qa_pkg="${QA_SENTINEL_PACKAGE:-qa-sentinel@0.7.2}"
           case "$qa_pkg" in
             github:*|git+https://github.com/*|https://github.com/*)
               src="${qa_pkg#github:}"; src="${src#git+}"; src="${src#https://github.com/}"
@@ -49,7 +49,7 @@ pipeline {
         sh '''
           export PATH="$WORKSPACE/.npm-global/bin:$PATH"
           SERVICE="${QA_SERVICE_NAME:-$JOB_BASE_NAME}"
-          qa-sentinel -C qa-tests gap-report \
+          qa-sentinel -C "qa-tests/{{testsSubdir}}" gap-report \
             --service "$SERVICE" --service-path "$WORKSPACE/service" \
             --base "origin/${gitlabTargetBranch}" --head HEAD --checkout \
             --out "$WORKSPACE/qa-gap-report.md" --post

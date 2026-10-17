@@ -31,3 +31,4 @@
 - The `Install` stage downloads Chromium; the suite stage runs API and web tests together (videos for the showcase are in `test-results/`).
 - Runtime healing (`tests.web.healing: bubblegum`): the suite stage installs the Bubblegum engine and runs with `QA_HEALING=bubblegum`. To list healed steps, run `qa-sentinel healed` after the tests and archive `qa-healed.md` and `qa-healed.json`. For the next generation to fix those page objects, copy `qa-healed.json` into the `qa-sentinel-generate` workspace (Copy Artifact plugin). GitLab does this automatically.
 
+**Test repo inside a monorepo:** the gap-report job handles it. `Jenkinsfile.tests` and `Jenkinsfile.generate` run from the repository root, so wrap their stages in `dir('<folder>') { … }` for now (GitLab templates do this automatically).
