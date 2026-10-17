@@ -42,6 +42,12 @@ const ServiceSchema = z.object({
    */
   contract: ContractSourceSchema.optional(),
   dependsOn: z.array(z.string()).default([]),
+  /**
+   * For a gateway or BFF: which paths it forwards to which service. `path` here is served as `servicePath` there
+   * (default: the same path), e.g. { path: /api/orders, service: orders-service, servicePath: /orders }. A change to
+   * orders-service GET /orders/{id} then also selects tests of this service's GET /api/orders/{id}.
+   */
+  gateway: z.array(z.object({ path: z.string(), service: z.string(), servicePath: z.string().optional(), methods: z.array(z.string()).optional() })).optional(),
   /** api: a backend service (API tests); web: a front end (web UI tests through page objects); mobile: an app (WebdriverIO + Appium, screen objects). UI layers set data up via the API. */
   kind: z.enum(["api", "web", "mobile"]).default("api"),
   /** Web front ends: the routes this service serves (e.g. /orders/new), used when a change doesn't name its page. */
@@ -464,6 +470,10 @@ export const ConfigSchema = z.object({
     if (seen.has(s.name)) ctx.addIssue({ code: "custom", path: ["workspace", "services"], message: `two services are named "${s.name}"; names must be unique` });
     seen.add(s.name);
   }
+  const names = new Set(c.workspace.services.map((s) => s.name));
+  for (const s of c.workspace.services)
+    for (const r of s.gateway ?? [])
+      if (!names.has(r.service)) ctx.addIssue({ code: "custom", path: ["workspace", "services"], message: `${s.name}: gateway route ${r.path} points to "${r.service}", which is not a service in workspace.services` });
 });
 
 export type Config = z.infer<typeof ConfigSchema>;

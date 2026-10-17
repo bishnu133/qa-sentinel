@@ -37,6 +37,8 @@ When the service has an OpenAPI spec (see `qa-sentinel.config.yaml`), compare sp
 
 **Spec-first services.** When context.json has `agreedSpecs`, those files are the agreed API spec (the source of truth the team wrote before the code), and `contractCheck` is qa-sentinel's computed comparison of the implemented spec with it (treat it as fact). The agreed spec outranks the service's own spec: a ❌ mismatch on an endpoint this change touches makes that change's oracle `conflicting` (cite `"source": "openapi"` with the agreed spec's path), unless the story's ACs explicitly change the contract. ➕ extras are code the agreed spec doesn't describe: list them under `specDrift`. When the service has no spec of its own (`contractCheck` says so), compare the code with the agreed spec yourself, field by field, error responses included.
 
+**Gateways and BFFs.** When the service sits behind a gateway or BFF (`gateway` rules in `qa-sentinel.config.yaml`, `upstream` in `test-map.yaml`), tests may call the BFF path rather than the service: an existing test of `bff GET /api/orders/{id}` covers `orders GET /orders/{id}`. Count those tests in `coverage` and `impactedTests`, and name the BFF endpoint in the change's summary when users reach the behaviour through it.
+
 ### Oracle: what is the expected behaviour?
 Use this order of authority. Code shows what the system *does*; it is never by itself proof of what it *should* do.
 1. Acceptance criteria in `story.md` (current and specific)

@@ -1,3 +1,4 @@
+import { exposures } from "../analysis/gateway.js";
 import fs from "node:fs";
 import path from "node:path";
 import { loadConfig, type Config, type ServiceConfig } from "../config.js";
@@ -59,7 +60,7 @@ export async function computeCoverage(cwd: string, c: Config, only?: string, ser
       continue;
     }
     try {
-      r.endpoints.push(...endpointCoverage(s, specOperations(spec.text), index, map));
+      r.endpoints.push(...endpointCoverage(s, specOperations(spec.text), index, map, (op) => exposures(c, s.name, op.endpoint, map as never)));
     } catch (e) {
       r.notes.push(`${s.name}: ${spec.from} could not be read (${(e as Error).message.split("\n")[0]})`);
     }
