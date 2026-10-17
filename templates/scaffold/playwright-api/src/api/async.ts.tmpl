@@ -1,0 +1,37 @@
+/**
+ * Async behaviour (jobs, queues, emails, eventual consistency): poll until the expected state appears, with a bound,
+ * never a fixed sleep. A fixed wait is either too short (flaky) or too long (slow); polling is neither.
+ *
+ *   const order = await pollUntil(() => api.get(`/orders/${id}`).then((r) => r.json()), (o) => o.status === "paid", {
+ *     what: "order to be paid",
+ *   });
+ *
+ * Playwright's own `await expect.poll(() => fetchStatus()).toBe("paid")` does the same for a single value.
+ */
+export interface PollOptions {
+  /** What we're waiting for, for the error message. */
+  what: string;
+  timeoutMs?: number;
+  intervalMs?: number;
+}
+
+export async function pollUntil<T>(read: () => Promise<T>, done: (value: T) => boolean, o: PollOptions): Promise<T> {
+  const timeoutMs = o.timeoutMs ?? Number(process.env.QA_POLL_TIMEOUT_MS ?? 30_000);
+  const intervalMs = o.intervalMs ?? 500;
+  const started = Date.now();
+  let last: T | undefined;
+  let lastError: unknown;
+  for (;;) {
+    try {
+      last = await read();
+      if (done(last)) return last;
+    } catch (e) {
+      lastError = e;
+    }
+    if (Date.now() - started > timeoutMs) {
+      const seen = lastError ? `last error: ${(lastError as Error).message}` : `last value: ${JSON.stringify(last)?.slice(0, 300)}`;
+      throw new Error(`timed out after ${timeoutMs} ms waiting for ${o.what} (${seen})`);
+    }
+    await new Promise((r) => setTimeout(r, Math.min(intervalMs * 2 ** Math.floor((Date.now() - started) / 5000), 5000)));
+  }
+}

@@ -77,6 +77,12 @@ export const ConfigSchema = z.object({
     language: z.enum(["typescript", "javascript"]).default("typescript"),
     /** Manual test cards (one markdown file per story) for requirements that can't be automated. */
     manualDir: z.string().default("manual-tests"),
+    /**
+     * Test hooks the system offers for behaviour tests can't reach directly: run a scheduled job now, move the
+     * clock, read the emails sent, publish a queue message. Agents use these instead of waiting, and story review
+     * flags requirements that need a hook nobody has built yet.
+     */
+    hooks: z.array(z.object({ name: z.string(), how: z.string().describe("e.g. POST /test/jobs/{job}/run (test environments only)"), notes: z.string().optional() })).default([]),
     api: z.object({
       framework: z.enum(API_FRAMEWORKS),
       dir: z.string().default("tests/api"),

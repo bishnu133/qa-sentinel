@@ -7,7 +7,7 @@ import type { RequirementSnapshot } from "../requirements.js";
 import { type RunDir, agentEnv } from "../run.js";
 
 /** Story review before development: a read-only agent judges the story itself (no code involved). */
-export const FINDING_TYPES = ["ambiguous", "untestable", "missing-negative", "missing-edge", "scope-without-ac", "conflict", "missing-nfr", "other"] as const;
+export const FINDING_TYPES = ["ambiguous", "untestable", "missing-negative", "missing-edge", "scope-without-ac", "conflict", "missing-nfr", "needs-test-hook", "other"] as const;
 
 export const StoryReviewSchema = z
   .object({
@@ -43,6 +43,9 @@ export async function reviewStory(i: { cwd: string; c: Config; run: RunDir; engi
       prompt: [
         "Use the review-story skill.",
         `The story: ${i.run.rel}/story.md.${i.knowledge ? ` Team domain rules: ${i.knowledge}.` : ""}`,
+        i.c.tests.hooks.length
+          ? `Test hooks the system already offers (tests.hooks in qa-sentinel.config.yaml): ${i.c.tests.hooks.map((h) => `${h.name} (${h.how})`).join("; ")}.`
+          : "The system offers no test hooks yet (tests.hooks in qa-sentinel.config.yaml is empty).",
         `Write your review as JSON to ${out}. That is the only file you may write. Then answer "done".`,
         ...extra,
       ].join("\n"),
@@ -81,6 +84,7 @@ const LABEL: Record<(typeof FINDING_TYPES)[number], string> = {
   "scope-without-ac": "Scope without an AC",
   conflict: "Conflict",
   "missing-nfr": "Missing non-functional need",
+  "needs-test-hook": "Needs a test hook",
   other: "Other",
 };
 
