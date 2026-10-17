@@ -15,7 +15,12 @@ export interface ManualCard {
   title: string;
   file: string;
   line: number;
+  /** From the card's Result line, once a tester ticked it: pass or fail. Unset = not run yet. */
+  result?: "pass" | "fail";
 }
+
+/** "☒ pass", "[x] pass", "✅ pass", "pass ✔" … ticked boxes in the Result line. */
+const TICK = /(?:☒|☑|✅|✔|\[x\])\s*(pass|fail)|(pass|fail)\s*(?:☒|☑|✅|✔|\[x\])/i;
 
 const MARKER = /<!--\s*qa-sentinel:\s*([^>]*?)\s*-->/;
 
@@ -48,7 +53,12 @@ export function parseCards(file: string, text: string): ManualCard[] {
     if (!m) return;
     const tags = Object.fromEntries([...m[1].matchAll(/@([\w-]+):(\S+)/g)].map((x) => [x[1], x[2]]));
     const heading = [...lines.slice(0, i)].reverse().find((h) => /^#{1,4}\s/.test(h)) ?? "";
+    const next = lines.slice(i + 1).findIndex((x) => MARKER.test(x) || /^#{1,2}\s/.test(x));
+    const resultLine = lines.slice(i + 1, next < 0 ? undefined : i + 1 + next).find((x) => /\*\*Result:\*\*/i.test(x)) ?? "";
+    const tick = resultLine.match(TICK);
+    const result = tick ? ((tick[1] ?? tick[2]).toLowerCase() as "pass" | "fail") : undefined;
     out.push({
+      ...(result ? { result } : {}),
       story: tags.story,
       acs: (tags.ac ?? "").split(",").filter(Boolean).map((a: string) => a.toUpperCase()),
       title: heading.replace(/^#+\s*/, "").replace(/^[A-Z]{1,4}-\d+(,\s*[A-Z]{1,4}-\d+)*:\s*/, ""),

@@ -135,12 +135,13 @@ program
   .option("--service <name>", "the service just deployed (its stories come from its commits)")
   .option("--service-path <path>", "where that service is checked out (CI)")
   .option("--sha <sha>", "the deployed commit of --service")
+  .option("--before <sha>", "the commit deployed before it (only stories in between count)")
   .option("--wait <minutes>", "keep checking this long while a part isn't deployed yet", (v) => Number(v))
   .option("--mrs", "also re-verify open agent MRs that were waiting for deployment (GitLab)")
   .option("--post", "comment the results on the Jira stories")
   .option("-o, --out <file>", "markdown report", "qa-post-deploy.md")
   .action(
-    wrap(async (o) => postDeployCommand({ cwd: cwd(), env: o.env, stories: o.story, service: o.service, servicePath: o.servicePath, sha: o.sha, waitMinutes: o.wait, mrs: o.mrs, post: o.post, out: o.out })),
+    wrap(async (o) => postDeployCommand({ cwd: cwd(), env: o.env, stories: o.story, service: o.service, servicePath: o.servicePath, sha: o.sha, before: o.before, waitMinutes: o.wait, mrs: o.mrs, post: o.post, out: o.out })),
   );
 
 program

@@ -60,7 +60,7 @@ export async function computeCoverage(cwd: string, c: Config, only?: string, ser
       continue;
     }
     try {
-      r.endpoints.push(...endpointCoverage(s, specOperations(spec.text), index, map, (op) => exposures(c, s.name, op.endpoint, map as never)));
+      r.endpoints.push(...endpointCoverage(s, specOperations(spec.text), index, map, (op) => [...exposures(c, s.name, op.endpoint, map as never), ...(op.fullEndpoint !== op.endpoint ? exposures(c, s.name, op.fullEndpoint, map as never) : [])]));
     } catch (e) {
       r.notes.push(`${s.name}: ${spec.from} could not be read (${(e as Error).message.split("\n")[0]})`);
     }

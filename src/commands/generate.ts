@@ -309,7 +309,7 @@ export async function generateCommand(o: GenerateOptions): Promise<number> {
   // Tests written for a change that isn't deployed where they ran fail for that reason alone: say so (C1).
   const deployBase = process.env[c.tests.api.baseUrlEnv];
   const deployNeeds = (parts ? parts.map((p) => ({ service: p.service, sha: p.cs.head, repo: p.repo })) : o.backfill ? [] : [{ service, sha: cs.head, repo }]).filter((n) => n.service.version);
-  const deployStates = deployBase && deployNeeds.length ? await deploymentStates(deployNeeds, environment ?? "test environment", deployBase) : [];
+  const deployStates = deployBase && deployNeeds.length ? await deploymentStates(deployNeeds, environment ?? "test environment", deployBase, gitlabContext(c.ci.gitlabUrl)) : [];
   const verification = applyDeploymentGate(verified0, deployStates);
   if (verification.status === "WAITING_FOR_DEPLOYMENT") log.warn(`the change isn't deployed on ${environment ?? deployBase} yet: ${notDeployed(deployStates).map((d) => d.service).join(", ")}; failed tests may only be waiting for it`);
   const discrepancies = findDiscrepancies(cwd, startSha, changes);

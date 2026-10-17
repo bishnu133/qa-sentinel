@@ -115,6 +115,7 @@ qa-gap-report:
     QA_POST_DEPLOY: "true"
     QA_SERVICE_PROJECT: "$CI_PROJECT_PATH"
     QA_SERVICE_SHA: "$CI_COMMIT_SHA"
+    QA_SERVICE_BEFORE_SHA: "$CI_COMMIT_BEFORE_SHA"
   trigger:
     project: "$QA_TESTS_PROJECT"
     branch: {{targetBranch}}

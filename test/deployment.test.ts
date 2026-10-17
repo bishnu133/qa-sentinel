@@ -100,3 +100,20 @@ describe("post-deploy (C2)", () => {
     expect(Date.now() - t0).toBeLessThan(20_000);
   });
 });
+
+describe("deployment ancestry that can't be decided", () => {
+  it("is unknown, not 'not deployed', so real failures stay FAILED", async () => {
+    const { checkDeployment } = await import("../src/feature/manifest.js");
+    const repo = fs.mkdtempSync(path.join(os.tmpdir(), "qas-anc-"));
+    sh(repo, "init", "-q", "-b", "main");
+    sh(repo, "commit", "-q", "--allow-empty", "-m", "change");
+    const change = sh(repo, "rev-parse", "HEAD");
+    deployed = "0123456789abcdef0123456789abcdef01234567"; // a later commit this clone doesn't have
+    const svc = { name: "orders", path: ".", dependsOn: [], kind: "api", routes: [], version: { path: "/orders/version", field: "commit" } } as never;
+    const d = await checkDeployment({ service: "orders", source: "git", sha: change, merged: true }, svc, "sit", base, repo);
+    expect(d?.includesChange).toBeUndefined();
+    const noClone = await checkDeployment({ service: "orders", source: "git", sha: change, merged: true }, svc, "sit", base);
+    expect(noClone?.includesChange).toBeUndefined();
+    expect(applyDeploymentGate(report("FAILED"), [{ service: "orders", sha: change, deployed, includesChange: undefined }]).status).toBe("FAILED");
+  });
+});

@@ -109,6 +109,8 @@ export function generationSummary(i: {
       "pending-only": "⏸️ Test written, waiting for a product fix",
       "not-traced": "⬜ No test yet",
       manual: "✋ Checked by hand (manual test card)",
+      "manual-pending": "✋ To check by hand (card not run yet)",
+      "manual-failed": "❌ Failed when checked by hand",
     };
     lines.push("", "| Acceptance criterion | Status | Tests |", "| --- | --- | --- |");
     for (const r of i.trace) lines.push(`| ${r.ac}${i.acText?.get(r.ac) ? `: ${short(i.acText.get(r.ac)!)}` : ""} | ${words[r.status]} | ${r.active.length} passing${r.pending.length ? `, ${r.pending.length} waiting` : ""} |`);

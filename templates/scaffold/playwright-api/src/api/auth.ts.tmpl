@@ -17,10 +17,14 @@ export interface Role {
   totpSeed?: string;
 }
 
-/** The credentials of a role, from QA_<ROLE>_USER / QA_<ROLE>_PASSWORD / QA_<ROLE>_TOTP_SEED (or tests.auth.roles). */
+/** Roles whose variables tests.auth.roles names explicitly: [user, password, totp seed?] (written by qa-sentinel init). */
+const CONFIGURED: Record<string, string[]> = {{authRolesJson}};
+
+/** The credentials of a role: the variables tests.auth.roles names, else QA_<ROLE>_USER / _PASSWORD / _TOTP_SEED. */
 export function role(name: string): Role {
   const key = name.toUpperCase().replace(/[^A-Z0-9]+/g, "_");
-  return { user: process.env[`QA_${key}_USER`], password: process.env[`QA_${key}_PASSWORD`], totpSeed: process.env[`QA_${key}_TOTP_SEED`] };
+  const [u, p, t] = CONFIGURED[name] ?? [`QA_${key}_USER`, `QA_${key}_PASSWORD`, `QA_${key}_TOTP_SEED`];
+  return { user: process.env[u], password: process.env[p], totpSeed: t ? process.env[t] : undefined };
 }
 
 const tokens = new Map<string, { token: string; expires: number }>();
@@ -30,7 +34,7 @@ export async function tokenFor(request: APIRequestContext, name: string): Promis
   const hit = tokens.get(name);
   if (hit && hit.expires > Date.now() + 30_000) return hit.token;
   const r = role(name);
-  if (!r.user) throw new Error(`no credentials for role "${name}": set QA_${name.toUpperCase().replace(/[^A-Z0-9]+/g, "_")}_USER and _PASSWORD`);
+  if (!r.user) throw new Error(`no credentials for role "${name}": set ${(CONFIGURED[name] ?? [`QA_${name.toUpperCase().replace(/[^A-Z0-9]+/g, "_")}_USER`, "…_PASSWORD"]).slice(0, 2).join(" and ")}`);
   const got = await login(request, r);
   tokens.set(name, got);
   return got.token;

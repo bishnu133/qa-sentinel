@@ -147,7 +147,7 @@ qa-agent-mr-checks:
   artifacts:
     when: always
     reports:
-      junit: [{{testsPrefix}}.qa-sentinel/runs/*/junit*.xml{{#if mobileEnabled}}, {{testsPrefix}}.qa-sentinel/runs/*/junit-mobile/*.xml{{/if}}]
+      junit: [{{testsPrefix}}.qa-sentinel/runs/*/junit*.xml{{#if mobileEnabled}}, {{testsPrefix}}.qa-sentinel/runs/*/junit-mobile*/*.xml{{/if}}]
     paths: [{{testsPrefix}}qa-verify.md, {{testsPrefix}}.qa-sentinel/runs/, {{testsPrefix}}playwright-report/]
     expire_in: 2 weeks
 
@@ -270,6 +270,8 @@ qa-lessons:
 qa-post-deploy:
   extends: .qa-node
   stage: test
+  variables:
+    GIT_DEPTH: "0"   # agent MR branches are compared with the target branch
   rules:
     - if: $QA_POST_DEPLOY == "true" && $QA_ENVIRONMENT
   script:
@@ -280,7 +282,7 @@ qa-post-deploy:
     # Exit 75: a part of a story isn't deployed yet; the schedule (or the next deployment) checks again.
     - |
       set +e
-      qa-sentinel post-deploy --env "$QA_ENVIRONMENT" --post --mrs --wait "${QA_POST_DEPLOY_WAIT:-20}" ${QA_SERVICE_NAME:+--service "$QA_SERVICE_NAME" --service-path "/tmp/services/$QA_SERVICE_NAME" --sha "$QA_SERVICE_SHA"}
+      qa-sentinel post-deploy --env "$QA_ENVIRONMENT" --post --mrs --wait "${QA_POST_DEPLOY_WAIT:-20}" ${QA_SERVICE_NAME:+--service "$QA_SERVICE_NAME" --service-path "/tmp/services/$QA_SERVICE_NAME" --sha "$QA_SERVICE_SHA" --before "${QA_SERVICE_BEFORE_SHA:-0}"}
       code=$?
       if [ "$code" = "75" ]; then echo "Waiting for deployment: checked again by the next deployment or schedule."; exit 0; fi
       exit $code

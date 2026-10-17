@@ -108,13 +108,21 @@ export function fetchReviewRefs(repo: string): boolean {
   return any;
 }
 
-/** The review (MR/PR) head that contains one of these commits: the branch as the reviewer left it. */
+/**
+ * The review (MR/PR) head of the agent's own MR: of the heads that contain the agent's commit, the one with the fewest
+ * commits after it. A later, unrelated MR branched from the target after the fast-forward contains the agent's commit
+ * too, but always with more commits after it (the target's, plus its own).
+ */
 function reviewHead(repo: string, shas: string[]): { head: string; agentSha: string } | undefined {
+  let best: { head: string; agentSha: string; n: number } | undefined;
   for (const sha of shas) {
-    const ref = tryGit(repo, ["for-each-ref", "--format=%(refname)", "--contains", sha, `${REVIEW_REFS}/`]).split("\n").filter(Boolean)[0];
-    if (ref) return { head: tryGit(repo, ["rev-parse", ref]).trim(), agentSha: sha };
+    for (const ref of tryGit(repo, ["for-each-ref", "--format=%(refname)", "--contains", sha, `${REVIEW_REFS}/`]).split("\n").filter(Boolean)) {
+      const head = tryGit(repo, ["rev-parse", ref]).trim();
+      const n = Number(tryGit(repo, ["rev-list", "--count", `${sha}..${head}`]).trim() || "0");
+      if (!best || n < best.n) best = { head, agentSha: sha, n };
+    }
   }
-  return undefined;
+  return best && { head: best.head, agentSha: best.agentSha };
 }
 
 /** The subjects qa-sentinel gives its own commits (generate, tag). Squash and merge commits that quote them are not originals. */

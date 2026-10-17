@@ -70,8 +70,17 @@ describe("automatability triage and manual test cards (A3)", () => {
     fs.writeFileSync(file, fs.readFileSync(file, "utf8").replace("Open the email", "Open the email on a phone")); // QA edits it
     expect(writeCards(repo, "manual-tests", "SHOP-1", "SHOP-1", [card]).added).toBe(0);
     expect(fs.readFileSync(file, "utf8")).toContain("on a phone");
-    const cards = readManualCards(repo, "manual-tests");
+    let cards = readManualCards(repo, "manual-tests");
     expect(cards).toEqual([{ story: "SHOP-1", acs: ["AC-2"], title: "Confirmation email looks right", file: "manual-tests/SHOP-1.md", line: 6 }]);
+    const index0 = indexSource("tests/api/a.spec.ts", 'test("books @story:SHOP-1 @ac:AC-1", async () => { expect(1).toBe(1); });');
+    // Not run yet: "to check by hand", and the showcase waits for it.
+    expect(traceStory(index0, "SHOP-1", [{ id: "AC-2" }], cards).acs[0].status).toBe("manual-pending");
+    const c0 = ConfigSchema.parse({ version: 1, mode: "scratch", project: { name: "p" }, tests: { api: { framework: "playwright", runCommand: "x" } }, ci: { platform: "gitlab" } });
+    expect(assessStory(c0, index0, [{ file: "tests/api/a.spec.ts", line: 1, title: "books", status: "passed", evidence: [] }], "SHOP-1", [{ id: "AC-1" }, { id: "AC-2" }], cards).blockers).toEqual(["AC-2: its manual test card hasn't been run yet (tick the Result line)"]);
+    // The tester ticks pass.
+    fs.writeFileSync(file, fs.readFileSync(file, "utf8").replace("☐ pass", "☒ pass"));
+    cards = readManualCards(repo, "manual-tests");
+    expect(cards[0].result).toBe("pass");
     expect(parseCards("x.md", "## AC-9: t\n<!-- qa-sentinel: @story:S-1 @ac:AC-9 -->")[0].acs).toEqual(["AC-9"]);
 
     const index = indexSource("tests/api/a.spec.ts", 'test("books @story:SHOP-1 @ac:AC-1", async () => { expect(1).toBe(1); });');

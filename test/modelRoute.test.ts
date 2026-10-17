@@ -12,7 +12,7 @@ describe("model route (Bedrock, Vertex, gateways, managed settings)", () => {
   it("names the route and what is missing", () => {
     expect(modelRoute({}, none, home)).toMatchObject({ kind: "login" });
     expect(modelRoute({ ANTHROPIC_API_KEY: "sk-ant-x" }, none, home)).toMatchObject({ kind: "api-key" });
-    expect(modelRoute({ CLAUDE_CODE_USE_BEDROCK: "1" }, none, home)).toMatchObject({ kind: "bedrock", missing: ["AWS_REGION", expect.stringMatching(/AWS credentials/)] });
+    expect(modelRoute({ CLAUDE_CODE_USE_BEDROCK: "1" }, none, home)).toMatchObject({ kind: "bedrock", missing: ["AWS_REGION"], unsure: [expect.stringMatching(/instance role/)] });
     expect(modelRoute({ CLAUDE_CODE_USE_BEDROCK: "1", AWS_REGION: "ap-southeast-1", AWS_PROFILE: "qa" }, none, home)).toMatchObject({ kind: "bedrock", missing: [] });
     expect(modelRoute({ CLAUDE_CODE_USE_VERTEX: "1", CLOUD_ML_REGION: "us-east5" }, none, home).missing).toEqual(["ANTHROPIC_VERTEX_PROJECT_ID"]);
     expect(modelRoute({ CLAUDE_CODE_USE_BEDROCK: "0", ANTHROPIC_API_KEY: "k" }, none, home).kind).toBe("api-key");

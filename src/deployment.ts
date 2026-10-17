@@ -4,6 +4,7 @@ import type { Config, ServiceConfig } from "./config.js";
 import { checkDeployment } from "./feature/manifest.js";
 import { git } from "./git.js";
 import type { VerificationReport } from "./verification.js";
+import type { GitLabContext } from "./scm/gitlab.js";
 
 /**
  * Is the change the tests were written for running in the environment they ran against? Tests written for a change
@@ -25,11 +26,11 @@ export interface DeploymentState {
   error?: string;
 }
 
-export async function deploymentStates(needs: DeploymentNeed[], environment: string, baseUrl: string): Promise<DeploymentState[]> {
+export async function deploymentStates(needs: DeploymentNeed[], environment: string, baseUrl: string, gitlab?: GitLabContext): Promise<DeploymentState[]> {
   const out: DeploymentState[] = [];
   for (const n of needs) {
     if (!n.service.version) continue; // can't tell: not counted either way
-    const d = await checkDeployment({ service: n.service.name, source: "git", sha: n.sha, merged: true }, n.service, environment, baseUrl, n.repo && fs.existsSync(n.repo) ? n.repo : undefined);
+    const d = await checkDeployment({ service: n.service.name, source: "git", sha: n.sha, merged: true }, n.service, environment, baseUrl, n.repo && fs.existsSync(n.repo) ? n.repo : undefined, gitlab);
     out.push({ service: n.service.name, sha: n.sha, deployed: d?.sha, includesChange: d?.includesChange, error: d?.error });
   }
   return out;

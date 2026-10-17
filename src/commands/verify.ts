@@ -1,3 +1,4 @@
+import { gitlabContext } from "../scm/gitlab.js";
 import { useEnvironment } from "../run.js";
 import fs from "node:fs";
 import path from "node:path";
@@ -59,7 +60,7 @@ export async function verifyCommand(o: VerifyOptions): Promise<number> {
   // Agent branches name the service commits they were written for: are those deployed where the tests ran? (C1)
   const needs = needsFromCommits(c, cwd, base);
   const baseUrl = process.env[c.tests.api.baseUrlEnv];
-  const report = applyDeploymentGate(ran, baseUrl && needs.length ? await deploymentStates(needs, environment ?? "test environment", baseUrl) : []);
+  const report = applyDeploymentGate(ran, baseUrl && needs.length ? await deploymentStates(needs, environment ?? "test environment", baseUrl, gitlabContext(c.ci.gitlabUrl)) : []);
   const discrepancies = findDiscrepancies(cwd, base, changes);
   const md = [
     verificationMarkdown(report),

@@ -161,6 +161,15 @@ describe("metrics with merge request heads (GitLab refs/merge-requests/*/head)",
     sh(repo, "merge", "-q", "--ff-only", "qa-sentinel/ff2");
     sh(repo, "branch", "-q", "-D", "qa-sentinel/ff2");
 
+    // A later human MR, branched after MR 2 was merged, touching MR 2's spec: not the agent MR's review.
+    sh(repo, "checkout", "-q", "-b", "human", "main");
+    write(repo, "tests/ff2.spec.ts", "// later work by someone else\n");
+    sh(repo, "commit", "-qam", "later change");
+    sh(repo, "push", "-q", "origin", "human:refs/merge-requests/10/head");
+    sh(repo, "checkout", "-q", "main");
+    sh(repo, "merge", "-q", "--ff-only", "human");
+    sh(repo, "branch", "-q", "-D", "human");
+
     // MR 3: squash, reviewer edit, source branch deleted (only the MR ref keeps the commits).
     agent(repo, "qa-sentinel/sq", "tests/sq.spec.ts", "run-sq");
     const msg = sh(repo, "log", "-1", "--format=%B");

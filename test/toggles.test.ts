@@ -73,3 +73,17 @@ fs.mkdirSync("out", { recursive: true }); fs.writeFileSync("out/junit.xml", "<te
     expect(fs.readFileSync(path.join(dir, "new-checkout"), "utf8").trim()).toBe("off");
   });
 });
+
+describe("toggle command safety", () => {
+  it("never puts get output or odd names into a shell command", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "qas-flags-"));
+    const marker = path.join(dir, "PWNED");
+    const c = ConfigSchema.parse({ version: 1, mode: "existing", project: { name: "p" }, tests: { api: { framework: "other", runCommand: "x" } }, ci: { platform: "gitlab" }, toggles: { environments: { sit: { get: `echo 'off; touch ${marker}'`, set: `echo {value} > ${dir}/{toggle}` } }, defaults: { x: "off" } } });
+    const r = await withToggles(c, "sit", { x: "on" }, process.env, async () => "ran");
+    expect(r.result).toBe("ran");
+    expect(fs.existsSync(marker)).toBe(false);
+    expect(fs.readFileSync(path.join(dir, "x"), "utf8").trim()).toBe("off"); // back to the configured default
+    expect(r.problems.join(" ")).toMatch(/not a plain value/);
+    await expect(withToggles(c, "sit", { "a;b": "on" }, process.env, async () => 1)).rejects.toThrow(/refusing toggle/);
+  });
+});

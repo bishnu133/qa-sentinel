@@ -14,7 +14,7 @@ import { isGitRepo } from "../git.js";
 import { log } from "../log.js";
 import { SECRET_NAME } from "../env.js";
 import { currentUser, getProject, gitlabContext } from "../scm/gitlab.js";
-import { junitReporter, layers, runCommandRunsEverything, runnerOf } from "../layers.js";
+import { junitReporter, layers, roleEnvNames, runCommandRunsEverything, runnerOf } from "../layers.js";
 import { packageScripts } from "../verification.js";
 
 type Level = "ok" | "warn" | "fail";
@@ -48,6 +48,7 @@ export function runChecks(cwd: string, env: NodeJS.ProcessEnv = process.env): Ch
   // Which way the agents reach the model: billing and data residency follow it, so say it plainly.
   const route = modelRoute(env);
   if (route.missing.length) add("fail", `model route: ${route.label}`, `missing ${route.missing.join("; ")}`);
+  else if (route.unsure?.length) add("warn", `model route: ${route.label}`, route.unsure.join("; "))
   else if (route.kind === "login") add("warn", `model route: ${route.label}`, "fine locally; CI needs ANTHROPIC_API_KEY, Bedrock (CLAUDE_CODE_USE_BEDROCK) or Vertex (CLAUDE_CODE_USE_VERTEX)");
   else add("ok", `model route: ${route.label}`, route.managed ? `from ${route.managed}: runs are billed to whoever owns that setup` : undefined);
 
@@ -120,8 +121,7 @@ export function runChecks(cwd: string, env: NodeJS.ProcessEnv = process.env): Ch
   const auth = c.tests.auth;
   if (auth.helpers) add(fs.existsSync(path.join(cwd, auth.helpers)) ? "ok" : "warn", `login helpers (${auth.helpers})`, fs.existsSync(path.join(cwd, auth.helpers)) ? undefined : "the path in tests.auth.helpers doesn't exist");
   for (const r of auth.roles) {
-    const k = r.name.toUpperCase().replace(/[^A-Z0-9]+/g, "_");
-    const names = r.env.length ? r.env : [`QA_${k}_USER`, `QA_${k}_PASSWORD`];
+    const names = roleEnvNames(r).filter((n) => !/_TOTP_SEED$/.test(n));
     const missing = names.filter((n) => !env[n]);
     add(missing.length ? "warn" : "ok", `role ${r.name}: credentials in the environment`, missing.length ? `set ${missing.join(", ")} (masked CI variables)` : undefined);
   }

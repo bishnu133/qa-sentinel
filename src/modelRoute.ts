@@ -17,6 +17,8 @@ export interface ModelRoute {
   managed?: string;
   /** Variables the route needs that are missing. */
   missing: string[];
+  /** Things that can't be checked from here and may be fine (e.g. an instance role instead of AWS keys). */
+  unsure?: string[];
   /** One line for doctor. */
   label: string;
 }
@@ -56,8 +58,10 @@ export function modelRoute(env: NodeJS.ProcessEnv = process.env, managed = readM
   const by = managed.file && Object.keys(managed.env).length ? managed.file : undefined;
   if (truthy(e.CLAUDE_CODE_USE_BEDROCK)) {
     const creds = ["AWS_ACCESS_KEY_ID", "AWS_PROFILE", "AWS_BEARER_TOKEN_BEDROCK", "AWS_WEB_IDENTITY_TOKEN_FILE", "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI", "AWS_CONTAINER_CREDENTIALS_FULL_URI"].some((k) => e[k]) || fs.existsSync(path.join(home, ".aws", "credentials"));
-    const missing = [...(e.AWS_REGION || e.AWS_DEFAULT_REGION ? [] : ["AWS_REGION"]), ...(creds ? [] : ["AWS credentials (AWS_PROFILE, AWS_ACCESS_KEY_ID…, AWS_BEARER_TOKEN_BEDROCK or an instance role)"])];
-    return { kind: "bedrock", managed: by, missing, label: `Amazon Bedrock${e.AWS_REGION ? ` (${e.AWS_REGION})` : ""}` };
+    const missing = e.AWS_REGION || e.AWS_DEFAULT_REGION ? [] : ["AWS_REGION"];
+    // No keys in sight may still be fine: an EC2/ECS role or SSO cache provides them at run time.
+    const unsure = creds ? [] : ["no AWS credentials in the environment or ~/.aws/credentials (fine with an instance role or SSO)"];
+    return { kind: "bedrock", managed: by, missing, unsure, label: `Amazon Bedrock${e.AWS_REGION ? ` (${e.AWS_REGION})` : ""}` };
   }
   if (truthy(e.CLAUDE_CODE_USE_VERTEX)) {
     const missing = [...(e.CLOUD_ML_REGION ? [] : ["CLOUD_ML_REGION"]), ...(e.ANTHROPIC_VERTEX_PROJECT_ID ? [] : ["ANTHROPIC_VERTEX_PROJECT_ID"])];
@@ -74,7 +78,7 @@ export function modelRoute(env: NodeJS.ProcessEnv = process.env, managed = readM
 export function authHint(r: ModelRoute = modelRoute()): string {
   switch (r.kind) {
     case "bedrock":
-      return `Claude Code uses Amazon Bedrock: check AWS_REGION, the AWS credentials, and that the account has access to the Claude model${r.missing.length ? ` (missing: ${r.missing.join("; ")})` : ""}. Test with: claude -p "reply with OK"`;
+      return `Claude Code uses Amazon Bedrock: check AWS_REGION, the AWS credentials, and that the account has access to the Claude model${[...r.missing, ...(r.unsure ?? [])].length ? ` (${[...r.missing.map((m) => `missing: ${m}`), ...(r.unsure ?? [])].join("; ")})` : ""}. Test with: claude -p "reply with OK"`;
     case "vertex":
       return `Claude Code uses Google Vertex AI: check CLOUD_ML_REGION, ANTHROPIC_VERTEX_PROJECT_ID and gcloud credentials (gcloud auth application-default login, or GOOGLE_APPLICATION_CREDENTIALS)${r.missing.length ? ` (missing: ${r.missing.join(", ")})` : ""}. Test with: claude -p "reply with OK"`;
     case "gateway":

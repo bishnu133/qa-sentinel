@@ -256,7 +256,7 @@ export async function verifyChanges(o: VerifyOptions): Promise<VerificationRepor
       else if (junit && mine.length === 0) [status, detail] = [r.code === 0 ? "not-run" : "failed", `no test results produced (exit ${r.code})${r.code ? `: ${tail(r.stdout + r.stderr)}` : ""}`];
       else if (envFailures) [status, detail] = ["blocked", `environment errors: ${failed[0].message}`];
       else if (r.code !== 0 || failed.length) [status, detail] = ["failed", `${failed.length} failed${failed[0] ? `: ${failed[0].name}` : `, exit ${r.code}`}`];
-      else [status, detail] = ["passed", mine.length ? `${mine.filter((x) => x.status === "passed").length} passed, ${mine.filter((x) => x.status === "skipped").length} skipped${flaky.length ? `, ${flaky.length} only on retry (flaky)` : ""}` : "exit 0 (no JUnit report configured)"];
+      else [status, detail] = ["passed", mine.length ? `${mine.filter((x) => x.status === "passed").length} passed, ${mine.filter((x) => x.status === "skipped").length} skipped${mine.some((x) => x.message === "passed on retry (flaky)") ? `, ${mine.filter((x) => x.message === "passed on retry (flaky)").length} only on retry (flaky)` : ""}` : "exit 0 (no JUnit report configured)"];
       checks.push({ name: "tests", ...(specsByLayer.size > 1 || l.layer !== "api" ? { layer: l.layer } : {}), status, detail: label ? `${detail} (${label})` : detail, durationMs: r.durationMs });
       outputs.push(`### ${l.layer}: ${cmd}\n${r.stdout}\n${r.stderr}`);
   

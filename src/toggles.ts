@@ -82,7 +82,14 @@ export function commandsFor(c: Config, environment: string | undefined): ToggleC
   return (environment ? t.environments[environment] : undefined) ?? t.environments["*"];
 }
 
-const fill = (cmd: string, toggle: string, value = "") => cmd.replace(/\{toggle\}/g, toggle).replace(/\{value\}/g, value);
+/**
+ * Toggle names and values are put into the team's shell commands, so only plain tokens are allowed (letters, digits,
+ * _ . : -); they are also given as QA_TOGGLE / QA_TOGGLE_VALUE for commands that prefer variables.
+ */
+const fill = (cmd: string, toggle: string, value = "") => {
+  if (!NAME.test(toggle) || (value && !VALUE.test(value))) throw new Error(`refusing toggle ${JSON.stringify(toggle)}=${JSON.stringify(value)}: only letters, digits and _ . : - are allowed`);
+  return cmd.replace(/\{toggle\}/g, toggle).replace(/\{value\}/g, value);
+};
 
 /**
  * Set the toggles, run `fn`, then put every toggle back (in reverse order), whatever happens. Without commands for
@@ -99,37 +106,45 @@ export async function withToggles<T>(c: Config, environment: string | undefined,
     return { result: await fn(), problems };
   }
   const shellEnv = { ...env, ...Object.fromEntries(c.toggles.passEnv.filter((k) => process.env[k] !== undefined).map((k) => [k, process.env[k]])) };
-  const sh = async (cmd: string) => {
-    const r = await runProcess(cmd, [], { cwd: process.cwd(), env: shellEnv, timeoutMs: c.toggles.timeoutSeconds * 1000, shell: true });
+  const sh = async (cmd: string, toggle?: string, value?: string) => {
+    const r = await runProcess(cmd, [], { cwd: process.cwd(), env: { ...shellEnv, ...(toggle ? { QA_TOGGLE: toggle } : {}), ...(value !== undefined ? { QA_TOGGLE_VALUE: value } : {}) }, timeoutMs: c.toggles.timeoutSeconds * 1000, shell: true });
     if (r.timedOut || r.code !== 0) throw new Error(`\`${cmd.split(" ")[0]} …\` ${r.timedOut ? "timed out" : `exit ${r.code}: ${(r.stderr || r.stdout).trim().split("\n").at(-1)?.slice(0, 200) ?? ""}`}`);
     return r.stdout.trim();
   };
   if (cmds.lockAcquire) await sh(cmds.lockAcquire);
   const previous: ToggleState = {};
   const changed: string[] = [];
-  const restore = async () => {
-    for (const name of changed.reverse()) {
-      const back = previous[name] ?? c.toggles.defaults[name];
-      try {
-        if (cmds.reset) await sh(fill(cmds.reset, name, back));
-        else if (back !== undefined) await sh(fill(cmds.set, name, back));
-        else problems.push(`${name}: no previous value known (add a get command or toggles.defaults.${name}); left at ${wanted[name]}`);
-      } catch (e) {
-        problems.push(`${name} could not be put back: ${(e as Error).message}`);
+  // Once only: the signal handler and `finally` may both ask for it.
+  let restoring: Promise<void> | undefined;
+  const restore = () =>
+    (restoring ??= (async () => {
+      for (const name of [...changed].reverse()) {
+        const back = previous[name] ?? c.toggles.defaults[name];
+        try {
+          if (cmds.reset) await sh(fill(cmds.reset, name, back ?? ""), name, back);
+          else if (back !== undefined) await sh(fill(cmds.set, name, back), name, back);
+          else problems.push(`${name}: no previous value known (add a get command or toggles.defaults.${name}); left at ${wanted[name]}`);
+        } catch (e) {
+          problems.push(`${name} could not be put back: ${(e as Error).message}`);
+        }
       }
-    }
-    changed.length = 0;
-    if (cmds.lockRelease) await sh(cmds.lockRelease).catch((e) => problems.push(`lock not released: ${(e as Error).message}`));
-  };
+      changed.length = 0;
+      if (cmds.lockRelease) await sh(cmds.lockRelease).catch((e) => problems.push(`lock not released: ${(e as Error).message}`));
+    })());
   // An interrupted run (Ctrl C, CI cancel) still puts the toggles back.
   const onSignal = () => void restore().finally(() => process.exit(130));
   process.once("SIGINT", onSignal);
   process.once("SIGTERM", onSignal);
   try {
     for (const name of names) {
-      if (cmds.get) previous[name] = await sh(fill(cmds.get, name));
+      if (cmds.get) {
+        // The current value is put back later through the shell: take it only if it is a plain token.
+        const got = (await sh(fill(cmds.get, name), name)).split("\n").at(-1)!.trim();
+        if (VALUE.test(got)) previous[name] = got;
+        else problems.push(`${name}: \`get\` printed ${JSON.stringify(got.slice(0, 60))}, not a plain value; it will be put back to toggles.defaults.${name} if set`);
+      }
       if (previous[name] === wanted[name]) continue;
-      await sh(fill(cmds.set, name, wanted[name]));
+      await sh(fill(cmds.set, name, wanted[name]), name, wanted[name]);
       changed.push(name);
     }
     log.dim(`  toggles: ${names.map((n) => `${n}=${wanted[n]}`).join(", ")}${environment ? ` on ${environment}` : ""}`);

@@ -8,7 +8,9 @@ set -euo pipefail
 HERE="$(cd "$(dirname "$0")/../.." && pwd)"
 CLI="$HERE/dist/cli.js"
 W="${1:-$(mktemp -d)}"
-rm -rf "$W" && mkdir -p "$W" && cd "$W"
+# Never delete what isn't ours: the work dir must be new or empty.
+if [ -e "$W" ] && [ -n "$(ls -A "$W" 2>/dev/null)" ]; then echo "$W is not empty; pass a new folder"; exit 2; fi
+mkdir -p "$W" && cd "$W"
 git init -q
 node "$CLI" init --yes --mode scratch --web --ci gitlab --name healing-demo >/dev/null
 npm install --no-audit --no-fund --loglevel=error

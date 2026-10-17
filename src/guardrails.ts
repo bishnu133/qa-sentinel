@@ -32,7 +32,8 @@ export const PROTECTED_MOBILE_FILES = ["wdio.conf.ts", "src/mobile/evidence.ts",
 export function generatePolicy(c: Config): WritePolicy {
   const derived = [...layers(c).flatMap((t) => [`${t.dir}/**`, `${t.helpersDir}/**`, ...t.extraWritePaths]), "test-map.yaml"];
   return {
-    allowed: c.guardrails.allowedWritePaths.length ? c.guardrails.allowedWritePaths : derived,
+    // Manual test cards (qa-sentinel writes them from the plan) are part of every agent MR.
+    allowed: [...(c.guardrails.allowedWritePaths.length ? c.guardrails.allowedWritePaths : derived), `${c.tests.manualDir}/**`],
     blocked: [...c.guardrails.blockedWritePaths, ...(c.tests.web.enabled ? PROTECTED_WEB_FILES : []), ...(c.tests.mobile.enabled ? PROTECTED_MOBILE_FILES : [])],
   };
 }

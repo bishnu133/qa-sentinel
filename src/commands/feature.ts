@@ -78,7 +78,7 @@ export async function featureCommand(o: FeatureOptions): Promise<number> {
     log.step(`running ${active.length} feature test(s)${environment ? ` on ${environment}` : ""}`);
     // API and web tests in one run where possible; healing is allowed here: these are existing, reviewed tests.
     let status = 0;
-    for (const cmd of runCommandsFor(c, active.map((t) => `${t.file}:${t.line}`))) {
+    for (const cmd of runCommandsFor(c, active.filter((t) => !t.bdd).map((t) => `${t.file}:${t.line}`))) {
       const r = spawnSync(cmd, { cwd, shell: true, stdio: "inherit", env: testEnv(c, process.env, { healing: true }) });
       if ((r.status ?? 1) !== 0) status = r.status ?? 1;
     }

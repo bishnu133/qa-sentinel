@@ -9,7 +9,7 @@ import { testEnv } from "../src/run.js";
 
 async function load() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "qas-auth-"));
-  fs.writeFileSync(path.join(dir, "auth.ts"), render(fs.readFileSync(path.join(__dirname, "../templates/scaffold/playwright-api/src/api/auth.ts.tmpl"), "utf8"), {}));
+  fs.writeFileSync(path.join(dir, "auth.ts"), render(fs.readFileSync(path.join(__dirname, "../templates/scaffold/playwright-api/src/api/auth.ts.tmpl"), "utf8"), { authRolesJson: JSON.stringify({ officer: ["OFFICER_LOGIN", "OFFICER_SECRET"] }) }));
   return import(path.join(dir, "auth.ts"));
 }
 
@@ -33,6 +33,27 @@ describe("auth patterns (D3)", () => {
     expect(payload).toMatchObject({ htm: "POST", htu: "https://api.example.test/orders", ath: crypto.createHash("sha256").update("tok").digest("base64url") });
     const pub = crypto.createPublicKey({ key: header.jwk, format: "jwk" });
     expect(crypto.verify("sha256", Buffer.from(`${h}.${p}`), { key: pub, dsaEncoding: "ieee-p1363" }, Buffer.from(sig, "base64url"))).toBe(true);
+  });
+
+  it("the scaffolded role() reads the variables tests.auth.roles names", async () => {
+    const { role } = await load();
+    process.env.OFFICER_LOGIN = "o1";
+    process.env.QA_ADMIN_USER = "a1";
+    try {
+      expect(role("officer").user).toBe("o1");
+      expect(role("admin").user).toBe("a1");
+    } finally {
+      delete process.env.OFFICER_LOGIN;
+      delete process.env.QA_ADMIN_USER;
+    }
+  });
+
+  it("role credentials reach test runs from the environment, not the agent unless shared", async () => {
+    const { agentEnv } = await import("../src/run.js");
+    const c2 = ConfigSchema.parse({ version: 1, mode: "scratch", project: { name: "p" }, tests: { api: { framework: "playwright", runCommand: "x" }, auth: { roles: [{ name: "case officer" }] } }, ci: { platform: "gitlab" } });
+    expect(agentEnv(c2, { PATH: "/bin", QA_CASE_OFFICER_PASSWORD: "p" }).QA_CASE_OFFICER_PASSWORD).toBeUndefined();
+    const shared = ConfigSchema.parse({ ...c2, tests: { ...c2.tests, auth: { ...c2.tests.auth, shareWithAgent: true } } });
+    expect(agentEnv(shared, { PATH: "/bin", QA_CASE_OFFICER_PASSWORD: "p" }).QA_CASE_OFFICER_PASSWORD).toBe("p");
   });
 
   it("role credentials reach test runs from the environment, nothing else does", () => {

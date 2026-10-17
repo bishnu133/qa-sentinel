@@ -7,6 +7,15 @@ import { ContractSourceSchema } from "./contractSource.js";
 
 export const CONFIG_FILE = "qa-sentinel.config.yaml";
 
+const validRegex = (r: string) => {
+  try {
+    new RegExp(r);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
 export const API_FRAMEWORKS = [
   "playwright",
   "supertest",
@@ -98,6 +107,12 @@ export const ConfigSchema = z.object({
         helpers: z.string().optional().describe("e.g. src/api/auth.ts or src/support/login.ts"),
         roles: z.array(z.object({ name: z.string(), env: z.array(z.string()).default([]).describe("e.g. [QA_ADMIN_USER, QA_ADMIN_PASSWORD]") })).default([]),
         notes: z.string().optional().describe("How login works here: SSO, OTP, DPoP, MockPass in test environments…"),
+        /**
+         * false (default): the roles' credentials reach qa-sentinel's own test runs only; the agent's runs while it
+         * writes tests go without them (tests needing a login fail there, and qa-sentinel verifies them with the
+         * credentials). true: the agent gets them too, so it can run those tests itself.
+         */
+        shareWithAgent: z.boolean().default(false),
       })
       .default({}),
     hooks: z.array(z.object({ name: z.string(), how: z.string().describe("e.g. POST /test/jobs/{job}/run (test environments only)"), notes: z.string().optional() })).default([]),
@@ -307,11 +322,11 @@ export const ConfigSchema = z.object({
           mode: z.enum(["block", "warn", "off"]).default("block"),
           detect: z.array(z.enum(["nric", "email", "phone", "card"])).default(["nric", "email", "phone", "card"]),
           /** Regexes for values that are known test data, e.g. "^\\+65 ?9000 ?00\\d\\d$". */
-          allow: z.array(z.string()).default([]),
+          allow: z.array(z.string().refine(validRegex, "not a valid regex")).default([]),
           /** Test email domains besides example.com/.org/.net and the reserved .test, .example, .invalid, .localhost, .local. */
           allowEmailDomains: z.array(z.string()).default([]),
           /** Other patterns to treat as personal data, e.g. { name: "member-id", pattern: "\\bMBR\\d{8}\\b" }. */
-          custom: z.array(z.object({ name: z.string(), pattern: z.string() })).default([]),
+          custom: z.array(z.object({ name: z.string(), pattern: z.string().refine(validRegex, "not a valid regex") })).default([]),
         })
         .default({}),
     })

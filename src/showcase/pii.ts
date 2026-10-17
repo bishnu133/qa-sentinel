@@ -69,9 +69,17 @@ export const maskValue = (v: string) => {
   return s.length <= 4 ? "****" : `${s.slice(0, 3)}${"*".repeat(Math.max(2, s.length - 5))}${s.slice(-2)}`;
 };
 
+const compile = (pattern: string, flags: string, what: string) => {
+  try {
+    return new RegExp(pattern, flags);
+  } catch (e) {
+    throw new Error(`showcase.pii.${what}: ${JSON.stringify(pattern)} is not a valid regex (${(e as Error).message})`);
+  }
+};
+
 export function scanText(text: string, where: string, o: PiiOptions): PiiFinding[] {
   const out: PiiFinding[] = [];
-  const allowed = o.allow.map((a) => new RegExp(a, "i"));
+  const allowed = o.allow.map((a) => compile(a, "i", "allow"));
   const ok = (v: string) => allowed.some((re) => re.test(v));
   const add = (kind: string, v: string) => {
     if (!ok(v) && !out.some((f) => f.kind === kind && f.value === maskValue(v))) out.push({ kind, value: maskValue(v), where });
@@ -90,7 +98,7 @@ export function scanText(text: string, where: string, o: PiiOptions): PiiFinding
       const d = m[0].replace(/\D/g, "");
       if (CARD_IIN.test(d) && !TEST_CARDS.has(d) && !/^(\d)\1+$/.test(d) && luhn(d)) add("card", m[0]);
     }
-  for (const c of o.custom) for (const m of text.matchAll(new RegExp(c.pattern, "g"))) add(c.name, m[0]);
+  for (const c of o.custom) for (const m of text.matchAll(compile(c.pattern, "g", `custom ${c.name}`))) if (m[0]) add(c.name, m[0]);
   return out;
 }
 
@@ -104,7 +112,7 @@ export function scanJson(value: unknown, where: string, o: PiiOptions, depth = 0
     const out: PiiFinding[] = [];
     for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
       const at = `${where}.${k}`;
-      if (o.detect.includes("phone") && PHONE_KEY.test(k) && /\d{6,}/.test(String(v ?? "").replace(/[\s-]/g, "")) && !o.allow.some((a) => new RegExp(a, "i").test(String(v)))) {
+      if (o.detect.includes("phone") && PHONE_KEY.test(k) && /\d{6,}/.test(String(v ?? "").replace(/[\s-]/g, "")) && !o.allow.some((a) => compile(a, "i", "allow").test(String(v)))) {
         out.push({ kind: "phone", value: maskValue(String(v)), where: at });
         continue;
       }

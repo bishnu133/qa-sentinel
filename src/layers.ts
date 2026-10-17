@@ -92,14 +92,22 @@ export function layerEnvNames(c: Config): string[] {
   const mobile = c.tests.mobile.enabled
     ? [c.tests.mobile.appiumUrlEnv, "QA_MOBILE_PLATFORM", "QA_DEVICE_NAME", "QA_PLATFORM_VERSION", "QA_UDID", "QA_APP", "QA_APP_PACKAGE", "QA_APP_ACTIVITY", "QA_BUNDLE_ID", "QA_VIDEO", "ANDROID_HOME", "ANDROID_SDK_ROOT", "JAVA_HOME"]
     : [];
-  // Login roles (tests.auth.roles: their env names, plus the QA_<ROLE>_USER/_PASSWORD/_TOTP_SEED convention of the
-  // scaffolded auth helper), the test-data ledger's settings, and the poll timeout.
-  const roles = c.tests.auth.roles.flatMap((r) => {
-    const k = r.name.toUpperCase().replace(/[^A-Z0-9]+/g, "_");
-    return [...r.env, `QA_${k}_USER`, `QA_${k}_PASSWORD`, `QA_${k}_TOTP_SEED`];
-  });
-  const data = c.testData.cleanup === "ledger" ? [c.testData.sweepAuthEnv, "QA_DATA_DIR"] : [];
-  return [...new Set([...web, ...mobile, ...roles, ...data, "QA_POLL_TIMEOUT_MS"])];
+  const data = c.testData.cleanup === "ledger" ? ["QA_DATA_DIR"] : [];
+  return [...new Set([...web, ...mobile, ...data, "QA_POLL_TIMEOUT_MS"])];
+}
+
+/** Each login role's variables: its configured names, else the scaffolded helper's QA_<ROLE>_USER/_PASSWORD/_TOTP_SEED. */
+export function roleEnvNames(r: { name: string; env: string[] }): string[] {
+  const k = r.name.toUpperCase().replace(/[^A-Z0-9]+/g, "_");
+  return r.env.length ? r.env : [`QA_${k}_USER`, `QA_${k}_PASSWORD`, `QA_${k}_TOTP_SEED`];
+}
+
+/**
+ * Credentials test runs need but agents don't get (unless tests.auth.shareWithAgent): login roles and the ledger's
+ * cleanup token. qa-sentinel's own runs (verification, post-deploy, showcase) have them.
+ */
+export function testOnlyEnvNames(c: Config): string[] {
+  return [...new Set([...c.tests.auth.roles.flatMap(roleEnvNames), ...(c.testData.cleanup === "ledger" ? [c.testData.sweepAuthEnv] : [])])];
 }
 
 /**

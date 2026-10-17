@@ -7,7 +7,7 @@ environment running (`node sandbox/shoplite/local.mjs env start`).
 
 ```bash
 docker compose -f sandbox/jenkins/docker-compose.yml up --build -d
-# open http://localhost:8090 (admin / admin) → qa-api-tests → Build with Parameters → Build
+# open http://localhost:8090 (admin / admin, or JENKINS_ADMIN_PASSWORD) – only reachable from this laptop → qa-api-tests → Build with Parameters → Build
 docker compose -f sandbox/jenkins/docker-compose.yml down -v     # remove it again
 ```
 

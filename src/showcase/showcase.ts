@@ -28,7 +28,7 @@ export interface StoryReadiness {
 }
 
 /** `manual`: ACs with a manual test card are checked by hand: listed, but they don't hold the showcase back. */
-export function assessStory(c: Config, index: IndexedTest[], results: RunResult[], story: string, acs: { id: string; text?: string }[], manual: { story?: string; acs: string[] }[] = []): StoryReadiness {
+export function assessStory(c: Config, index: IndexedTest[], results: RunResult[], story: string, acs: { id: string; text?: string }[], manual: { story?: string; acs: string[]; result?: "pass" | "fail" }[] = []): StoryReadiness {
   const forStory = index.filter((t) => t.stories.includes(story));
   const blockers: string[] = [];
   const rows: AcEvidence[] = acs.map(({ id, text }) => {
@@ -37,7 +37,16 @@ export function assessStory(c: Config, index: IndexedTest[], results: RunResult[
     const pending = tagged.filter((t) => t.status !== "active");
     const tests = active.map((test) => ({ test, result: matchResult(results, test) }));
     let status: AcEvidence["status"];
-    if (!active.length) status = manual.some((m) => m.story === story && m.acs.includes(id.toUpperCase())) ? "manual" : "no-test";
+    const cards = manual.filter((m) => m.story === story && m.acs.includes(id.toUpperCase()));
+    if (!active.length && cards.length) {
+      // Checked by hand only counts once a tester ticked pass on its cards.
+      if (cards.every((m) => m.result === "pass")) status = "manual";
+      else {
+        status = "no-test";
+        blockers.push(cards.some((m) => m.result === "fail") ? `${id}: its manual test card failed` : `${id}: its manual test card hasn't been run yet (tick the Result line)`);
+        return { id, text, status, tests, pending };
+      }
+    } else if (!active.length) status = "no-test";
     else if (tests.some((x) => x.result?.status === "failed")) status = "failed";
     else if (tests.some((x) => !x.result || x.result.status !== "passed")) status = "not-run";
     else status = "passed";

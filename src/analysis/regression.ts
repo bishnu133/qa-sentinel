@@ -128,7 +128,10 @@ export function selectRegression(i: {
     notes.push(unpinned.length ? `${unpinned.length} change(s) not tied to an endpoint or page: ran selection over the whole ${i.service} suite` : "no endpoint- or page-level signal: selected the whole service suite");
   }
 
-  const tests = [...picked.values()].sort((a, b) => a.test.file.localeCompare(b.test.file) || a.test.line - b.test.line);
+  // Cucumber scenarios are run by the team's BDD job: listed in the notes, not in the commands.
+  const bdd = [...picked.values()].filter((p) => p.test.bdd);
+  if (bdd.length) notes.push(`${bdd.length} Cucumber scenario(s) also cover this change: run them with your BDD job (${[...new Set(bdd.map((b) => b.test.file))].slice(0, 5).join(", ")})`);
+  const tests = [...picked.values()].filter((p) => !p.test.bdd).sort((a, b) => a.test.file.localeCompare(b.test.file) || a.test.line - b.test.line);
   const runFullSuite = tests.length === 0;
   if (runFullSuite) notes.push("nothing could be selected from tags or test-map.yaml: run the full suite");
   return { tests, serviceWide, runFullSuite, args: tests.map((s) => `${s.test.file}:${s.test.line}`), notes };

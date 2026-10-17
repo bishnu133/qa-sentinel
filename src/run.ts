@@ -7,7 +7,7 @@ import { CONFIG_FILE, type Config, type ServiceConfig } from "./config.js";
 import { ensureDir } from "./fsutil.js";
 import { resolveSha } from "./git.js";
 import { scrubbedEnv } from "./env.js";
-import { layerEnvNames, layers } from "./layers.js";
+import { layerEnvNames, layers, testOnlyEnvNames } from "./layers.js";
 import type { RequirementSnapshot } from "./requirements.js";
 
 export const VERSION = "0.8.0-beta.2";
@@ -45,7 +45,9 @@ export function findService(c: Config, nameOrPath: string, cwd: string, override
 
 /** Environment for the agent process and for test runs: allowlisted, never carrying publisher credentials. */
 export function agentEnv(c: Config, env: NodeJS.ProcessEnv = process.env) {
-  const out = scrubbedEnv({ baseUrlEnv: c.tests.api.baseUrlEnv, passEnv: [...c.guardrails.passEnv, ...layerEnvNames(c)], forAgent: true }, env);
+  // Login credentials and the cleanup token stay out of the model-driven process unless the team opts in.
+  const shared = c.tests.auth.shareWithAgent ? testOnlyEnvNames(c) : [];
+  const out = scrubbedEnv({ baseUrlEnv: c.tests.api.baseUrlEnv, passEnv: [...c.guardrails.passEnv, ...layerEnvNames(c), ...shared], forAgent: true }, env);
   // The agent's own test runs must not heal either (and an explicit value beats a .env file's QA_HEALING).
   if (c.tests.web.enabled) out.QA_HEALING = "off";
   return out;
@@ -55,7 +57,7 @@ export function agentEnv(c: Config, env: NodeJS.ProcessEnv = process.env) {
  * tests the agent just wrote must pass on their own locators.
  */
 export function testEnv(c: Config, env: NodeJS.ProcessEnv = process.env, o: { healing?: boolean } = {}) {
-  const out = scrubbedEnv({ baseUrlEnv: c.tests.api.baseUrlEnv, passEnv: [...c.guardrails.passEnv, ...layerEnvNames(c)], forAgent: false }, env);
+  const out = scrubbedEnv({ baseUrlEnv: c.tests.api.baseUrlEnv, passEnv: [...c.guardrails.passEnv, ...layerEnvNames(c), ...testOnlyEnvNames(c)], forAgent: false }, env);
   if (c.tests.web.enabled) out.QA_HEALING = o.healing && c.tests.web.healing !== "none" ? c.tests.web.healing : "off";
   return out;
 }

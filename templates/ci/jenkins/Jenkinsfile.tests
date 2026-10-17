@@ -77,7 +77,7 @@ pipeline {
           qa-sentinel data sweep --older-than 0 --out qa-data-sweep.md || echo "WARNING qa-sentinel: test data was left behind on the test environment (see qa-data-sweep.md)"
         fi
       '''
-      junit testResults: 'test-results/junit.xml, .qa-sentinel/runs/*/junit*.xml{{#if mobileEnabled}}, test-results/mobile/junit/*.xml, .qa-sentinel/runs/*/junit-mobile/*.xml{{/if}}', allowEmptyResults: true
+      junit testResults: 'test-results/junit.xml, .qa-sentinel/runs/*/junit*.xml{{#if mobileEnabled}}, test-results/mobile/junit/*.xml, .qa-sentinel/runs/*/junit-mobile*/*.xml{{/if}}', allowEmptyResults: true
       archiveArtifacts artifacts: 'playwright-report/**, test-results/**, qa-verify.md, .qa-sentinel/runs/**', allowEmptyArchive: true
     }
   }

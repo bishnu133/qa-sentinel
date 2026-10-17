@@ -297,6 +297,7 @@ export function templateVars(c: Config, cwd?: string): TemplateVars {
     mobileRunCommand: c.tests.mobile.runCommand,
     mobilePlatform: c.tests.mobile.platform,
     appiumUrl: c.tests.mobile.appiumUrl,
+    authRolesJson: JSON.stringify(Object.fromEntries(c.tests.auth.roles.filter((r) => r.env.length).map((r) => [r.name, r.env]))),
     ledgerDir: c.testData.ledgerDir,
     sweepAuthEnv: c.testData.sweepAuthEnv,
     ledgerCleanup: c.testData.cleanup === "ledger",
