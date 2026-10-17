@@ -228,26 +228,30 @@ export interface AcTrace {
   text?: string;
   active: IndexedTest[];
   pending: IndexedTest[]; // fixme / skip
-  status: "covered" | "weak" | "discrepancy" | "pending-only" | "not-traced";
+  status: "covered" | "weak" | "discrepancy" | "pending-only" | "not-traced" | "manual";
+  /** Manual test cards for this AC (when no automated test proves it). */
+  manual?: { file: string; line: number; title: string }[];
 }
 
 export function traceStory(
   index: IndexedTest[],
   storyKey: string | undefined,
   acs: { id: string; text?: string }[],
+  manual: { story?: string; acs: string[]; file: string; line: number; title: string }[] = [],
 ): { acs: AcTrace[]; storyOnly: IndexedTest[]; outsideAcs: IndexedTest[] } {
   const forStory = index.filter((t) => (storyKey ? t.stories.includes(storyKey) : false) || (!t.stories.length && t.acs.length && !storyKey));
   const rows = acs.map(({ id, text }) => {
     const hits = forStory.filter((t) => t.acs.includes(id.toUpperCase()));
     const active = hits.filter((t) => t.status === "active");
     const pending = hits.filter((t) => t.status !== "active");
-    const status = active.length && pending.length ? "discrepancy" : active.length ? "covered" : pending.length ? "pending-only" : "not-traced";
-    return { ac: id, text, active, pending, status } as AcTrace;
+    const cards = manual.filter((m) => (storyKey ? m.story === storyKey : !m.story) && m.acs.includes(id.toUpperCase())).map(({ file, line, title }) => ({ file, line, title }));
+    const status = active.length && pending.length ? "discrepancy" : active.length ? "covered" : pending.length ? "pending-only" : cards.length ? "manual" : "not-traced";
+    return { ac: id, text, active, pending, status, ...(cards.length ? { manual: cards } : {}) } as AcTrace;
   });
   return { acs: rows, storyOnly: forStory.filter((t) => !t.acs.length && !t.tags.includes("ac:none")), outsideAcs: forStory.filter((t) => t.tags.includes("ac:none")) };
 }
 
-const STATUS_ICON = { covered: "✅", weak: "🟠", discrepancy: "⚠️", "pending-only": "⏸️", "not-traced": "⬜" } as const;
+const STATUS_ICON = { covered: "✅", weak: "🟠", discrepancy: "⚠️", "pending-only": "⏸️", "not-traced": "⬜", manual: "✋" } as const;
 
 /**
  * Render the matrix. `flagged` holds tests the independent reviewer judged weak or wrong-oracle: they are marked,
@@ -264,7 +268,7 @@ export function traceMarkdown(storyKey: string | undefined, trace: ReturnType<ty
     "",
     "| AC | Status | Passing tests | Pending (fixme/skip) |",
     "| --- | --- | --- | --- |",
-    ...trace.acs.map((r) => `| ${r.ac} | ${STATUS_ICON[status(r)]} ${status(r)} | ${cell(r.active)} | ${cell(r.pending)} |`),
+    ...trace.acs.map((r) => `| ${r.ac} | ${STATUS_ICON[status(r)]} ${status(r) === "manual" ? "checked by hand" : status(r)} | ${r.manual ? r.manual.map((m) => `manual card \`${m.file}:${m.line}\` ${m.title}`).join("<br>") : cell(r.active)} | ${cell(r.pending)} |`),
   ];
   if (trace.outsideAcs.length) lines.push("", `Outside the story's ACs on purpose (\`@ac:none\`): ${trace.outsideAcs.map((t) => `\`${t.file}:${t.line}\` ${t.title}${t.status !== "active" ? ` (${t.status})` : ""}`).join(", ")}.`);
   if (trace.storyOnly.length) lines.push("", `${trace.storyOnly.length} test(s) are tagged with the story but no AC: ${trace.storyOnly.map((t) => `\`${t.file}:${t.line}\``).join(", ")}.`);

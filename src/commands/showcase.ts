@@ -1,3 +1,4 @@
+import { readManualCards } from "../manualTests.js";
 import { type PiiFinding, piiMarkdown, scanEvidence } from "../showcase/pii.js";
 import fs from "node:fs";
 import path from "node:path";
@@ -75,7 +76,7 @@ export async function showcaseCommand(o: ShowcaseOptions): Promise<number> {
           : { text: "", title: undefined };
       const parsed = parseStoryFor(c, src.text);
       const acs = parsed.acceptanceCriteria;
-      const r = assessStory(c, index, results, story, acs);
+      const r = assessStory(c, index, results, story, acs, readManualCards(cwd, c.tests.manualDir));
       report.push(...readinessMarkdown(r), "");
       if (!r.ready) {
         log.info(`  ${story}: not ready – ${r.blockers.join("; ")}`);
@@ -190,7 +191,7 @@ async function evidence(cwd: string, c: Config, r: StoryReadiness, meta: { title
 }
 
 function readinessMarkdown(r: StoryReadiness): string[] {
-  const icon = { passed: "✅", failed: "❌", "not-run": "⚪", "no-test": "⬜" } as const;
+  const icon = { passed: "✅", failed: "❌", "not-run": "⚪", "no-test": "⬜", manual: "✋" } as const;
   return [
     `## ${r.story} · ${r.ready ? "✅ ready to showcase" : "not ready"}`,
     "",

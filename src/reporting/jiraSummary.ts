@@ -11,13 +11,16 @@ import type { AcTrace } from "../analysis/testIndex.js";
 const RISK = { critical: "🔴 Critical", high: "🟠 High", medium: "🟡 Medium", low: "🟢 Low" } as const;
 const link = (label: string, url?: string) => (url ? `[${label}](${url})` : label);
 
-export type AcStanding = "not-built" | "conflict" | "needs-tests" | "covered" | "not-affected";
+export type AcStanding = "not-built" | "conflict" | "needs-tests" | "covered" | "not-affected" | "manual" | "needs-hook" | "lower-layer";
 const STANDING: Record<AcStanding, string> = {
   "not-built": "⛔ Not built in this change",
   conflict: "⚠️ Code and story disagree, needs a decision",
   "needs-tests": "🆕 Tests to add or update",
   covered: "✅ Existing tests cover it",
   "not-affected": "– Not touched by this change",
+  manual: "✋ To check by hand (manual test card)",
+  "needs-hook": "🔌 Needs a test hook in the system before it can be automated",
+  "lower-layer": "🔬 Better tested in the service (unit or contract tests)",
 };
 
 /** Where each acceptance criterion stands after the analysis (gap report). */
@@ -28,8 +31,12 @@ export function acStandings(plan: TestPlan, acIds: string[]): Map<string, AcStan
     const changes = plan.changes.filter((c) => c.requirementIds.includes(ac));
     const scenarioHit = plan.decisions.some((d) => ["create", "update", "review"].includes(d.decision) && d.proposedScenarios.some((s) => s.requirementIds.includes(ac)));
     const built = (plan.requirementStatus ?? []).find((r) => r.id === ac)?.status;
+    const auto = (plan.requirementStatus ?? []).find((r) => r.id === ac)?.automation?.how;
     if (built === "conflict" || plan.acMismatches.some((m) => m.requirementId === ac) || changes.some((c) => c.oracleStatus === "conflicting")) out.set(ac, "conflict");
     else if (built === "not-found") out.set(ac, "not-built");
+    else if (auto === "manual") out.set(ac, "manual");
+    else if (auto === "hook") out.set(ac, "needs-hook");
+    else if (auto === "lower-layer") out.set(ac, "lower-layer");
     else if (scenarioHit || changes.some((c) => ["create", "update", "review"].includes(decisionFor.get(c.id)?.decision ?? ""))) out.set(ac, "needs-tests");
     else if (changes.some((c) => decisionFor.get(c.id)?.decision === "reuse")) out.set(ac, "covered");
     else out.set(ac, "not-affected");
@@ -101,6 +108,7 @@ export function generationSummary(i: {
       discrepancy: "⚠️ Tested; product doesn't match the story yet",
       "pending-only": "⏸️ Test written, waiting for a product fix",
       "not-traced": "⬜ No test yet",
+      manual: "✋ Checked by hand (manual test card)",
     };
     lines.push("", "| Acceptance criterion | Status | Tests |", "| --- | --- | --- |");
     for (const r of i.trace) lines.push(`| ${r.ac}${i.acText?.get(r.ac) ? `: ${short(i.acText.get(r.ac)!)}` : ""} | ${words[r.status]} | ${r.active.length} passing${r.pending.length ? `, ${r.pending.length} waiting` : ""} |`);

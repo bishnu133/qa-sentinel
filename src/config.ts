@@ -75,6 +75,8 @@ export const ConfigSchema = z.object({
     .default({}),
   tests: z.object({
     language: z.enum(["typescript", "javascript"]).default("typescript"),
+    /** Manual test cards (one markdown file per story) for requirements that can't be automated. */
+    manualDir: z.string().default("manual-tests"),
     api: z.object({
       framework: z.enum(API_FRAMEWORKS),
       dir: z.string().default("tests/api"),

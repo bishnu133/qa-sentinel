@@ -184,6 +184,16 @@ export function validatePlan(raw: unknown, ctx: PlanContext): PlanValidation {
     if (r.status === "conflict" && !plan.acMismatches.some((m) => m.requirementId === r.id) && !plan.changes.some((ch) => ch.oracleStatus === "conflicting" && ch.requirementIds.includes(r.id)))
       warnings.push(`${where}: marked "conflict" but no acMismatch or conflicting change cites it`);
   }
+  // Automatability triage: manual or hook requirements say why; manual ones get a manual test card.
+  for (const r of plan.requirementStatus) {
+    const a = r.automation;
+    if (!a) continue;
+    if (a.how !== "automated" && !a.reason) errors.push(`requirementStatus ${r.id}: automation "${a.how}" needs a reason`);
+    if (a.how === "hook" && !a.hook) errors.push(`requirementStatus ${r.id}: automation "hook" must name the hook the system needs ("hook")`);
+    if (a.how === "manual" && !(plan.manualTests ?? []).some((m) => m.requirementIds.includes(r.id))) warnings.push(`requirementStatus ${r.id}: manual, but no manualTests card covers it`);
+  }
+  for (const m of plan.manualTests ?? []) checkReqIds("manualTests", m.requirementIds);
+
   if (!ctx.requirementsMissing) {
     for (const id of items) {
       const n = seen.get(id) ?? 0;

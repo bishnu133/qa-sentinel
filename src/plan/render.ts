@@ -43,6 +43,18 @@ export const BUILT: Record<string, string> = {
   "not-applicable": "– No code needed",
 };
 
+const TESTING = { automated: "automated", hook: "🔌 needs a test hook", "lower-layer": "🔬 unit/contract tests in the service", manual: "✋ by hand" } as const;
+
+/** Manual test cards the plan proposes (written to the test repo by generate). */
+export function manualTestsMarkdown(plan: TestPlan): string {
+  if (!plan.manualTests?.length) return "";
+  return [
+    `**To check by hand** (${plan.manualTests.length} manual test card${plan.manualTests.length === 1 ? "" : "s"}; generation saves them next to the tests):`,
+    "",
+    ...plan.manualTests.map((m) => `- ${m.requirementIds.join(", ")}: ${esc(m.title)} – ${esc(m.why)}`),
+  ].join("\n");
+}
+
 /** "Is the story built?": one row per AC and scope item, then scope items no AC covers. */
 export function implementationMarkdown(plan: TestPlan, items: { id: string; text: string; source?: string }[]): string {
   if (!plan.requirementStatus?.length || !items.length) return "";
@@ -50,14 +62,16 @@ export function implementationMarkdown(plan: TestPlan, items: { id: string; text
   const rows = items.map((it) => {
     const r = byId.get(it.id);
     const where = r ? [r.where, r.note].filter(Boolean).join(" – ") : "";
-    return `| ${it.id}${it.source ? ` _(${it.source})_` : ""} | ${esc(it.text.length > 110 ? `${it.text.slice(0, 109)}…` : it.text)} | ${r ? BUILT[r.status] : "–"} | ${esc(where)} |`;
+    const a = r?.automation;
+    const testing = !a || a.how === "automated" ? "automated" : `${TESTING[a.how]}${a.hook ? `: ${a.hook}` : ""}${a.reason ? ` (${a.reason})` : ""}`;
+    return `| ${it.id}${it.source ? ` _(${it.source})_` : ""} | ${esc(it.text.length > 110 ? `${it.text.slice(0, 109)}…` : it.text)} | ${r ? BUILT[r.status] : "–"} | ${esc(where)} | ${esc(testing)} |`;
   });
   const uncovered = items.filter((it) => it.source && byId.get(it.id)?.coveredByAcs.length === 0);
   return [
     "**Is the story built?** (every acceptance criterion and scope item, checked against the code)",
     "",
-    "| Item | Expected | Status | Where / note |",
-    "| --- | --- | --- | --- |",
+    "| Item | Expected | Status | Where / note | How it's tested |",
+    "| --- | --- | --- | --- | --- |",
     ...rows,
     ...(uncovered.length
       ? ["", `**Expected by the story but not in any acceptance criterion** (suggest adding an AC, so it is agreed and tested): ${uncovered.map((u) => `${u.id} (${esc(u.text.slice(0, 80))})`).join("; ")}`]
@@ -104,6 +118,8 @@ export function renderGapReport(i: RenderInput): string {
 
   const built = implementationMarkdown(plan, i.items ?? []);
   if (built) out.push(built, "");
+  const manual = manualTestsMarkdown(plan);
+  if (manual) out.push(manual, "");
   if (i.regression) out.push(i.regression, "");
 
   const scenarios = plan.decisions.filter((d) => ["create", "update", "review"].includes(d.decision)).flatMap((d) => d.proposedScenarios.map((s) => ({ d, s })));

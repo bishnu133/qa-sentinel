@@ -22,6 +22,7 @@ import { actionable } from "../plan/validate.js";
 import { decisionTable } from "../plan/render.js";
 import { log } from "../log.js";
 import { sweepAfterRun } from "../testData.js";
+import { readManualCards, writeCards } from "../manualTests.js";
 import { applyDeploymentGate, deploymentStates, notDeployed } from "../deployment.js";
 import { bugsFromDiscrepancies, fileBugs } from "../bugs/bugs.js";
 import { jiraContext } from "../scm/jira.js";
@@ -323,7 +324,7 @@ export async function generateCommand(o: GenerateOptions): Promise<number> {
     ...checkTestMap(index, readTestMap(cwd), cwd).filter((f) => f.level === "warning" && changedFiles.some((cf) => f.file.startsWith(cf) || f.file === "test-map.yaml")),
   ];
   findings.push(...traceFindings.map((f) => ({ level: "warning" as const, rule: "traceability" as const, file: f.file, message: f.message })));
-  const trace = traceStory(index, req.storyKey, requirementItems(req));
+  const trace = traceStory(index, req.storyKey, requirementItems(req), [...readManualCards(cwd, c.tests.manualDir), ...(plan.manualTests ?? []).map((m) => ({ story: req.storyKey, acs: m.requirementIds.map((r) => r.toUpperCase()), file: `${c.tests.manualDir}/${req.storyKey ?? `${service.name}-${sha8}`}.md`, line: 0, title: m.title }))]);
 
   // Independent review of the changed tests (fresh read-only agent; advisory, never changes verification).
   let review: ReviewOutcome = { status: "skipped", errors: [], runs: [] };
@@ -361,8 +362,12 @@ export async function generateCommand(o: GenerateOptions): Promise<number> {
   fs.writeFileSync(path.join(run.dir, "summary.md"), description);
   fs.writeFileSync(path.join(cwd, "qa-sentinel-summary.md"), description);
 
+  // Manual test cards for requirements that can't be automated: written by qa-sentinel from the validated plan.
+  const cards = writeCards(cwd, c.tests.manualDir, req.storyKey, req.storyKey ?? `${service.name}-${sha8}`, plan.manualTests ?? []);
+  if (cards.added) log.ok(`${cards.added} manual test card(s) in ${cards.file}`);
+
   // Phase 5: commit exactly the validated paths (deletions and renames included), then publish.
-  const paths = [...new Set(changes.flatMap((x) => (x.from && x.status === "R" ? [x.path, x.from] : [x.path])))];
+  const paths = [...new Set([...changes.flatMap((x) => (x.from && x.status === "R" ? [x.path, x.from] : [x.path])), ...(cards.file ? [cards.file] : [])])];
   git(cwd, ["add", "-A", "--", ...paths]);
   git(cwd, [
     "commit",

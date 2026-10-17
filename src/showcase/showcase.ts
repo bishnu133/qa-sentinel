@@ -1,3 +1,4 @@
+import { passedLine } from "./pack.js";
 import fs from "node:fs";
 import path from "node:path";
 import type { Config } from "../config.js";
@@ -14,7 +15,7 @@ import { redact } from "./redact.js";
 export interface AcEvidence {
   id: string;
   text?: string;
-  status: "passed" | "failed" | "not-run" | "no-test";
+  status: "passed" | "failed" | "not-run" | "no-test" | "manual";
   tests: { test: IndexedTest; result?: RunResult }[];
   pending: IndexedTest[];
 }
@@ -26,7 +27,8 @@ export interface StoryReadiness {
   blockers: string[];
 }
 
-export function assessStory(c: Config, index: IndexedTest[], results: RunResult[], story: string, acs: { id: string; text?: string }[]): StoryReadiness {
+/** `manual`: ACs with a manual test card are checked by hand: listed, but they don't hold the showcase back. */
+export function assessStory(c: Config, index: IndexedTest[], results: RunResult[], story: string, acs: { id: string; text?: string }[], manual: { story?: string; acs: string[] }[] = []): StoryReadiness {
   const forStory = index.filter((t) => t.stories.includes(story));
   const blockers: string[] = [];
   const rows: AcEvidence[] = acs.map(({ id, text }) => {
@@ -35,7 +37,7 @@ export function assessStory(c: Config, index: IndexedTest[], results: RunResult[
     const pending = tagged.filter((t) => t.status !== "active");
     const tests = active.map((test) => ({ test, result: matchResult(results, test) }));
     let status: AcEvidence["status"];
-    if (!active.length) status = "no-test";
+    if (!active.length) status = manual.some((m) => m.story === story && m.acs.includes(id.toUpperCase())) ? "manual" : "no-test";
     else if (tests.some((x) => x.result?.status === "failed")) status = "failed";
     else if (tests.some((x) => !x.result || x.result.status !== "passed")) status = "not-run";
     else status = "passed";
@@ -66,7 +68,7 @@ export function collectEvidence(c: Config, r: StoryReadiness, meta: { environmen
   const md: string[] = [
     `# ${r.story} – test evidence`,
     "",
-    `All ${r.acs.length} acceptance criteria passed${meta.environment ? ` on ${meta.environment.toUpperCase()}` : ""} (${meta.at}).${meta.commit ? ` Test repo commit ${meta.commit.slice(0, 8)}.` : ""}${meta.runUrl ? ` Run: ${meta.runUrl}` : ""}`,
+    `${passedLine(r)}${meta.environment ? ` on ${meta.environment.toUpperCase()}` : ""} (${meta.at}).${meta.commit ? ` Test repo commit ${meta.commit.slice(0, 8)}.` : ""}${meta.runUrl ? ` Run: ${meta.runUrl}` : ""}`,
     "",
     "| Acceptance criterion | Test | Result |",
     "| --- | --- | --- |",
@@ -129,7 +131,7 @@ export const SHOWCASE_PROPERTY = "qa-sentinel.showcase";
 export function showcaseComment(r: StoryReadiness, rec: ShowcaseRecord, refreshLabel: string): string {
   return [
     `### ✅ Showcase · ${r.story}`,
-    `All ${r.acs.length} acceptance criteria passed${rec.environment ? ` on ${rec.environment.toUpperCase()}` : ""}; the test evidence is attached to this story.`,
+    `${passedLine(r)}${rec.environment ? ` on ${rec.environment.toUpperCase()}` : ""}; the test evidence is attached to this story.`,
     "",
     "| Acceptance criterion | Passing tests |",
     "| --- | --- |",

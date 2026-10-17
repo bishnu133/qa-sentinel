@@ -31,7 +31,7 @@ For every change, produce one entry with a `type`:
 - `internal` – refactor, logging or performance, with no observable behaviour change (list these; they need no new tests)
 
 ### Is the story built?
-For every acceptance criterion and scope item in `story.md` (AC-n, TS-n, ER-n), decide whether this change builds it: `implemented`, `partial`, `conflict`, `not-found`, `elsewhere` (another service of the story should build it) or `not-applicable`, with the code as evidence. Read the whole story text, not only the ACs: tech scope and expected results often state behaviour the ACs forgot. Return these as `requirementStatus` (shape in the qa-plan skill).
+For every acceptance criterion and scope item in `story.md` (AC-n, TS-n, ER-n), decide whether this change builds it: `implemented`, `partial`, `conflict`, `not-found`, `elsewhere` (another service of the story should build it) or `not-applicable`, with the code as evidence. Read the whole story text, not only the ACs: tech scope and expected results often state behaviour the ACs forgot. Return these as `requirementStatus` (shape in the qa-plan skill), and say how each can be tested (`automation`: automated, hook, lower-layer or manual, with a reason) plus a manual test card for each manual one.
 
 When the service has an OpenAPI spec (see `qa-sentinel.config.yaml`), compare spec and code. A code change without a matching spec change is a `specDrift` finding. A spec generated at build time is not in the service repo: read the head version from `generatedSpecs` in context.json. Generated specs come from the code, so drift there means the generator annotations are missing or wrong.
 

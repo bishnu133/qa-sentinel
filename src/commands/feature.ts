@@ -1,3 +1,4 @@
+import { readManualCards } from "../manualTests.js";
 import fs from "node:fs";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
@@ -48,7 +49,7 @@ export async function featureCommand(o: FeatureOptions): Promise<number> {
   const tests = index.filter((t) => t.stories.includes(story));
   const active = tests.filter((t) => t.status === "active");
   const extra = ["", `**Feature tests:** ${active.length} tagged @story:${story}${tests.length > active.length ? ` (+${tests.length - active.length} waiting for a product fix)` : ""}, across ${new Set(tests.flatMap((t) => t.services)).size} service(s).`];
-  if (acs.length) extra.push("", traceMarkdown(story, traceStory(index, story, acs)).replace(/^### /, "#### "));
+  if (acs.length) extra.push("", traceMarkdown(story, traceStory(index, story, acs, readManualCards(cwd, c.tests.manualDir))).replace(/^### /, "#### "));
   const md = featureMarkdown(manifest, extra);
 
   const base = path.join(cwd, `qa-feature-${story}`);
