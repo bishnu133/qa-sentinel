@@ -10,7 +10,7 @@ import { scrubbedEnv } from "./env.js";
 import { layerEnvNames, layers } from "./layers.js";
 import type { RequirementSnapshot } from "./requirements.js";
 
-export const VERSION = "0.8.0-beta.1";
+export const VERSION = "0.8.0-beta.2";
 
 export interface RunDir {
   id: string;

@@ -145,6 +145,7 @@ Starting from nothing? `qa-sentinel init --mode scratch` scaffolds Playwright AP
 | `contract-check [--service s] [--story KEY] [--ref r] [--strict]` | Spec-first teams: each service's implemented spec against its agreed spec (`contract`), every endpoint, error responses included (`qa-contract-check.md`). `--strict` exits 1 on a mismatch (CI gate). No AI call. |
 | `data status` / `data sweep [--dry-run] [--older-than min]` | Test data (`testData.cleanup: ledger`): what tests created and didn't delete, and deleting what killed runs left behind, newest first, on the test environment only. |
 | `add-data-ledger [--dir d]` | Existing Playwright projects: writes `ledger.ts`, sets `testData.cleanup: ledger` and prints the fixture hook. |
+| `post-deploy --env sit [--story KEY] [--service s --sha x] [--wait 20] [--mrs] [--post]` | After a deployment: for each story it touches, checks every service the story needs is deployed, runs its tests there, reports (and comments on Jira); re-verifies agent MRs that were waiting for deployment. Still waiting: exit 75, to re-check later. |
 | `upgrade` | After updating qa-sentinel: refreshes its agents, skills, CI templates and project context; keeps your learned `write-*-test` conventions. |
 | `add-web [--healing none\|bubblegum]` | Adds the web layer to an existing project: turns `tests.web` on, writes the ui helper, page-object base, web fixtures, example spec and the write-web-test skill, and prints the Playwright project to add. (`init --web` does the same for new projects.) |
 | `healed [--results f] [--fail-on-heal]` | After a run with `QA_HEALING=bubblegum`: lists healed steps as page-object fixes (`qa-healed.md`) and keeps them for the next generation (`qa-healed.json`). |
@@ -158,6 +159,7 @@ Common flags: `--env <name>` (generate, verify, feature, showcase: an environmen
 | Status | Meaning |
 | --- | --- |
 | `VERIFIED` | Every required check ran and passed (fixme tests are listed separately as discrepancies) |
+| `WAITING_FOR_DEPLOYMENT` | Only test runs failed, and the change they test isn't deployed in that environment yet (`version` endpoint). Not a pass: `verify` exits 4 |
 | `FAILED` | Type-check, lint or a changed spec failed |
 | `BLOCKED` | The environment was missing or unreachable, or a run timed out. Never shown as success |
 | `NOT_RUN` | Nothing could be executed (e.g. helpers changed but no spec). Never shown as success |
@@ -318,7 +320,7 @@ The order follows external review #1 ([response](docs/REVIEW-RESPONSE-1.md)):
 | **v0.5** ✅ | Web (Playwright UI, page objects first, page snapshots for the agent), workflow planner (API-first setup graphs), video evidence, optional [Bubblegum](https://github.com/bishnu133/bubblegum) healing |
 | **v0.6** ✅ | One showcase video + evidence PDF per story, Mobile (WebdriverIO + Appium), tech scope / expected results and "is the story built?", story review, story-wide runs, bug cards, flaky retry, tag backfill, accessibility checks, metrics |
 | **v0.7.2** ✅ | Generated OpenAPI specs (`openapiCommand`), Mocha/vitest/jest test repos with per-test results, test repos inside a monorepo, skipping dependency-bot changes, generation after deployment, npm-ready package |
-| **v0.8** | Spec-first contracts (`contract`, `contract-check`), test-data ledger with reverse-order cleanup and a sweeper, `coverage` and `backfill`, `discover --gitlab-group`; then the rest of the v0.8 backlog |
+| **v0.8** | Spec-first contracts (`contract`, `contract-check`), test-data ledger, `coverage` and `backfill`, `discover --gitlab-group`; then gateway/BFF awareness, automatability triage with manual test cards, async patterns and test hooks, waiting-for-deployment and `post-deploy`, feature toggles, auth patterns, PII guard for evidence, Bedrock/Vertex routes, metrics for fast-forward/squash merges and cost by size, Cucumber features indexed, Bubblegum healing proven with the real engine |
 | **v0.7** ✅ | Learning from review (`lessons`, merged-without-edits by month), mobile end to end in the sandbox (native Android app, SHOP-109, emulator CI) |
 | Later | App screen snapshots for the agent, iOS and a device farm, mutation checks in the benchmark, alternative engines |
 

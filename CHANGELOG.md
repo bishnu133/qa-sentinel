@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.8.0-beta.2 — Environments, toggles, manual checks, gateways, personal data
+
+- **Waiting for deployment (C1):** tests that fail only because the change isn't running in the environment yet (the service's `version` endpoint) come back as `WAITING_FOR_DEPLOYMENT`, not `FAILED`, in `generate` and `verify` (exit 4). The agent MR goes up as a draft labelled `qa-sentinel::waiting_for_deployment`.
+- **Post-deploy stage (C2):** `post-deploy --env sit`: for each story a deployment touches, every service it needs deployed? Then its tests run there, results go to the report and the story; `--wait` keeps checking, still waiting = exit 75; `--mrs` re-verifies agent MRs that were waiting and marks them ready when verified. CI: `.qa-trigger-post-deploy` (service) and `qa-post-deploy` (test repo, trigger or schedule).
+- **Feature toggles (C3):** `@toggle:name=value` in test titles; `toggles.environments` holds the team's get/set/reset (and lock) commands; tests run in groups with their toggles set and the toggles are always put back, also on failure or interrupt.
+- **Gateways and BFFs (A2):** `gateway` rules on a gateway/BFF service and `upstream` composites in `test-map.yaml`: a service change selects the tests that reach it through the BFF; coverage counts them.
+- **Automatability triage (A3):** each requirement is automated, needs a test hook (named), is better tested in the service, or is manual (with a reason). Manual ones get manual test cards in `manual-tests/<story>.md`, counted as "checked by hand" in reports, traceability and the showcase.
+- **Async patterns (A4):** `pollUntil` in the scaffold, skills trigger through `tests.hooks` instead of sleeping and check side effects, fixed waits flagged, story review flags ACs that need a test hook.
+- **Auth patterns (D3):** `tests.auth` (helpers agents must reuse, roles with credentials from the environment); scaffolded `tokenFor`, TOTP and DPoP helpers; Singpass via MockPass; `doctor` checks roles.
+- **Personal data guard (F5):** showcase evidence is scanned for NRIC/FIN, real emails, phones and card numbers before it goes to Jira; `showcase.pii.mode: block` (default), `warn` or `off`; allowlists for test data.
+- **Model routes (E5):** `doctor` names the route (Claude login, Anthropic key, Bedrock, Vertex, or an organisation's gateway from managed settings) and what it is missing; auth errors give route-specific fixes.
+- **Metrics (B5, B6):** fast-forward and squash merges with deleted branches are judged from the merge requests' heads (fetched from origin); cost by change size per command, with budget suggestions after 10 runs.
+- **Cucumber (D4):** `.feature` scenarios are indexed for traceability, coverage and regression; writing features is planned (docs/decisions/cucumber.md).
+- **Proven:** runtime healing with the real Bubblegum engine (`sandbox/bubblegum/e2e.sh`, also in CI); a local Jenkins sandbox for `Jenkinsfile.tests` (`sandbox/jenkins`).
+
 ## 0.8.0-beta.1 — Spec-first contracts, test-data cleanup, coverage and backfill, service discovery
 
 - **Spec-first contracts:** `workspace.services[].contract` points to the agreed API spec when it lives outside the service repo: a file next to the tests, a specs repository (local clone or GitLab project, at a ref), a URL (with an optional `Authorization` header from an env var) or an attachment on the Jira story (newest match). Gap reports compare the implemented spec at head with it, field by field and including error responses, for the endpoints the MR touches (the rest are counted); the agreed spec is saved for the agents, who treat it as the API oracle, and mismatches count as breaking for risk. `contract-check [--strict]` checks every endpoint; `doctor` checks that the agreed spec is there. Jira attachments are downloaded only from the Jira site itself.

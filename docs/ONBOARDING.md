@@ -155,6 +155,43 @@ npx qa-sentinel coverage   # every endpoint and its tests; the untested ones ran
 - `project`: your own pattern; describe it in `testData.notes` so the agents follow it.
 - `none`: data is left behind, and generated tests say so.
 
+**Logging in.** Tell the agents how tests log in, so they reuse it instead of inventing a login:
+
+```yaml
+tests:
+  auth:
+    helpers: src/support/login.ts        # your helpers (new frameworks: src/api/auth.ts, tokenFor(request, "admin"))
+    roles: [{ name: admin }, { name: case-officer, env: [QA_OFFICER_USER, QA_OFFICER_PASSWORD] }]
+    notes: "SSO via MockPass in SIT; OTP seeds in QA_<ROLE>_TOTP_SEED"
+```
+
+Each role's credentials come from masked CI variables (default names `QA_<ROLE>_USER`, `QA_<ROLE>_PASSWORD`, `QA_<ROLE>_TOTP_SEED`); `doctor` says which are missing. The scaffolded helper also has TOTP one-time codes and DPoP proofs. For Singpass or Corppass logins, point test environments at MockPass and log in as its test identities.
+
+**Things that happen later** (scheduled jobs, queues, emails): list the test hooks your system offers, so tests trigger them instead of waiting, and story review asks for the missing ones:
+
+```yaml
+tests:
+  hooks:
+    - { name: run a scheduled job now, how: "POST /test/jobs/{job}/run (test environments only)" }
+    - { name: read sent emails, how: "GET /test/mailbox?to={email}" }
+```
+
+**Feature toggles.** Tests say what they need in their title (`@toggle:new-checkout=on`); qa-sentinel sets the toggles before it runs them and always puts them back, with your commands:
+
+```yaml
+toggles:
+  passEnv: [FLAGS_TOKEN]                       # only the toggle commands get it
+  environments:
+    sit:
+      get: curl -sf -H "Authorization: Bearer $FLAGS_TOKEN" https://flags.sit/api/flags/{toggle} | jq -r .value
+      set: curl -sf -X PUT -H "Authorization: Bearer $FLAGS_TOKEN" https://flags.sit/api/flags/{toggle} -d '{"value":"{value}"}'
+      # lockAcquire / lockRelease: your commands, if several pipelines share SIT
+```
+
+**Gateways and BFFs.** If tests call a gateway or BFF rather than the services, say what it forwards, so a service change selects those tests: on the BFF service, `gateway: [{ path: /api/orders, service: orders-service, servicePath: /orders }]`; for BFF endpoints that combine several services, list them under `upstream` in `test-map.yaml`.
+
+**Not everything can be automated.** For each acceptance criterion the plan says how it can be tested: automated, through a test hook (named), better in the service's unit or contract tests, or by hand. ACs checked by hand get a manual test card in `manual-tests/<story>.md` (written by generation, reviewed in the same MR); reports show them as "checked by hand", not as missing tests, and they don't hold back the showcase.
+
 **Little automation yet?** After the first gap reports, run `npx qa-sentinel backfill --service <name> --min-risk high --dry-run` to see the riskiest untested endpoints, then without `--dry-run` (add `--push` in CI) to get one reviewed MR per small batch.
 
 ## 5. CI
@@ -168,6 +205,7 @@ npx qa-sentinel coverage   # every endpoint and its tests; the untested ones ran
 | `JIRA_EMAIL` + `JIRA_API_TOKEN` / `JIRA_PAT` | test repo + services (masked) | stories, comments, showcase, bugs |
 | `QA_BASE_URL` (+ `QA_WEB_URL`, `QA_APPIUM_URL`, `QA_APP`) | test repo | the environment the tests run against |
 | `QA_SENTINEL_PACKAGE` | group | the qa-sentinel version to install |
+| `CLAUDE_CODE_USE_BEDROCK` + `AWS_REGION` + AWS credentials, or `CLAUDE_CODE_USE_VERTEX` + `CLOUD_ML_REGION` + `ANTHROPIC_VERTEX_PROJECT_ID` | test repo + services | instead of `ANTHROPIC_API_KEY`, when the model must go through Amazon Bedrock or Google Vertex AI |
 
 Include `ci/qa-sentinel/service.gitlab-ci.yml` from each service repo and `ci/qa-sentinel/tests.gitlab-ci.yml` from the test repo (Jenkins: one job per `Jenkinsfile.*`). If your service repos already include a shared CI project, you can include the service template from there once for all services.
 
@@ -175,6 +213,9 @@ Include `ci/qa-sentinel/service.gitlab-ci.yml` from each service repo and `ci/qa
 - **Dependency bots:** MRs from branches matching `ci.skipBranches` (default `^renovate/`, `^dependabot/`) get no gap report and no generation. Add your own bot or release branches there and run `qa-sentinel upgrade` to refresh the CI rules.
 - **Generate after deployment, not after merge:** when the tests must run against an environment the change has to be deployed to first, set `QA_GENERATE_AFTER: "deploy"` in the service project and add a job after your deploy job that `extends: .qa-trigger-generation` (the template shows it).
 - **Mocha, vitest, jest:** for its own verification runs, qa-sentinel adds a JUnit reporter (mocha's xunit, vitest's junit, jest-junit if installed) to read per-test results, which replaces the team's reporter in those runs only. Point the run command at the runner without a spec glob (spec paths are added), and keep `spec` out of `.mocharc`; `doctor` checks both.
+- **Not deployed yet:** tests that fail only because the change isn't running in the environment yet (the service's `version` endpoint says which commit runs there) come back as **waiting for deployment**, not failed; the MR stays a draft with the label `qa-sentinel::waiting_for_deployment`.
+- **After each deployment:** add a job after your deploy job that `extends: .qa-trigger-post-deploy` with `QA_ENVIRONMENT: sit`. The test repo then checks each story the deployment touches (every service it needs deployed?), runs its tests there and comments on the story, and re-verifies agent MRs that were waiting. Add a schedule with `QA_POST_DEPLOY=true` and `QA_ENVIRONMENT` to re-check what was still waiting.
+- **Which model route:** `doctor` says how the agents reach the model (your login, an Anthropic key, Bedrock, Vertex, or an organisation's gateway set by managed settings), because billing and data handling follow it.
 - **Test repo inside a monorepo** (e.g. `packages/api-tests`): run `qa-sentinel init` in that folder. The generated CI runs from it and keeps artifacts under it, and the service template finds it through `QA_TESTS_DIR`.
 
 ## 6. Roll out in steps
@@ -197,6 +238,8 @@ Include `ci/qa-sentinel/service.gitlab-ci.yml` from each service repo and `ci/qa
 | `guardrails.allowedHosts`, `guardrails.passEnv` | hosts your tests may call; extra env vars your tests need |
 | `agent.maxBudgetUsd`, `agent.model` | cost limits and model |
 | `reporting.targets`, `reporting.jira.visibility` | where reports go, who can see Jira comments |
-| `showcase.*`, `bugs.*` | the showcase pack and bug cards |
+| `showcase.*`, `bugs.*` | the showcase pack and bug cards; `showcase.pii` blocks evidence with personal data (NRIC, emails, phones, cards) |
+| `tests.auth`, `tests.hooks`, `toggles` | logins, test hooks, feature toggles |
+| `testData` | how test data is cleaned up |
 
 Upgrading later: update the package, then `npx qa-sentinel upgrade` (refreshes qa-sentinel's own files, keeps your learned conventions) and review the diff.
