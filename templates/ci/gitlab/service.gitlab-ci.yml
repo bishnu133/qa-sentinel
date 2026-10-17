@@ -9,6 +9,8 @@
 #     QA_TESTS_PROJECT: "my-group/qa-tests"
 #
 # CI/CD variables (masked, protected): ANTHROPIC_API_KEY, QA_SENTINEL_GITLAB_TOKEN (api scope)
+# Model through Amazon Bedrock or Google Vertex AI instead of an Anthropic key: CLAUDE_CODE_USE_BEDROCK=1 + AWS_REGION
+# + AWS credentials (or a runner role), or CLAUDE_CODE_USE_VERTEX=1 + CLOUD_ML_REGION + ANTHROPIC_VERTEX_PROJECT_ID + GCP credentials.
 # The service's name in qa-sentinel.config.yaml must equal $CI_PROJECT_NAME (or set QA_SERVICE_NAME).
 
 variables:

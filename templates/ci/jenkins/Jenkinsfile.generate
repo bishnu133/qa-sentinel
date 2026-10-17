@@ -16,6 +16,8 @@ pipeline {
     string(name: 'QA_SERVICE_PROJECT', defaultValue: '', description: 'GitLab project path of the service (to fetch the MR acceptance criteria)')
   }
   environment {
+    // Bedrock/Vertex instead: remove this line and set CLAUDE_CODE_USE_BEDROCK=1 + AWS_REGION (+ an agent role or AWS credentials),
+    // or CLAUDE_CODE_USE_VERTEX=1 + CLOUD_ML_REGION + ANTHROPIC_VERTEX_PROJECT_ID (+ GCP credentials).
     ANTHROPIC_API_KEY = credentials('anthropic-api-key')
     QA_SENTINEL_GITLAB_TOKEN = credentials('qa-sentinel-gitlab-token')
     {{baseUrlEnv}} = credentials('qa-base-url')

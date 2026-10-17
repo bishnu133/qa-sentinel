@@ -1,3 +1,4 @@
+import { modelRoute } from "../modelRoute.js";
 import { describeSource, loadContract } from "../contracts.js";
 import { findUp, hasPackage } from "../fsutil.js";
 import { safeUrl } from "../secrets.js";
@@ -44,8 +45,11 @@ export function runChecks(cwd: string, env: NodeJS.ProcessEnv = process.env): Ch
   if (claude.ok) add("ok", `Claude Code CLI (${claude.version})`);
   else add("fail", "Claude Code CLI installed", "npm i -g @anthropic-ai/claude-code");
 
-  if (env.ANTHROPIC_API_KEY) add("ok", "ANTHROPIC_API_KEY set");
-  else add("warn", "ANTHROPIC_API_KEY set", "required in CI; locally `claude` may use your login");
+  // Which way the agents reach the model: billing and data residency follow it, so say it plainly.
+  const route = modelRoute(env);
+  if (route.missing.length) add("fail", `model route: ${route.label}`, `missing ${route.missing.join("; ")}`);
+  else if (route.kind === "login") add("warn", `model route: ${route.label}`, "fine locally; CI needs ANTHROPIC_API_KEY, Bedrock (CLAUDE_CODE_USE_BEDROCK) or Vertex (CLAUDE_CODE_USE_VERTEX)");
+  else add("ok", `model route: ${route.label}`, route.managed ? `from ${route.managed}: runs are billed to whoever owns that setup` : undefined);
 
   isGitRepo(cwd) ? add("ok", "test repo is a git repository") : add("fail", "test repo is a git repository", "git init");
 

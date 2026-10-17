@@ -9,6 +9,8 @@ pipeline {
     string(name: 'QA_SERVICE_NAME', defaultValue: '', description: 'Service name in qa-sentinel.config.yaml (default: job name)')
   }
   environment {
+    // Bedrock/Vertex instead: remove this line and set CLAUDE_CODE_USE_BEDROCK=1 + AWS_REGION (+ an agent role or AWS credentials),
+    // or CLAUDE_CODE_USE_VERTEX=1 + CLOUD_ML_REGION + ANTHROPIC_VERTEX_PROJECT_ID (+ GCP credentials).
     ANTHROPIC_API_KEY = credentials('anthropic-api-key')
     QA_SENTINEL_GITLAB_TOKEN = credentials('qa-sentinel-gitlab-token')
     CI_PROJECT_ID = "${env.gitlabMergeRequestTargetProjectId}"

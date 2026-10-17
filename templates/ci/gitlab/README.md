@@ -14,7 +14,7 @@ Two files, two repos:
 4. `qa-agent-mr-checks` runs `qa-sentinel verify --policy` on that MR, which blocks unless VERIFIED. A QA engineer reviews and merges.
 
 ## Setup checklist
-- [ ] Masked variables in both repos (group level is easiest): `ANTHROPIC_API_KEY`, `QA_SENTINEL_GITLAB_TOKEN`
+- [ ] Masked variables in both repos (group level is easiest): `ANTHROPIC_API_KEY`, `QA_SENTINEL_GITLAB_TOKEN`. Using Amazon Bedrock or Google Vertex AI instead of an Anthropic key: `CLAUDE_CODE_USE_BEDROCK=1`, `AWS_REGION` and AWS credentials (or a runner role), or `CLAUDE_CODE_USE_VERTEX=1`, `CLOUD_ML_REGION`, `ANTHROPIC_VERTEX_PROJECT_ID` and GCP credentials; `qa-sentinel doctor` shows which route is used.
 - [ ] `{{baseUrlEnv}}` in this repo, pointing to the QA environment
 - [ ] Using Jira for requirements: `JIRA_EMAIL` + `JIRA_API_TOKEN` (Cloud) or `JIRA_PAT` (Server/DC) as masked variables in both repos. They are used by the CLI only and never passed to agents.
 - [ ] `QA_TESTS_PROJECT` in each service repo's `variables:`

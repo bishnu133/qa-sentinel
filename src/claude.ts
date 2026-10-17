@@ -1,3 +1,4 @@
+import { authHint } from "./modelRoute.js";
 import { spawnSync } from "node:child_process";
 import { log } from "./log.js";
 import { runProcess } from "./proc.js";
@@ -69,7 +70,7 @@ export function accessProblem(json: any): string | undefined {
   const text = String(json?.result ?? "");
   const status = json?.api_error_status;
   if (/not logged in|please run \/login|invalid x-api-key|authentication_error/i.test(text) || status === 401)
-    return "Claude Code has no valid credentials. Set ANTHROPIC_API_KEY (check with: echo ${#ANTHROPIC_API_KEY}) and test with: claude -p \"reply with OK\"";
+    return authHint();
   if (status === 429 || /rate limit|\(429\)/i.test(text))
     return `The Anthropic API refused the request (rate limit). Check the key's workspace limits and credits in the Anthropic Console.\n  ${text.slice(0, 300)}`;
   if (status === 403 || /credit balance|billing/i.test(text))

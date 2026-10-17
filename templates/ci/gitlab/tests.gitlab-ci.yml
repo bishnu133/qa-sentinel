@@ -4,7 +4,7 @@
 #   include:
 #     - local: "{{testsPrefix}}ci/qa-sentinel/tests.gitlab-ci.yml"
 #
-# CI/CD variables: ANTHROPIC_API_KEY, QA_SENTINEL_GITLAB_TOKEN (api + write_repository), {{baseUrlEnv}}{{#if webEnabled}}, {{webBaseUrlEnv}} (web){{/if}}{{#if mobileEnabled}}, QA_APPIUM_URL + QA_APP or QA_APP_PACKAGE/QA_BUNDLE_ID + QA_MOBILE_PLATFORM (mobile){{/if}}
+# CI/CD variables: ANTHROPIC_API_KEY (or Bedrock/Vertex: see service.gitlab-ci.yml), QA_SENTINEL_GITLAB_TOKEN (api + write_repository), {{baseUrlEnv}}{{#if webEnabled}}, {{webBaseUrlEnv}} (web){{/if}}{{#if mobileEnabled}}, QA_APPIUM_URL + QA_APP or QA_APP_PACKAGE/QA_BUNDLE_ID + QA_MOBILE_PLATFORM (mobile){{/if}}
 # Allow this project's CI_JOB_TOKEN to read the service repos (Settings › CI/CD › Job token permissions).
 #
 # Security notes:
