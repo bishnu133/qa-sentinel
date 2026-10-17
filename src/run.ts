@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { log } from "./log.js";
 import crypto from "node:crypto";
 import fs from "node:fs";
@@ -124,14 +125,24 @@ export interface Manifest {
   verification?: { status: string };
   plan?: { status: string; risk?: string; corrections: number };
   outcome?: string;
+  /** How big the change and the service are, to see how cost grows with them (metrics). */
+  size?: { changedFiles: number; diffLines: number; serviceFiles?: number };
 }
+
+const countFiles = (repo: string) => {
+  try {
+    return execFileSync("git", ["ls-files"], { cwd: repo, encoding: "utf8", maxBuffer: 64 * 1024 * 1024 }).split("\n").filter(Boolean).length;
+  } catch {
+    return undefined;
+  }
+};
 
 export function startManifest(
   cwd: string,
   c: Config,
   run: RunDir,
   kind: string,
-  svc: { service: ServiceConfig; base: string; head: string; changedFiles: string[] },
+  svc: { service: ServiceConfig; base: string; head: string; changedFiles: string[]; diff?: string },
   req: RequirementSnapshot,
 ): Manifest {
   const cfg = fs.readFileSync(path.join(cwd, CONFIG_FILE));
@@ -154,6 +165,11 @@ export function startManifest(
       storyKey: req.storyKey,
       approvalStatus: req.approvalStatus,
       acCount: req.acceptanceCriteria.length,
+    },
+    size: {
+      changedFiles: svc.changedFiles.length,
+      diffLines: (svc.diff ?? "").split("\n").filter((l) => /^[+-](?![+-]{2} )/.test(l)).length,
+      serviceFiles: countFiles(path.resolve(cwd, svc.service.path)),
     },
   };
   writeManifest(run, m);

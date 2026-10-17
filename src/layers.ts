@@ -92,7 +92,14 @@ export function layerEnvNames(c: Config): string[] {
   const mobile = c.tests.mobile.enabled
     ? [c.tests.mobile.appiumUrlEnv, "QA_MOBILE_PLATFORM", "QA_DEVICE_NAME", "QA_PLATFORM_VERSION", "QA_UDID", "QA_APP", "QA_APP_PACKAGE", "QA_APP_ACTIVITY", "QA_BUNDLE_ID", "QA_VIDEO", "ANDROID_HOME", "ANDROID_SDK_ROOT", "JAVA_HOME"]
     : [];
-  return [...new Set([...web, ...mobile])];
+  // Login roles (tests.auth.roles: their env names, plus the QA_<ROLE>_USER/_PASSWORD/_TOTP_SEED convention of the
+  // scaffolded auth helper), the test-data ledger's settings, and the poll timeout.
+  const roles = c.tests.auth.roles.flatMap((r) => {
+    const k = r.name.toUpperCase().replace(/[^A-Z0-9]+/g, "_");
+    return [...r.env, `QA_${k}_USER`, `QA_${k}_PASSWORD`, `QA_${k}_TOTP_SEED`];
+  });
+  const data = c.testData.cleanup === "ledger" ? [c.testData.sweepAuthEnv, "QA_DATA_DIR"] : [];
+  return [...new Set([...web, ...mobile, ...roles, ...data, "QA_POLL_TIMEOUT_MS"])];
 }
 
 /**

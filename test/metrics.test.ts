@@ -182,3 +182,18 @@ describe("metrics with merge request heads (GitLab refs/merge-requests/*/head)",
     expect(after).toEqual({ "run-ff": "merged-edited", "run-ff2": "merged-unedited", "run-sq": "merged-edited" });
   });
 });
+
+describe("cost by change size (B6)", () => {
+  it("groups cost by diff size and suggests budgets from p90 once there are enough runs", async () => {
+    const { computeMetrics, metricsMarkdown } = await import("../src/commands/metrics.js");
+    const run = (kind: string, diffLines: number, costUsd: number, status = "ok") => ({ kind, runId: "r", startedAt: "2026-10-01T00:00:00Z", finishedAt: "x", outcome: "reported", agent: { status, costUsd }, size: { changedFiles: 1, diffLines } }) as never;
+    const runs = [...Array.from({ length: 9 }, (_, i) => run("gap-report", 20, 0.2 + i * 0.01)), run("gap-report", 2000, 1.9, "max-budget")];
+    const m = computeMetrics(runs, []);
+    expect(m.bySize.map((x) => [x.bucket, x.runs, x.hitBudget])).toEqual([
+      ["< 50 lines", 9, 0],
+      ["> 1000", 1, 1],
+    ]);
+    expect(m.suggestedBudgets).toEqual([{ kind: "gap-report", runs: 10, p90CostUsd: 0.28, suggestedUsd: 0.5 }]);
+    expect(metricsMarkdown(m)).toContain("Budgets these runs suggest");
+  });
+});

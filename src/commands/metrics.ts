@@ -27,6 +27,9 @@ export interface Metrics {
   since?: string;
   runs: number;
   byKind: Record<string, { runs: number; outcomes: Record<string, number>; costUsd: number; avgCostUsd: number; avgDurationS: number }>;
+  /** Cost by change size (diff lines), per command: how cost grows, and the budget the runs suggest. */
+  bySize: { kind: string; bucket: string; runs: number; avgCostUsd: number; p90CostUsd: number; hitBudget: number }[];
+  suggestedBudgets: { kind: string; runs: number; p90CostUsd: number; suggestedUsd: number }[];
   costUsd: number;
   generate: { reachedVerification: number; verified: number; verificationRate: number | null };
   plans: { total: number; repaired: number; repairRate: number | null; invalid: number; risk: Record<string, number> };
@@ -213,6 +216,28 @@ export function computeMetrics(manifests: Manifest[], commits: AgentCommit[], si
     k.avgDurationS = round(k.avgDurationS / k.runs, 0);
     k.costUsd = round(k.costUsd);
   }
+  // B6: cost against the size of the change, and budgets from what runs really cost (p90 with headroom).
+  const BUCKETS: [string, number][] = [["< 50 lines", 50], ["50–300", 300], ["300–1000", 1000], ["> 1000", Infinity]];
+  const p90 = (xs: number[]) => (xs.length ? [...xs].sort((a, b) => a - b)[Math.min(xs.length - 1, Math.ceil(xs.length * 0.9) - 1)] : 0);
+  const bySize: Metrics["bySize"] = [];
+  const sized = manifests.filter((m) => m.size && m.agent?.costUsd !== undefined);
+  for (const kind of [...new Set(sized.map((m) => m.kind))]) {
+    let lower = 0;
+    for (const [bucket, upper] of BUCKETS) {
+      const xs = sized.filter((m) => m.kind === kind && m.size!.diffLines >= lower && m.size!.diffLines < upper);
+      lower = upper;
+      if (!xs.length) continue;
+      const costs = xs.map((m) => m.agent!.costUsd!);
+      bySize.push({ kind, bucket, runs: xs.length, avgCostUsd: round(costs.reduce((a, b) => a + b, 0) / xs.length, 3), p90CostUsd: round(p90(costs), 3), hitBudget: xs.filter((m) => /budget/.test(m.agent?.status ?? "") || /max-budget/.test(m.outcome ?? "")).length });
+    }
+  }
+  const suggestedBudgets = [...new Set(sized.map((m) => m.kind))]
+    .map((kind) => {
+      const costs = sized.filter((m) => m.kind === kind).map((m) => m.agent!.costUsd!);
+      const p = p90(costs);
+      return { kind, runs: costs.length, p90CostUsd: round(p, 3), suggestedUsd: round(Math.max(0.5, Math.ceil(p * 1.5 * 4) / 4), 2) };
+    })
+    .filter((x) => x.runs >= 10);
   const gens = manifests.filter((m) => m.kind === "generate");
   const reached = gens.filter((m) => /^(committed|not-pushed)-/.test(m.outcome ?? ""));
   const verified = reached.filter((m) => m.verification?.status === "VERIFIED");
@@ -225,6 +250,8 @@ export function computeMetrics(manifests: Manifest[], commits: AgentCommit[], si
     since,
     runs: manifests.length,
     byKind,
+    bySize,
+    suggestedBudgets,
     costUsd: round(manifests.reduce((s, m) => s + (m.agent?.costUsd ?? 0), 0)),
     generate: { reachedVerification: reached.length, verified: verified.length, verificationRate: rate(verified.length, reached.length) },
     plans: {
@@ -285,6 +312,13 @@ export function metricsMarkdown(m: Metrics): string {
     lines.push("", "## By command", "", "| Command | Runs | Avg cost | Avg agent time | Outcomes |", "| --- | --- | --- | --- | --- |");
     for (const [k, v] of Object.entries(m.byKind))
       lines.push(`| ${k} | ${v.runs} | $${v.avgCostUsd.toFixed(3)} | ${v.avgDurationS}s | ${Object.entries(v.outcomes).sort((a, b) => b[1] - a[1]).map(([o, n]) => `${o} ${n}`).join(", ")} |`);
+  }
+  if (m.bySize.length) {
+    lines.push("", "## Cost by size of the change", "", "| Command | Change size | Runs | Avg cost | p90 cost | Stopped at the budget |", "| --- | --- | --- | --- | --- | --- |");
+    for (const x of m.bySize) lines.push(`| ${x.kind} | ${x.bucket} | ${x.runs} | $${x.avgCostUsd.toFixed(3)} | $${x.p90CostUsd.toFixed(3)} | ${x.hitBudget} |`);
+    if (m.suggestedBudgets.length)
+      lines.push("", `**Budgets these runs suggest** (p90 × 1.5): ${m.suggestedBudgets.map((b) => `${b.kind} $${b.suggestedUsd.toFixed(2)} (${b.runs} runs)`).join(", ")}. Set them in \`agent.maxBudgetUsd\` (gapReport, generate, …).`);
+    else lines.push("", "_Budget suggestions appear once a command has 10 runs with sizes recorded._");
   }
   lines.push(
     "",

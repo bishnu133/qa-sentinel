@@ -116,6 +116,16 @@ export function runChecks(cwd: string, env: NodeJS.ProcessEnv = process.env): Ch
     }
   }
 
+  // Logging in: the helpers agents must reuse, and each role's credentials in the environment.
+  const auth = c.tests.auth;
+  if (auth.helpers) add(fs.existsSync(path.join(cwd, auth.helpers)) ? "ok" : "warn", `login helpers (${auth.helpers})`, fs.existsSync(path.join(cwd, auth.helpers)) ? undefined : "the path in tests.auth.helpers doesn't exist");
+  for (const r of auth.roles) {
+    const k = r.name.toUpperCase().replace(/[^A-Z0-9]+/g, "_");
+    const names = r.env.length ? r.env : [`QA_${k}_USER`, `QA_${k}_PASSWORD`];
+    const missing = names.filter((n) => !env[n]);
+    add(missing.length ? "warn" : "ok", `role ${r.name}: credentials in the environment`, missing.length ? `set ${missing.join(", ")} (masked CI variables)` : undefined);
+  }
+
   const mapFile = path.join(cwd, "test-map.yaml");
   if (!fs.existsSync(mapFile)) add("warn", "test-map.yaml present", "run `qa-sentinel learn`");
   else {

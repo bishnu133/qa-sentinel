@@ -88,6 +88,18 @@ export const ConfigSchema = z.object({
      * clock, read the emails sent, publish a queue message. Agents use these instead of waiting, and story review
      * flags requirements that need a hook nobody has built yet.
      */
+    /**
+     * Logging in: where the project's auth helpers live (agents reuse them, never invent a login), and the roles
+     * tests may log in as. Each role's credentials come from environment variables (masked CI variables), passed to
+     * test runs and never written into tests or reports.
+     */
+    auth: z
+      .object({
+        helpers: z.string().optional().describe("e.g. src/api/auth.ts or src/support/login.ts"),
+        roles: z.array(z.object({ name: z.string(), env: z.array(z.string()).default([]).describe("e.g. [QA_ADMIN_USER, QA_ADMIN_PASSWORD]") })).default([]),
+        notes: z.string().optional().describe("How login works here: SSO, OTP, DPoP, MockPass in test environments…"),
+      })
+      .default({}),
     hooks: z.array(z.object({ name: z.string(), how: z.string().describe("e.g. POST /test/jobs/{job}/run (test environments only)"), notes: z.string().optional() })).default([]),
     api: z.object({
       framework: z.enum(API_FRAMEWORKS),

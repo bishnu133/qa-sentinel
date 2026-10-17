@@ -138,13 +138,56 @@ export function indexSource(file: string, src: string): IndexedTest[] {
   });
 }
 
+/**
+ * Cucumber feature files: each Scenario (or Scenario Outline) is a test, its tags are the @-lines above it plus the
+ * Feature's (`@service:orders @endpoint:POST_/orders @story:SHOP-1 @ac:AC-2`). @wip/@skip/@ignore → skip, @fixme →
+ * fixme. Then-steps count as assertions. So existing BDD suites count for traceability, coverage and regression.
+ */
+export function indexFeature(file: string, src: string): IndexedTest[] {
+  const lines = src.split(/\r?\n/);
+  let featureTags: string[] = [];
+  let pending: string[] = [];
+  let feature: string | undefined;
+  const found: { line: number; title: string; tags: string[] }[] = [];
+  lines.forEach((raw, i) => {
+    const l = raw.trim();
+    if (l.startsWith("@")) pending.push(...l.split(/\s+/).filter((t) => t.startsWith("@")));
+    else if (/^Feature:/i.test(l)) {
+      feature = l.replace(/^Feature:\s*/i, "");
+      featureTags = pending;
+      pending = [];
+    } else if (/^(Scenario|Scenario Outline|Scenario Template|Example):/i.test(l)) {
+      found.push({ line: i + 1, title: l.replace(/^[^:]+:\s*/, ""), tags: [...featureTags, ...pending] });
+      pending = [];
+    } else if (l && !l.startsWith("#")) pending = l.startsWith("@") ? pending : pending.length && /^(Rule|Background):/i.test(l) ? [] : pending;
+  });
+  return found.map((f, k) => {
+    const end = k + 1 < found.length ? found[k + 1].line - 1 : lines.length;
+    const body = lines.slice(f.line, end);
+    const thens = body.filter((l) => /^\s*(Then|And|But)\b/.test(l)).length;
+    const parsed = parseTags(`${f.title} ${f.tags.join(" ")}`);
+    const tags = f.tags.map((t) => t.slice(1).toLowerCase());
+    return {
+      id: `${file}:${f.line}`,
+      file,
+      line: f.line,
+      endLine: end,
+      describe: feature,
+      status: tags.includes("fixme") ? "fixme" : tags.some((t) => ["wip", "skip", "ignore", "manual"].includes(t)) ? "skip" : "active",
+      assertions: thens,
+      statusOnly: false,
+      ...parsed,
+    } satisfies IndexedTest;
+  });
+}
+
 function walk(dir: string, root: string, out: string[]) {
   if (!fs.existsSync(dir)) return;
   for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
     if (e.name === "node_modules" || e.name.startsWith(".")) continue;
     const p = path.join(dir, e.name);
     if (e.isDirectory()) walk(p, root, out);
-    else if (SPEC.test(e.name)) out.push(path.relative(root, p).split(path.sep).join("/"));
+    else if (SPEC.test(e.name) || /\.feature$/.test(e.name)) out.push(path.relative(root, p).split(path.sep).join("/"));
   }
 }
 
@@ -152,7 +195,7 @@ function walk(dir: string, root: string, out: string[]) {
 export function buildTestIndex(repo: string, testDirs: string | string[]): IndexedTest[] {
   const files: string[] = [];
   for (const d of new Set(Array.isArray(testDirs) ? testDirs : [testDirs])) walk(path.join(repo, d), repo, files);
-  return [...new Set(files)].sort().flatMap((f) => indexSource(f, fs.readFileSync(path.join(repo, f), "utf8")));
+  return [...new Set(files)].sort().flatMap((f) => (f.endsWith(".feature") ? indexFeature : indexSource)(f, fs.readFileSync(path.join(repo, f), "utf8")));
 }
 
 /** Index every enabled layer's tests (API, and web when enabled). */
