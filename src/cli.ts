@@ -215,7 +215,8 @@ program
   .option("--since <when>", "30d, 12w or a date")
   .option("-o, --out <file>", "markdown output", "qa-metrics.md")
   .option("--json", "print the numbers as JSON instead")
-  .action(wrap(async (o) => metricsCommand({ cwd: cwd(), runs: o.runs, since: o.since, out: o.out, json: o.json })));
+  .option("--no-fetch", "don't fetch merge request heads from origin")
+  .action(wrap(async (o) => metricsCommand({ cwd: cwd(), runs: o.runs, since: o.since, out: o.out, json: o.json, fetch: o.fetch })));
 
 program
   .command("healed")
