@@ -5,6 +5,7 @@ import { cdpPort, healingOn } from "../web/healing";
 {{#if isScratch}}
 import { ApiClient } from "../api/client";
 import { DataFactory } from "../data/builders";
+import { DataLedger } from "../data/ledger";
 {{/if}}
 
 interface WebFixtures {
@@ -55,8 +56,14 @@ export const test = browserBase.extend<WebFixtures>({
     }
     await request.dispose();
   },
-  data: async ({}, use, testInfo) => {
-    await use(new DataFactory(`${testInfo.workerIndex}-${Date.now()}`));
+  data: async ({ playwright }, use, testInfo) => {
+    // Setup data goes to the API; it is deleted newest first when the test ends, passed or failed.
+    const request = await playwright.request.newContext({ baseURL: process.env.{{baseUrlEnv}}, extraHTTPHeaders: { Accept: "application/json" } });
+    const ledger = new DataLedger(request, testInfo.titlePath.join(" › "), `${testInfo.testId}-${testInfo.retry}`);
+    await use(new DataFactory(`${testInfo.workerIndex}-${Date.now()}`, ledger));
+    const failed = await ledger.cleanup();
+    if (failed.length) testInfo.annotations.push({ type: "data-cleanup-failed", description: failed.join("; ") });
+    await request.dispose();
   },
 {{/if}}
 });

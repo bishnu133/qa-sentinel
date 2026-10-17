@@ -6,7 +6,7 @@ import { matchesAny } from "../fsutil.js";
 import { formatUsage } from "../claude.js";
 import { useEnvironment, ARTIFACT_GLOBS, VERSION, agentEnv, bashRulesForTests, cleanAgentAnswer, createRunDir, findService, startManifest, testEnv, writeManifest } from "../run.js";
 import { checkContent, checkPaths, checkServiceUntouched, findingsMarkdown, generatePolicy, snapshotTree, violations } from "../guardrails.js";
-import { requirementItems, resolveRequirements, skippedBranch, storyMarkdown } from "../requirements.js";
+import { emptySnapshot, requirementItems, resolveRequirements, skippedBranch, storyMarkdown } from "../requirements.js";
 import { findDiscrepancies, verifyChanges } from "../verification.js";
 import { mrDescription } from "../reporting.js";
 import { generationSummary } from "../reporting/jiraSummary.js";
@@ -21,6 +21,7 @@ import { planChange } from "../plan/planner.js";
 import { actionable } from "../plan/validate.js";
 import { decisionTable } from "../plan/render.js";
 import { log } from "../log.js";
+import { sweepAfterRun } from "../testData.js";
 import { bugsFromDiscrepancies, fileBugs } from "../bugs/bugs.js";
 import { jiraContext } from "../scm/jira.js";
 import { runCommandsFor } from "../layers.js";
@@ -45,6 +46,21 @@ export interface GenerateOptions {
   /** Named environment from `environments` to run the tests against before anything is pushed. */
   env?: string;
   dryRun?: boolean;
+  /**
+   * Backfill (`qa-sentinel backfill`): no code change; write tests for these existing endpoints of `service`. The
+   * API contract is the oracle (no story), so a test that disagrees with the code is written as review/fixme.
+   */
+  backfill?: BackfillTarget[];
+}
+
+export interface BackfillTarget {
+  endpoint: string;
+  method: string;
+  path: string;
+  summary?: string;
+  risk: string;
+  gap: string;
+  existingTests: string[];
 }
 
 /**
@@ -60,6 +76,7 @@ export async function generateCommand(o: GenerateOptions): Promise<number> {
   }
   let service: ServiceConfig, repo: string;
   let parts: StoryPart[] | undefined;
+  if (o.story && o.backfill) throw new Error("backfill and story mode can't be combined");
   if (o.story) {
     const sp = await storyParts({ c, cwd, story: o.story });
     sp.notes.forEach((n) => log.warn(n));
@@ -80,7 +97,17 @@ export async function generateCommand(o: GenerateOptions): Promise<number> {
   if (workingChanges(cwd).some((x) => !matchesAny(x.path, ARTIFACT_GLOBS)) && !o.dryRun) throw new Error("The test repo has uncommitted changes; commit or stash them first.");
 
   let cs: ChangeSet, relevant: string[];
-  if (parts) {
+  if (o.backfill) {
+    if (!o.backfill.length) {
+      log.ok("nothing to backfill");
+      return 0;
+    }
+    // No change to diff: the "change" is the list of endpoints to cover, at the service's current commit.
+    const head = resolveSha(repo, o.head ?? "HEAD");
+    ensureAtCommit(repo, head, Boolean(o.checkout), cwd);
+    cs = { base: head, head, files: [], diff: backfillText(o.backfill) };
+    relevant = [service.openapi ?? "(api)"];
+  } else if (parts) {
     for (const p of parts) atLeast(p.repo, p.cs.head, Boolean(o.checkout), cwd);
     ({ cs, relevant } = combinedChange(o.story!, parts));
     log.step(`story ${o.story}: ${parts.map((p) => `${p.service.name} (${p.relevant.length} file(s))`).join(", ")}`);
@@ -100,7 +127,9 @@ export async function generateCommand(o: GenerateOptions): Promise<number> {
   // Requirements: explicit file → Jira (key from branch/commits) → the MR that introduced this commit.
   const ctx = gitlabContext(c.ci.gitlabUrl);
   const serviceProject = service.gitlabProject ?? process.env.QA_SERVICE_PROJECT;
-  const req = await resolveRequirements(c, {
+  const req = o.backfill
+    ? emptySnapshot(c)
+    : await resolveRequirements(c, {
     storyFile: o.storyFile,
     lookup: ctx && serviceProject && !parts ? { ctx, project: serviceProject, sha: cs.head } : undefined,
     keyHints: parts ? [o.story] : commitMessages(repo, cs.base, cs.head),
@@ -109,12 +138,14 @@ export async function generateCommand(o: GenerateOptions): Promise<number> {
     return resolveRequirements(c, {});
   });
   // Dependency-bot merges (ci.skipBranches): no generation. The branch comes from the merged MR or its merge commit.
-  const bot = parts ? undefined : skippedBranch(c, req.sourceBranch, git(repo, ["log", "-1", "--format=%B", cs.head]));
+  const bot = parts || o.backfill ? undefined : skippedBranch(c, req.sourceBranch, git(repo, ["log", "-1", "--format=%B", cs.head]));
   if (bot) {
     log.ok(`${bot} is in ci.skipBranches; nothing to generate`);
     return 0;
   }
-  if (req.source === "none") {
+  if (o.backfill) {
+    log.step(`backfill: ${o.backfill.length} endpoint(s) of ${service.name}, the API contract is the oracle`);
+  } else if (req.source === "none") {
     if (c.requirements.required) throw new Error("No requirements found for this change and requirements.required is true. Pass --story-file or link the MR/story.");
     log.warn("no requirements found: tests can only be checked against the contract and code");
   } else {
@@ -122,8 +153,13 @@ export async function generateCommand(o: GenerateOptions): Promise<number> {
   }
 
   const sha8 = parts ? o.story! : cs.head.slice(0, 8);
-  const branch = parts ? `qa-sentinel/story-${o.story}` : `qa-sentinel/${service.name}-${sha8}`;
-  const subject = parts ? `story ${o.story} (${parts.map((p) => p.service.name).join(", ")})` : `${service.name}@${sha8}`;
+  const backfillId = o.backfill ? `${new Date().toISOString().slice(0, 10)}-${backfillHash(o.backfill)}` : "";
+  const branch = parts ? `qa-sentinel/story-${o.story}` : o.backfill ? `qa-sentinel/backfill-${service.name}-${backfillId}` : `qa-sentinel/${service.name}-${sha8}`;
+  const subject = parts
+    ? `story ${o.story} (${parts.map((p) => p.service.name).join(", ")})`
+    : o.backfill
+      ? `backfill ${service.name} (${o.backfill.length} endpoint${o.backfill.length === 1 ? "" : "s"})`
+      : `${service.name}@${sha8}`;
   const policy = generatePolicy(c);
   const run = createRunDir(cwd, `gen-${service.name}`);
   fs.writeFileSync(path.join(run.dir, "change.diff"), cs.diff);
@@ -158,7 +194,13 @@ export async function generateCommand(o: GenerateOptions): Promise<number> {
     run,
     engine,
     dryRun: o.dryRun,
-    context: { kind: "generate", allowedWritePaths: policy.allowed, blockedWritePaths: policy.blocked, maxFixAttempts: c.agent.maxFixAttempts },
+    context: {
+      kind: o.backfill ? "backfill" : "generate",
+      allowedWritePaths: policy.allowed,
+      blockedWritePaths: policy.blocked,
+      maxFixAttempts: c.agent.maxFixAttempts,
+      ...(o.backfill ? { backfill: o.backfill } : {}),
+    },
     parts,
   });
   runs.push(...planned.runs);
@@ -260,8 +302,11 @@ export async function generateCommand(o: GenerateOptions): Promise<number> {
 
   // Phase 4: independent verification.
   log.step(`verifying ${changes.length} changed file(s) independently`);
+  const verifyStarted = Date.now() - 1000;
   const verification = await verifyChanges({ cwd, c, changes, runDir: run.dir, env: testEnv(c) });
   const discrepancies = findDiscrepancies(cwd, startSha, changes);
+  // Data the verified tests created and couldn't delete (or a killed test left): sweep it now, report what stays.
+  if (c.testData.cleanup === "ledger") findings.push(...(await sweepAfterRun(cwd, c, verifyStarted)));
   // Traceability from the tests' own tags: what each AC is now proven by, and tests that don't say what they prove.
   const index = indexTests(cwd, c);
   fs.writeFileSync(path.join(run.dir, "test-index.json"), JSON.stringify(index, null, 2));
@@ -316,7 +361,7 @@ export async function generateCommand(o: GenerateOptions): Promise<number> {
     "commit",
     "-q",
     "-m",
-    `test(${service.name}): QA agent updates for ${sha8}\n\nGenerated by qa-sentinel ${VERSION} from ${parts ? parts.map((p) => `${p.service.name}@${p.cs.head}`).join(", ") : `${service.name}@${cs.head}`}.\nRisk: ${planned.risked.overall}. Verification: ${verification.status}. Run: ${run.id}`,
+    `test(${service.name}): QA agent ${o.backfill ? `backfill (${o.backfill.map((b) => b.endpoint).join(", ")})` : `updates for ${sha8}`}\n\nGenerated by qa-sentinel ${VERSION} from ${parts ? parts.map((p) => `${p.service.name}@${p.cs.head}`).join(", ") : `${service.name}@${cs.head}`}.\nRisk: ${planned.risked.overall}. Verification: ${verification.status}. Run: ${run.id}`,
   ]);
   log.ok(`committed ${paths.length} file(s) on ${branch}`);
 
@@ -354,6 +399,7 @@ export async function generateCommand(o: GenerateOptions): Promise<number> {
         labels: [
           "qa-agent",
           ...(parts ? [`story::${o.story}`, ...parts.map((p) => `service::${p.service.name}`)] : [`service::${service.name}`]),
+          ...(o.backfill ? ["qa-sentinel::backfill"] : []),
           `qa-sentinel::${verification.status.toLowerCase()}`,
           `risk::${planned.risked.overall}`,
           ...(discrepancies.length ? ["qa-sentinel::discrepancy"] : []),
@@ -383,3 +429,22 @@ export async function generateCommand(o: GenerateOptions): Promise<number> {
   }
   return finish(`committed-${verification.status.toLowerCase()}`, verification.status === "VERIFIED" ? 0 : 1);
 }
+
+/** What change.diff holds in a backfill run: the endpoints to cover, as the plan's input. */
+export function backfillText(targets: BackfillTarget[]): string {
+  return [
+    "# Backfill: no code change",
+    "",
+    "These existing endpoints have no (or only weak or pending) tests. Plan one change per endpoint (type `new-endpoint`,",
+    "observable, oracle `missing` unless an approved requirement covers it) and cover it against the API contract.",
+    "",
+    ...targets.map((t) => `- ${t.method} ${t.path}${t.summary ? ` – ${t.summary}` : ""} (risk ${t.risk}; ${t.gap}${t.existingTests.length ? `; existing: ${t.existingTests.join(", ")}` : ""})`),
+    "",
+  ].join("\n");
+}
+
+const backfillHash = (targets: BackfillTarget[]) => {
+  let h = 0;
+  for (const ch of targets.map((t) => t.endpoint).join("|")) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
+  return h.toString(36).slice(0, 6);
+};

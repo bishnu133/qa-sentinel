@@ -25,6 +25,8 @@ Read its code in `test-changes.diff` (and the full file if needed), then decide:
 `fixme`/`skip` tests that encode the requirement against a known product bug are judged as written (as if they ran).
 `statusOnly: true` in the input is a hint from qa-sentinel, not a verdict: a 404 test may rightly assert only the status.
 
+Test data: when `qa-sentinel.config.yaml` has `testData.cleanup: ledger`, a test (or helper it adds) that creates a record without `track(...)`ing it leaves data behind; a test that relies on data it didn't create (a fixed id, a record made by hand) breaks on a fresh environment. Name either as an issue, whatever the verdict.
+
 For `weak` and `wrong-oracle`, list concrete `issues` and a one-line `suggestion` (the missing assertion).
 Under `missingScenarios`, list AC behaviour no test covers (boundaries, error paths, state after the call). Don't
 repeat tests that exist.

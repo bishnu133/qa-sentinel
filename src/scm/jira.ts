@@ -324,3 +324,46 @@ export async function issueFields(ctx: JiraContext, key: string): Promise<{ id: 
   }
   return out.sort((a, b) => Number(b.id.startsWith("customfield_")) - Number(a.id.startsWith("customfield_")) || a.name.localeCompare(b.name));
 }
+
+// ---------------------------------------------------------------------------------------------
+// Reading attachments (spec-first contracts attached to the story).
+
+export interface JiraAttachment {
+  id: string;
+  filename: string;
+  /** Download URL. */
+  content: string;
+  size?: number;
+  created?: string;
+}
+
+export async function storyAttachments(ctx: JiraContext, key: string): Promise<JiraAttachment[]> {
+  const j = await jiraCall(ctx, "GET", `/rest/api/2/issue/${encodeURIComponent(key)}?fields=attachment`);
+  return (j.fields?.attachment ?? []).map((a: any) => ({ id: String(a.id), filename: String(a.filename), content: String(a.content), size: a.size, created: a.created }));
+}
+
+const MAX_ATTACHMENT = 5 * 1024 * 1024;
+
+/** Download a text attachment. Only from this Jira site: the URL comes from Jira, but the credentials must not follow it elsewhere. */
+export async function downloadAttachment(ctx: JiraContext, url: string, size?: number): Promise<string> {
+  if (new URL(url).origin !== new URL(ctx.baseUrl).origin) throw new Error(`attachment URL is not on ${new URL(ctx.baseUrl).origin}`);
+  if (size !== undefined && size > MAX_ATTACHMENT) throw new Error(`attachment larger than ${MAX_ATTACHMENT / 1024 / 1024} MB`);
+  const res = await netFetch(url, { headers: { Authorization: ctx.authHeader }, redirect: "follow" });
+  if (!res.ok) throw new Error(`Jira attachment download: ${res.status}`);
+  // Read with a byte cap: the size Jira reports is not trusted to stop a huge body.
+  const reader = res.body?.getReader();
+  if (!reader) return "";
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > MAX_ATTACHMENT) {
+      await reader.cancel().catch(() => undefined);
+      throw new Error(`attachment larger than ${MAX_ATTACHMENT / 1024 / 1024} MB`);
+    }
+    chunks.push(value);
+  }
+  return Buffer.concat(chunks).toString("utf8");
+}

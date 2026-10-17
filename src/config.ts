@@ -3,6 +3,7 @@ import path from "node:path";
 import YAML from "yaml";
 import { z } from "zod";
 import { DEFAULT_TEMPLATE, SECTION_ROLES } from "./storyTemplate.js";
+import { ContractSourceSchema } from "./contractSource.js";
 
 export const CONFIG_FILE = "qa-sentinel.config.yaml";
 
@@ -35,6 +36,11 @@ const ServiceSchema = z.object({
    * this folder onto it; `path` (local) already points at the folder.
    */
   subdir: z.string().optional(),
+  /**
+   * Spec-first teams: the agreed API spec (the source of truth), when it lives outside the service repo or differs
+   * from what the code generates. The implemented spec (`openapi`) is checked against it field by field.
+   */
+  contract: ContractSourceSchema.optional(),
   dependsOn: z.array(z.string()).default([]),
   /** api: a backend service (API tests); web: a front end (web UI tests through page objects); mobile: an app (WebdriverIO + Appium, screen objects). UI layers set data up via the API. */
   kind: z.enum(["api", "web", "mobile"]).default("api"),
@@ -176,6 +182,22 @@ export const ConfigSchema = z.object({
     .object({
       dir: z.string().default("kb"),
       maxChars: z.number().int().min(1000).max(200_000).default(40_000),
+    })
+    .default({}),
+  /**
+   * Test data the tests create. ledger: every created record is written to a ledger with the request that deletes it;
+   * the test fixture deletes them in reverse order when the test ends (pass or fail), and `qa-sentinel data sweep`
+   * removes what a killed run left behind. project: the project has its own cleanup pattern (describe it in `notes`).
+   * none: data is left behind (say so in reports).
+   */
+  testData: z
+    .object({
+      cleanup: z.enum(["ledger", "project", "none"]).default("project"),
+      ledgerDir: z.string().default(".qa-data"),
+      /** Environment variable with the Authorization header value the sweeper sends (e.g. "Bearer …"). */
+      sweepAuthEnv: z.string().regex(/^[A-Z_][A-Z0-9_]*$/).default("QA_CLEANUP_AUTH"),
+      /** How this project creates and removes test data (project mode): helpers, naming conventions, its own sweeper. */
+      notes: z.string().optional(),
     })
     .default({}),
   /** Independent review of generated tests (assertion strength against the acceptance criteria). */
@@ -383,6 +405,13 @@ export const ConfigSchema = z.object({
       }),
     )
     .default({}),
+}).superRefine((c, ctx) => {
+  // Services are looked up by name (CLI flags, dependsOn, stories, CI): two with one name would silently use the first.
+  const seen = new Set<string>();
+  for (const s of c.workspace.services) {
+    if (seen.has(s.name)) ctx.addIssue({ code: "custom", path: ["workspace", "services"], message: `two services are named "${s.name}"; names must be unique` });
+    seen.add(s.name);
+  }
 });
 
 export type Config = z.infer<typeof ConfigSchema>;

@@ -8,7 +8,7 @@ import { type FileChange, showFile, workingChanges } from "./git.js";
 
 export interface Finding {
   level: "violation" | "warning";
-  rule: "blocked-path" | "outside-allowed" | "service-repo-modified" | "url-host" | "secret" | "assertion-removed" | "test-deleted" | "traceability";
+  rule: "blocked-path" | "outside-allowed" | "service-repo-modified" | "url-host" | "secret" | "assertion-removed" | "test-deleted" | "traceability" | "test-data";
   file: string;
   message: string;
 }

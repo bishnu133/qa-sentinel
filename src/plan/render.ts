@@ -1,5 +1,6 @@
 import type { ContractDiff } from "../analysis/contractDiff.js";
 import { contractDiffMarkdown } from "../analysis/contractDiff.js";
+import { contractCheckMarkdown } from "../contracts.js";
 import type { RiskLevel, TestPlan } from "./schema.js";
 import type { RiskedChange } from "./risk.js";
 import { workflowLine } from "./workflow.js";
@@ -124,6 +125,7 @@ export function renderGapReport(i: RenderInput): string {
   }
 
   out.push(contractDiffMarkdown(i.contract, i.specPath), "");
+  if (i.contract.agreed?.length) out.push(contractCheckMarkdown(i.contract.agreed, new Set(i.contract.changes.map((x) => x.endpoint))), "");
   if (i.traceability) out.push(i.traceability, "");
   if (plan.specDrift.length) {
     out.push("**Spec drift** (code vs spec)");

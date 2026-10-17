@@ -192,6 +192,8 @@ export function configure(dir, o = {}) {
     ...(WEB_SERVICES.includes(name) ? { kind: "web", routes: STOREFRONT_ROUTES } : { openapi: "openapi.yaml" }),
     ...(o.group ? { gitlabProject: `${o.group}/${name}` } : {}),
     dependsOn: name === "orders-service" ? ["payments-service", "notifications-service"] : name === "storefront" ? ["orders-service", "payments-service"] : [],
+    // Spec-first (setup --spec-first): the agreed orders API lives in the test repo, apart from the code's spec.
+    ...(o.specFirst && name === "orders-service" ? { contract: { file: "specs/orders-service.agreed.yaml" } } : {}),
     version: { path: `/${name.replace(/-service$/, "")}/version`, field: "commit" },
   }));
   if (mobile) {

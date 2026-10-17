@@ -1,7 +1,12 @@
 #!/usr/bin/env node
+import { discoverCommand } from "./commands/discover.js";
+import { coverageCommand } from "./commands/coverage.js";
+import { backfillCommand } from "./commands/backfill.js";
+import { dataStatusCommand, dataSweepCommand } from "./commands/data.js";
+import { contractCheckCommand } from "./commands/contractCheck.js";
 import { ClaudeAccessError } from "./claude.js";
 import { Command, Option } from "commander";
-import { addMobileCommand, addWebCommand, initCommand, upgradeCommand } from "./commands/init.js";
+import { addDataLedgerCommand, addMobileCommand, addWebCommand, initCommand, upgradeCommand } from "./commands/init.js";
 import { healedCommand } from "./commands/healed.js";
 import { reviewStoryCommand } from "./commands/reviewStoryCmd.js";
 import { bugsCommand } from "./commands/bugs.js";
@@ -83,6 +88,12 @@ program
   .action(wrap(async (o) => void addWebCommand({ cwd: cwd(), healing: o.healing })));
 
 program
+  .command("add-data-ledger")
+  .description("existing projects: track the test data tests create and delete it afterwards (writes ledger.ts, sets testData.cleanup: ledger)")
+  .option("--dir <dir>", "where to write ledger.ts (default: your data/fixtures folder, else the API helpers folder)")
+  .action(wrap(async (o) => void addDataLedgerCommand({ cwd: cwd(), dir: o.dir })));
+
+program
   .command("add-mobile")
   .description("add the mobile (WebdriverIO + Appium) test layer to an existing qa-sentinel project")
   .addOption(new Option("--platform <platform>", "android | ios (default when QA_MOBILE_PLATFORM is not set)").choices(["android", "ios"]))
@@ -114,6 +125,70 @@ program
   .option("--limit <n>", "at most this many tests", (v) => Number(v))
   .option("--dry-run", "list the untagged tests")
   .action(wrap(async (o) => tagCommand({ cwd: cwd(), push: o.push, limit: o.limit, dryRun: o.dryRun })));
+
+program
+  .command("discover")
+  .description("list a GitLab group's projects and draft service entries: kind, OpenAPI spec, dependencies with evidence")
+  .requiredOption("--gitlab-group <group>", "group path or id, e.g. acme/platform")
+  .option("--no-subgroups", "only the group itself")
+  .option("--limit <n>", "at most this many projects", (v) => Number(v))
+  .option("--apply", "add the services not configured yet to qa-sentinel.config.yaml")
+  .option("-o, --out <file>", "draft YAML (a .md with the evidence next to it)", "qa-services.draft.yaml")
+  .action(wrap(async (o) => discoverCommand({ cwd: cwd(), group: o.gitlabGroup, subgroups: o.subgroups, limit: o.limit, apply: o.apply, out: o.out })));
+
+program
+  .command("coverage")
+  .description("every endpoint (and page) with the tests that exercise it; untested ones ranked by risk (no agent, no cost)")
+  .option("--service <name>", "only this service")
+  .option("--service-path <path>", "where that service is checked out (CI)")
+  .option("--json", "print the result as JSON")
+  .option("-o, --out <file>", "markdown output (a .json next to it)", "qa-coverage.md")
+  .action(wrap(async (o) => coverageCommand({ cwd: cwd(), service: o.service, servicePath: o.servicePath, json: o.json, out: o.out })));
+
+program
+  .command("backfill")
+  .description("write tests for the riskiest untested endpoints of a service, a small reviewed batch per run")
+  .requiredOption("--service <name>", "service from qa-sentinel.config.yaml")
+  .option("--service-path <path>", "service checkout (CI)")
+  .option("--batch <n>", "endpoints per run (one MR)", (v) => Number(v), 5)
+  .addOption(new Option("--min-risk <level>", "only gaps at this risk or above").choices(["low", "medium", "high", "critical"]))
+  .option("--include-weak", "also endpoints whose tests only check the status or are all fixme/skip")
+  .option("--endpoint <endpoint...>", 'exactly these, e.g. "POST /orders"')
+  .option("--checkout", "check the service out at its current commit if needed")
+  .option("--push", "push the branch and open a merge request")
+  .option("--env <name>", "environment from `environments` to verify against")
+  .option("--dry-run", "show the batch without generating")
+  .action(
+    wrap(async (o) =>
+      backfillCommand({ cwd: cwd(), service: o.service, servicePath: o.servicePath, batch: o.batch, minRisk: o.minRisk, includeWeak: o.includeWeak, endpoints: o.endpoint, checkout: o.checkout, push: o.push, env: o.env, dryRun: o.dryRun }),
+    ),
+  );
+
+const data = program.command("data").description("test data the tests created (testData.cleanup: ledger)");
+data
+  .command("status")
+  .description("list records the tests created and haven't deleted yet")
+  .option("--older-than <minutes>", "only records from runs idle this long", (v) => Number(v))
+  .action(wrap(async (o) => dataStatusCommand({ cwd: cwd(), olderThan: o.olderThan })));
+data
+  .command("sweep")
+  .description("delete what killed runs left behind, newest first, on the test environment")
+  .option("--dry-run", "list what would be deleted")
+  .option("--older-than <minutes>", "skip runs active in the last N minutes, which may still use their data (default 30; 0 right after your own run)", (v) => Number(v))
+  .option("-o, --out <file>", "markdown report")
+  .action(wrap(async (o) => dataSweepCommand({ cwd: cwd(), dryRun: o.dryRun, olderThan: o.olderThan, out: o.out })));
+
+program
+  .command("contract-check")
+  .description("spec-first: check each service's implemented OpenAPI spec against its agreed spec (`contract`), every endpoint")
+  .option("--service <name>", "only this service")
+  .option("--service-path <path>", "where that service is checked out (CI)")
+  .option("--story <key>", "Jira story (for contracts attached to the story)")
+  .option("--ref <ref>", "service commit, branch or tag to check", "HEAD")
+  .option("--strict", "exit 1 on any mismatch (CI gate)")
+  .option("--json", "print the result as JSON")
+  .option("-o, --out <file>", "markdown output", "qa-contract-check.md")
+  .action(wrap(async (o) => contractCheckCommand({ cwd: cwd(), service: o.service, servicePath: o.servicePath, story: o.story, ref: o.ref, strict: o.strict, json: o.json, out: o.out })));
 
 program
   .command("story-check")

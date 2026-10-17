@@ -12,6 +12,7 @@ import { type PlanValidation, validatePlan } from "./validate.js";
 import { type RiskedChange, applyRisk } from "./risk.js";
 import type { RiskLevel, TestPlan } from "./schema.js";
 import { log } from "../log.js";
+import { type ContractCheck, checkContract, contractCheckMarkdown, loadContract, warnContract } from "../contracts.js";
 import type { StoryPart } from "../story.js";
 import { layers, primaryLayer } from "../layers.js";
 
@@ -45,8 +46,11 @@ export interface PlanInput {
 export const oracleOf = (req: RequirementSnapshot): "provided" | "ambiguous" | "missing" =>
   req.source === "none" ? "missing" : req.acceptanceCriteria.length ? "provided" : "ambiguous";
 
-/** Deterministic contract diff for the service's OpenAPI spec, saved into the run dir. */
-export async function computeContractDiff(i: Pick<PlanInput, "c" | "service" | "repo" | "cs" | "run" | "parts">): Promise<ContractDiff> {
+/**
+ * Deterministic contract diff for the service's OpenAPI spec, saved into the run dir. Spec-first services (`contract`)
+ * also get their implemented spec at head checked against the agreed one; the agreed spec is saved for the agents.
+ */
+export async function computeContractDiff(i: Pick<PlanInput, "c" | "service" | "repo" | "cs" | "run" | "parts"> & { cwd?: string; req?: Pick<RequirementSnapshot, "storyKey"> }): Promise<ContractDiff> {
   const env = testEnv(i.c);
   /** The spec at base and head; a generated head spec is saved in the run dir so the agent can read it. */
   const specs = async (repo: string, cs: ChangeSet, s: ServiceConfig) => {
@@ -54,29 +58,50 @@ export async function computeContractDiff(i: Pick<PlanInput, "c" | "service" | "
     const base = await specAt(repo, cs.base, s, o);
     const head = await specAt(repo, cs.head, s, o);
     if (s.openapiCommand && head && s.openapi) fs.writeFileSync(path.join(i.run.dir, `spec-${s.name}${path.extname(s.openapi) || ".yaml"}`), head);
-    return diffSpecs(base, head);
+    return { d: diffSpecs(base, head), head };
+  };
+  const agreedFor = async (s: ServiceConfig, head: string | undefined): Promise<ContractCheck | undefined> => {
+    if (!s.contract) return undefined;
+    const { contract, reason } = await loadContract(i.c, s.contract, { cwd: i.cwd ?? process.cwd(), storyKey: i.req?.storyKey, env: process.env });
+    warnContract(s.name, reason);
+    if (contract) fs.writeFileSync(path.join(i.run.dir, `agreed-spec-${s.name}${/^\s*[{[]/.test(contract.text) ? ".json" : ".yaml"}`), contract.text);
+    return checkContract(s.name, contract, head, reason);
+  };
+  const finish = (d: ContractDiff, md: string): ContractDiff => {
+    let out = md;
+    if (d.agreed?.length) {
+      const touched = new Set(d.changes.map((x) => x.endpoint));
+      fs.writeFileSync(path.join(i.run.dir, "contract-check.json"), JSON.stringify(d.agreed, null, 2));
+      fs.writeFileSync(path.join(i.run.dir, "contract-check.md"), contractCheckMarkdown(d.agreed) + "\n");
+      out += "\n\n" + contractCheckMarkdown(d.agreed, touched);
+    }
+    fs.writeFileSync(path.join(i.run.dir, "contract-diff.json"), JSON.stringify(d, null, 2));
+    fs.writeFileSync(path.join(i.run.dir, "contract-diff.md"), out + "\n");
+    return d;
   };
   if (i.parts?.length) {
     // Story mode: one contract diff per service with a spec, merged; the markdown keeps a section per service.
-    const each = await Promise.all(i.parts.map(async (p) => ({ p, d: p.service.openapi ? await specs(p.repo, p.cs, p.service) : diffSpecs(undefined, undefined) })));
+    const each = await Promise.all(
+      i.parts.map(async (p) => {
+        const r = p.service.openapi ? await specs(p.repo, p.cs, p.service) : { d: diffSpecs(undefined, undefined), head: undefined };
+        return { p, d: r.d, agreed: await agreedFor(p.service, r.head) };
+      }),
+    );
     const compared = each.filter((x) => x.d.status !== "no-spec");
+    const agreed = each.flatMap((x) => (x.agreed ? [x.agreed] : []));
     const d: ContractDiff = {
       status: compared.find((x) => x.d.status === "compared")?.d.status ?? compared[0]?.d.status ?? "no-spec",
       changes: compared.flatMap((x) => x.d.changes),
       note: compared.length ? undefined : "no service in this story has an OpenAPI spec",
+      ...(agreed.length ? { agreed } : {}),
     };
-    fs.writeFileSync(path.join(i.run.dir, "contract-diff.json"), JSON.stringify(d, null, 2));
-    fs.writeFileSync(
-      path.join(i.run.dir, "contract-diff.md"),
-      (compared.length ? compared.map((x) => `#### ${x.p.service.name}\n${contractDiffMarkdown(x.d, x.p.service.openapi)}`).join("\n\n") : contractDiffMarkdown(d)) + "\n",
-    );
-    return d;
+    return finish(d, compared.length ? compared.map((x) => `#### ${x.p.service.name}\n${contractDiffMarkdown(x.d, x.p.service.openapi)}`).join("\n\n") : contractDiffMarkdown(d));
   }
   const spec = i.service.openapi;
-  const d = spec ? await specs(i.repo, i.cs, i.service) : diffSpecs(undefined, undefined);
-  fs.writeFileSync(path.join(i.run.dir, "contract-diff.json"), JSON.stringify(d, null, 2));
-  fs.writeFileSync(path.join(i.run.dir, "contract-diff.md"), contractDiffMarkdown(d, spec) + "\n");
-  return d;
+  const r = spec ? await specs(i.repo, i.cs, i.service) : { d: diffSpecs(undefined, undefined), head: undefined };
+  const agreed = await agreedFor(i.service, r.head);
+  const d: ContractDiff = agreed ? { ...r.d, agreed: [agreed] } : r.d;
+  return finish(d, contractDiffMarkdown(d, spec));
 }
 
 /**
@@ -111,9 +136,17 @@ export async function planChange(i: PlanInput): Promise<PlanOutcome> {
         testLayers: layers(c).map((l) => ({ layer: l.layer, dir: l.dir, helpersDir: l.helpersDir, runCommand: l.runCommand })),
         serviceLayer: primaryLayer(c, i.service),
         ...(i.service.routes.length ? { serviceRoutes: i.service.routes } : {}),
+        testData: c.testData,
         acceptanceCriteriaIds: i.req.acceptanceCriteria.map((a) => a.id),
         scopeItemIds: (i.req.scopeItems ?? []).map((x) => x.id),
         contractDiff: `${run.rel}/contract-diff.md`,
+        // Spec-first: the agreed spec is the source of truth for the API; contract-check.md lists where the code differs.
+        ...(contract.agreed?.length
+          ? {
+              agreedSpecs: fs.readdirSync(run.dir).filter((f) => f.startsWith("agreed-spec-")).map((f) => `${run.rel}/${f}`),
+              contractCheck: `${run.rel}/contract-check.md`,
+            }
+          : {}),
         // Specs generated at build time aren't in the service repo: the head version is in the run dir.
         ...(() => {
           const files = fs.readdirSync(run.dir).filter((f) => f.startsWith("spec-"));

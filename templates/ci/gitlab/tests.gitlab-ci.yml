@@ -14,7 +14,7 @@
 #   the QA environment. Generated tests are code; isolate where they run.
 
 variables:
-  QA_SENTINEL_VERSION: "0.7.2"
+  QA_SENTINEL_VERSION: "0.8.0-beta.1"
   # Where to install qa-sentinel from: set QA_SENTINEL_PACKAGE as a group/project CI/CD variable, e.g.
   # "github:bishnu133/qa-sentinel#main" until it is on npm. Default: qa-sentinel@$QA_SENTINEL_VERSION.
   # (Not defined here on purpose: trigger jobs forward YAML variables downstream, where they override CI/CD variables.)
@@ -24,20 +24,22 @@ variables:
 .qa-sentinel-install:
   script:
     - |
-      qa_pkg="${QA_SENTINEL_PACKAGE:-qa-sentinel@${QA_SENTINEL_VERSION}}"
-      case "$qa_pkg" in
-        github:*|git+https://github.com/*|https://github.com/*)
-          src="${qa_pkg#github:}"; src="${src#git+}"; src="${src#https://github.com/}"
-          repo="${src%%#*}"; repo="${repo%.git}"; ref="main"
-          case "$src" in *"#"*) ref="${src#*#}" ;; esac
-          rm -rf /tmp/qa-sentinel-src /tmp/qa-sentinel-*.tgz
-          git clone -q --depth 1 --branch "$ref" "https://github.com/${repo}.git" /tmp/qa-sentinel-src
-          (cd /tmp/qa-sentinel-src && npm ci --no-audit --no-fund --loglevel=error && npm pack --silent --pack-destination /tmp > /dev/null)
-          qa_pkg="$(ls /tmp/qa-sentinel-*.tgz | head -n 1)"
-          ;;
-      esac
-      npm i -g --no-audit --no-fund --loglevel=error "$qa_pkg"
-      qa-sentinel --version
+      if [ "${QA_INSTALL_SKIP:-}" != "1" ] && ! command -v qa-sentinel >/dev/null 2>&1; then
+        qa_pkg="${QA_SENTINEL_PACKAGE:-qa-sentinel@${QA_SENTINEL_VERSION}}"
+        case "$qa_pkg" in
+          github:*|git+https://github.com/*|https://github.com/*)
+            src="${qa_pkg#github:}"; src="${src#git+}"; src="${src#https://github.com/}"
+            repo="${src%%#*}"; repo="${repo%.git}"; ref="main"
+            case "$src" in *"#"*) ref="${src#*#}" ;; esac
+            rm -rf /tmp/qa-sentinel-src /tmp/qa-sentinel-*.tgz
+            git clone -q --depth 1 --branch "$ref" "https://github.com/${repo}.git" /tmp/qa-sentinel-src
+            (cd /tmp/qa-sentinel-src && npm ci --no-audit --no-fund --loglevel=error && npm pack --silent --pack-destination /tmp > /dev/null)
+            qa_pkg="$(ls /tmp/qa-sentinel-*.tgz | head -n 1)"
+            ;;
+        esac
+        npm i -g --no-audit --no-fund --loglevel=error "$qa_pkg"
+      fi
+      if [ "${QA_INSTALL_SKIP:-}" != "1" ]; then qa-sentinel --version; fi
 
 .qa-node:
   image: mcr.microsoft.com/playwright:v1.49.0-noble
@@ -54,6 +56,14 @@ variables:
     # Browser matching the @playwright/test version in the lockfile (a no-op when the image already has it).
     - npx playwright install chromium
 {{/if}}
+  # Test data a failed or killed test left behind (testData.cleanup: ledger): deleted even when the job fails.
+  # after_script is a new shell: the environment's URL comes back from .qa-env.sh (written after QA_ENV_START).
+  after_script:
+    - cd "$CI_PROJECT_DIR/{{testsPrefix}}."
+    - if [ -f "$CI_PROJECT_DIR/.qa-env.sh" ]; then . "$CI_PROJECT_DIR/.qa-env.sh"; fi
+    - if ls "{{ledgerDir}}"/*.jsonl >/dev/null 2>&1; then export QA_INSTALL_SKIP=0; else export QA_INSTALL_SKIP=1; fi
+    - !reference [.qa-sentinel-install, script]
+    - if [ "$QA_INSTALL_SKIP" = "0" ]; then qa-sentinel data sweep --older-than 0 --out qa-data-sweep.md || echo "WARNING qa-sentinel – test data was left behind on the test environment (see above and qa-data-sweep.md)"; fi
 
 {{#if isMaintenance}}
 # Phase 2: triggered by a service repo after merge. Opens an MR with new/updated API tests.
@@ -76,6 +86,7 @@ qa-generate:
     # Optional ephemeral QA environment (e.g. start the services under test). Set QA_ENV_START in your
     # .gitlab-ci.yml variables, e.g. "source qa-env/start.sh"; it may export {{baseUrlEnv}}.
     - if [ -n "$QA_ENV_START" ]; then eval "$QA_ENV_START"; fi
+    - echo "export {{baseUrlEnv}}='${{baseUrlEnv}}'" > "$CI_PROJECT_DIR/.qa-env.sh"
     - git remote set-url origin "${CI_SERVER_URL}/${CI_PROJECT_PATH}.git"   # strip the job token GitLab put in .git/config
 {{#if healingBubblegum}}
     # Locators healed in the latest scheduled run (qa-healed job): the agent fixes the page objects it touches.
@@ -129,6 +140,7 @@ qa-agent-mr-checks:
     # Optional ephemeral QA environment (e.g. start the services under test). Set QA_ENV_START in your
     # .gitlab-ci.yml variables, e.g. "source qa-env/start.sh"; it may export {{baseUrlEnv}}.
     - if [ -n "$QA_ENV_START" ]; then eval "$QA_ENV_START"; fi
+    - echo "export {{baseUrlEnv}}='${{baseUrlEnv}}'" > "$CI_PROJECT_DIR/.qa-env.sh"
     - qa-sentinel verify $QA_VERIFY_POLICY --base "$CI_MERGE_REQUEST_DIFF_BASE_SHA" --out qa-verify.md
   artifacts:
     when: always
@@ -157,6 +169,7 @@ api-tests:
     # Optional ephemeral QA environment (e.g. start the services under test). Set QA_ENV_START in your
     # .gitlab-ci.yml variables, e.g. "source qa-env/start.sh"; it may export {{baseUrlEnv}}.
     - if [ -n "$QA_ENV_START" ]; then eval "$QA_ENV_START"; fi
+    - echo "export {{baseUrlEnv}}='${{baseUrlEnv}}'" > "$CI_PROJECT_DIR/.qa-env.sh"
 {{#if healingBubblegum}}
     # Bubblegum's engine (Python) for runtime healing; the Node client comes from package.json.
     - if [ "$QA_HEALING" = "bubblegum" ]; then python3 -m pip install --quiet --break-system-packages "bubblegum-ai[web]" || (apt-get update -qq && apt-get install -y -qq python3-pip >/dev/null && python3 -m pip install --quiet --break-system-packages "bubblegum-ai[web]"); fi
@@ -185,6 +198,7 @@ mobile-tests:
     - if: $CI_COMMIT_BRANCH == "{{targetBranch}}"
   script:
     - if [ -n "$QA_ENV_START" ]; then eval "$QA_ENV_START"; fi
+    - echo "export {{baseUrlEnv}}='${{baseUrlEnv}}'" > "$CI_PROJECT_DIR/.qa-env.sh"
     - {{mobileRunCommand}} ${QA_MOBILE_TEST_ARGS}
   artifacts:
     when: always
@@ -257,6 +271,7 @@ qa-showcase:
     - command -v ffmpeg >/dev/null || (apt-get update -qq && apt-get install -y -qq ffmpeg >/dev/null)
     # The showcase re-records the chosen web{{#if mobileEnabled}} and mobile{{/if}} tests slowly, so the environment must be up{{#if mobileEnabled}} (and Appium, for the app){{/if}}.
     - if [ -n "$QA_ENV_START" ]; then eval "$QA_ENV_START"; fi
+    - echo "export {{baseUrlEnv}}='${{baseUrlEnv}}'" > "$CI_PROJECT_DIR/.qa-env.sh"
     - qa-sentinel showcase ${QA_ENVIRONMENT:+--env "$QA_ENVIRONMENT"}
   artifacts:
     when: always

@@ -9,7 +9,7 @@ import { scrubbedEnv } from "./env.js";
 import { layerEnvNames, layers } from "./layers.js";
 import type { RequirementSnapshot } from "./requirements.js";
 
-export const VERSION = "0.7.2";
+export const VERSION = "0.8.0-beta.1";
 
 export interface RunDir {
   id: string;
@@ -85,6 +85,12 @@ export const ARTIFACT_GLOBS = [
   "qa-story-review.md",
   "qa-healed.json",
   ".qa-sentinel-snapshots/**",
+  ".qa-data/**",
+  "qa-contract-check.md",
+  "qa-coverage.md",
+  "qa-coverage.json",
+  "qa-services.draft.yaml",
+  "qa-services.draft.md",
   "test-results/**",
   "playwright-report/**",
   "blob-report/**",
