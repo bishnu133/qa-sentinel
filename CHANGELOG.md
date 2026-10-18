@@ -6,6 +6,7 @@
 - **Healing on macOS:** Bubblegum started its engine with `python`, which macOS doesn't have (`spawn python ENOENT`). The scaffold now falls back to `python3` (or `BUBBLEGUM_PYTHON`, or the active virtualenv); `doctor` checks the same Python.
 - **Jenkins sandbox behind a company proxy:** `PKIX path building failed` when downloading plugins. A root certificate put in `sandbox/jenkins/certs/` is now trusted by Java, npm and git, in Jenkins and in the pipeline's containers.
 - **Jenkins sandbox job found no Jenkinsfile:** the ShopLite sandbox's qa-tests uses GitLab CI. `node sandbox/shoplite/local.mjs jenkins` adds the Jenkinsfiles (rendered from its config); the storefront URL for web tests is set for the pipeline.
+- **Jenkins sandbox: tests got no base URLs (`Invalid URL`):** Docker Pipeline leaves out of the pipeline's container any variable the Jenkins container has with the same value; the compose file now passes them under `SANDBOX_*` names.
 - **Sandbox `reset` undoes `merge`:** a merged scenario (SHOP-101's required delivery slot) stayed on main and made later scenarios' tests fail.
 
 ## 0.8.0-beta.2 — Environments, toggles, manual checks, gateways, personal data

@@ -20,20 +20,23 @@ jenkins:
             value: /qa-certs/ca-bundle.pem
           # The storefront for web tests (the API URL comes from the qa-base-url credential).
           - key: QA_WEB_URL
-            value: "${QA_WEB_URL:-http://host.docker.internal:8081/}"
+            value: "${SANDBOX_QA_WEB_URL}"
+          # Where the pipelines install qa-sentinel from (default: this repo's main on GitHub).
+          - key: QA_SENTINEL_PACKAGE
+            value: "${SANDBOX_QA_SENTINEL_PACKAGE}"
 credentials:
   system:
     domainCredentials:
       - credentials:
           - string:
               id: qa-base-url
-              secret: "${QA_BASE_URL:-http://host.docker.internal:8080}"
+              secret: "${SANDBOX_QA_BASE_URL}"
           - string:
               id: anthropic-api-key
-              secret: "${ANTHROPIC_API_KEY:-not-set}"
+              secret: "${SANDBOX_ANTHROPIC_API_KEY}"
           - string:
               id: qa-sentinel-gitlab-token
-              secret: "${QA_SENTINEL_GITLAB_TOKEN:-not-set}"
+              secret: "${SANDBOX_GITLAB_TOKEN}"
 jobs:
   # The test repo's suite job, from the ShopLite sandbox's qa-tests repo (mounted at /work).
   - script: >

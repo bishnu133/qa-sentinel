@@ -4,11 +4,14 @@ services:
     build: .
     ports: ["127.0.0.1:8090:8080"]   # this laptop only: the container has the Docker socket
     environment:
-      - QA_BASE_URL=${QA_BASE_URL:-http://host.docker.internal:8080}
-      - QA_WEB_URL=${QA_WEB_URL:-http://host.docker.internal:8081/}
-      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-not-set}
-      - QA_SENTINEL_PACKAGE=${QA_SENTINEL_PACKAGE:-github:bishnu133/qa-sentinel#main}
-      - QA_SENTINEL_GITLAB_TOKEN=${QA_SENTINEL_GITLAB_TOKEN:-not-set}
+      # SANDBOX_* names on purpose: Jenkins' Docker Pipeline drops a build variable from the pipeline's container when
+      # the Jenkins container has the same variable with the same value. casc.yaml turns these into the credentials
+      # and global variables the Jenkinsfiles use (QA_BASE_URL, QA_WEB_URL, QA_SENTINEL_PACKAGE, …).
+      - SANDBOX_QA_BASE_URL=${JENKINS_QA_BASE_URL:-http://host.docker.internal:8080}
+      - SANDBOX_QA_WEB_URL=${JENKINS_QA_WEB_URL:-http://host.docker.internal:8081/}
+      - SANDBOX_ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-not-set}
+      - SANDBOX_QA_SENTINEL_PACKAGE=${QA_SENTINEL_PACKAGE:-github:bishnu133/qa-sentinel#main}
+      - SANDBOX_GITLAB_TOKEN=${QA_SENTINEL_GITLAB_TOKEN:-not-set}
       - JENKINS_ADMIN_PASSWORD=${JENKINS_ADMIN_PASSWORD:-admin}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
