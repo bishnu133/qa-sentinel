@@ -5,6 +5,7 @@ services:
     ports: ["127.0.0.1:8090:8080"]   # this laptop only: the container has the Docker socket
     environment:
       - QA_BASE_URL=${QA_BASE_URL:-http://host.docker.internal:8080}
+      - QA_WEB_URL=${QA_WEB_URL:-http://host.docker.internal:8081/}
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-not-set}
       - QA_SENTINEL_PACKAGE=${QA_SENTINEL_PACKAGE:-github:bishnu133/qa-sentinel#main}
       - QA_SENTINEL_GITLAB_TOKEN=${QA_SENTINEL_GITLAB_TOKEN:-not-set}

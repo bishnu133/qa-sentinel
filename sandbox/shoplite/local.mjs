@@ -13,6 +13,7 @@
 //   node sandbox/shoplite/local.mjs story SHOP-106 [--generate]    # one gap report (and one test branch) for the whole story, all services
 //   node sandbox/shoplite/local.mjs reset                          # every service back to main (merges undone), env stopped
 //   node sandbox/shoplite/local.mjs env start|stop
+//   node sandbox/shoplite/local.mjs jenkins                        # add the Jenkinsfiles to qa-tests (for sandbox/jenkins)
 //   node sandbox/shoplite/local.mjs app build                      # (setup --mobile) build the Android app → shoplite-app/build/shoplite.apk
 //   node sandbox/shoplite/local.mjs run SHOP-109 --generate --showcase   # mobile: app change, screen objects + app tests (emulator + Appium running)
 import fs from "node:fs";
@@ -104,6 +105,30 @@ switch (cmd) {
   case "list":
     for (const s of SCENARIOS) console.log(`${s.id.padEnd(9)} ${s.service.padEnd(22)} ${s.title.replace(/^SHOP-\d+:\s*/, "")}\n          expect: ${s.expect}\n`);
     break;
+  case "jenkins": {
+    // The sandbox's qa-tests uses GitLab CI; the Jenkins sandbox needs the Jenkinsfiles too. Rendered from the same
+    // config with ci.platform jenkins, next to the GitLab files, and committed on main (Jenkins checks out main).
+    const dist = path.resolve(HERE, "../../dist");
+    if (!fs.existsSync(path.join(dist, "templates.js"))) die("build qa-sentinel first: npm run build");
+    const { loadConfig } = await import(path.join(dist, "config.js"));
+    const { templateVars } = await import(path.join(dist, "commands/init.js"));
+    const { listTemplateDir, readTemplate, render } = await import(path.join(dist, "templates.js"));
+    testsToMain();
+    const base = loadConfig(tests);
+    const c = { ...base, ci: { ...base.ci, platform: "jenkins" } };
+    const vars = templateVars(c, tests);
+    const written = [];
+    for (const name of listTemplateDir("ci/jenkins")) {
+      if (!name.startsWith("Jenkinsfile.") || (c.level === "intelligence" && name === "Jenkinsfile.generate")) continue;
+      fs.mkdirSync(path.join(tests, "ci/qa-sentinel"), { recursive: true });
+      fs.writeFileSync(path.join(tests, "ci/qa-sentinel", name), render(readTemplate(`ci/jenkins/${name}`), vars));
+      written.push(`ci/qa-sentinel/${name}`);
+    }
+    git(tests, "add", ...written);
+    if (spawnSync("git", ["diff", "--cached", "--quiet"], { cwd: tests }).status !== 0) git(tests, "-c", "user.name=sandbox", "-c", "user.email=sandbox@shoplite.test", "commit", "-q", "-m", "ci: Jenkinsfiles (Jenkins sandbox)");
+    log(`qa-tests: ${written.join(", ")} on main`);
+    break;
+  }
   case "env":
     arg === "stop" ? envStop() : envStart();
     break;

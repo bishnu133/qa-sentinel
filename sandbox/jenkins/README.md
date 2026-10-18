@@ -6,6 +6,7 @@ Runs qa-sentinel's `Jenkinsfile.tests` on a real Jenkins against the ShopLite sa
 environment running (`node sandbox/shoplite/local.mjs env start`).
 
 ```bash
+node sandbox/shoplite/local.mjs jenkins       # once: adds the Jenkinsfiles to the sandbox's qa-tests (it uses GitLab CI)
 docker compose -f sandbox/jenkins/docker-compose.yml up --build -d
 # open http://localhost:8090 (admin / admin, or JENKINS_ADMIN_PASSWORD) – only reachable from this laptop → qa-api-tests → Build with Parameters → Build
 docker compose -f sandbox/jenkins/docker-compose.yml down -v     # remove it again

@@ -18,6 +18,9 @@ jenkins:
             value: /qa-certs/ca-bundle.pem
           - key: npm_config_cafile
             value: /qa-certs/ca-bundle.pem
+          # The storefront for web tests (the API URL comes from the qa-base-url credential).
+          - key: QA_WEB_URL
+            value: "${QA_WEB_URL:-http://host.docker.internal:8081/}"
 credentials:
   system:
     domainCredentials:
