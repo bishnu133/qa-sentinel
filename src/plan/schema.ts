@@ -136,10 +136,40 @@ export const DecisionSchema = z
  */
 export const IMPLEMENTATION = ["implemented", "partial", "not-found", "conflict", "elsewhere", "not-applicable"] as const;
 
+/**
+ * How a requirement can be tested: automated (an API/web/mobile test), hook (automatable only through a test hook the
+ * system must offer: trigger a job, move the clock, read the sent email…), lower-layer (better proven by unit or
+ * contract tests in the service), manual (needs a person: visual judgement, a physical device, a third-party screen).
+ */
+export const AUTOMATION = ["automated", "hook", "lower-layer", "manual"] as const;
+
+export const AutomationSchema = z
+  .object({
+    how: z.enum(AUTOMATION),
+    reason: opt(z.string()),
+    /** hook: what the system must offer, e.g. "POST /test/jobs/reminders/run" or "a test inbox for sent emails". */
+    hook: opt(z.string()),
+  })
+  .strict();
+
+/** A test a person runs: for requirements that can't (or shouldn't) be automated. qa-sentinel saves it with the tests. */
+export const ManualTestSchema = z
+  .object({
+    requirementIds: z.array(z.string()).min(1),
+    title: z.string().min(1),
+    why: z.string().min(1),
+    preconditions: z.array(z.string()).default([]),
+    steps: z.array(z.string()).min(1),
+    expected: z.array(z.string()).min(1),
+  })
+  .strict();
+
 export const RequirementStatusSchema = z
   .object({
     id: z.string(),
     status: z.enum(IMPLEMENTATION),
+    /** How it can be tested. Absent = automated. */
+    automation: AutomationSchema.optional(),
     /** Where it is built (file:line) or which service should build it (elsewhere). */
     where: opt(z.string()),
     /** Scope items only: the ACs that already express this item. Empty = the story's ACs don't cover it. */
@@ -173,6 +203,7 @@ export const TestPlanSchema = z
       .default([]),
     specDrift: z.array(z.string()).default([]),
     requirementStatus: z.array(RequirementStatusSchema).default([]),
+    manualTests: z.array(ManualTestSchema).default([]),
     suspicious: z.array(z.object({ file: z.string(), excerpt: z.string(), why: z.string() }).strict()).default([]),
     openQuestions: z.array(z.string()).default([]),
     skipReason: z.string().nullable().default(null),
@@ -184,6 +215,7 @@ export type SetupStep = z.infer<typeof SetupStepSchema>;
 export type Scenario = z.infer<typeof ScenarioSchema>;
 export type Change = z.infer<typeof ChangeSchema>;
 export type RequirementStatus = z.infer<typeof RequirementStatusSchema>;
+export type ManualTest = z.infer<typeof ManualTestSchema>;
 export type Decision = z.infer<typeof DecisionSchema>;
 export type TestPlan = z.infer<typeof TestPlanSchema>;
 export type RiskFactor = (typeof RISK_FACTORS)[number];

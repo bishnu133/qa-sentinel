@@ -22,6 +22,8 @@ import { actionable } from "../plan/validate.js";
 import { decisionTable } from "../plan/render.js";
 import { log } from "../log.js";
 import { sweepAfterRun } from "../testData.js";
+import { readManualCards, writeCards } from "../manualTests.js";
+import { applyDeploymentGate, deploymentStates, notDeployed } from "../deployment.js";
 import { bugsFromDiscrepancies, fileBugs } from "../bugs/bugs.js";
 import { jiraContext } from "../scm/jira.js";
 import { runCommandsFor } from "../layers.js";
@@ -165,7 +167,7 @@ export async function generateCommand(o: GenerateOptions): Promise<number> {
   fs.writeFileSync(path.join(run.dir, "change.diff"), cs.diff);
   fs.writeFileSync(path.join(run.dir, "story.md"), storyMarkdown(req));
   fs.writeFileSync(path.join(run.dir, "requirements.json"), JSON.stringify(req, null, 2));
-  const manifest = startManifest(cwd, c, run, "generate", { service, base: cs.base, head: cs.head, changedFiles: relevant }, req);
+  const manifest = startManifest(cwd, c, run, "generate", { service, base: cs.base, head: cs.head, changedFiles: relevant, diff: cs.diff }, req);
   const startSha = resolveSha(cwd, "HEAD");
   const before = (parts ? parts.map((p) => ({ name: p.service.name, repo: p.repo })) : [{ name: service.name, repo }]).map((r) => ({ ...r, snap: snapshotTree(r.repo) }));
   const engine = engineFor(c);
@@ -303,7 +305,13 @@ export async function generateCommand(o: GenerateOptions): Promise<number> {
   // Phase 4: independent verification.
   log.step(`verifying ${changes.length} changed file(s) independently`);
   const verifyStarted = Date.now() - 1000;
-  const verification = await verifyChanges({ cwd, c, changes, runDir: run.dir, env: testEnv(c) });
+  const verified0 = await verifyChanges({ cwd, c, changes, runDir: run.dir, env: testEnv(c), environment });
+  // Tests written for a change that isn't deployed where they ran fail for that reason alone: say so (C1).
+  const deployBase = process.env[c.tests.api.baseUrlEnv];
+  const deployNeeds = (parts ? parts.map((p) => ({ service: p.service, sha: p.cs.head, repo: p.repo })) : o.backfill ? [] : [{ service, sha: cs.head, repo }]).filter((n) => n.service.version);
+  const deployStates = deployBase && deployNeeds.length ? await deploymentStates(deployNeeds, environment ?? "test environment", deployBase, gitlabContext(c.ci.gitlabUrl)) : [];
+  const verification = applyDeploymentGate(verified0, deployStates);
+  if (verification.status === "WAITING_FOR_DEPLOYMENT") log.warn(`the change isn't deployed on ${environment ?? deployBase} yet: ${notDeployed(deployStates).map((d) => d.service).join(", ")}; failed tests may only be waiting for it`);
   const discrepancies = findDiscrepancies(cwd, startSha, changes);
   // Data the verified tests created and couldn't delete (or a killed test left): sweep it now, report what stays.
   if (c.testData.cleanup === "ledger") findings.push(...(await sweepAfterRun(cwd, c, verifyStarted)));
@@ -316,7 +324,7 @@ export async function generateCommand(o: GenerateOptions): Promise<number> {
     ...checkTestMap(index, readTestMap(cwd), cwd).filter((f) => f.level === "warning" && changedFiles.some((cf) => f.file.startsWith(cf) || f.file === "test-map.yaml")),
   ];
   findings.push(...traceFindings.map((f) => ({ level: "warning" as const, rule: "traceability" as const, file: f.file, message: f.message })));
-  const trace = traceStory(index, req.storyKey, requirementItems(req));
+  const trace = traceStory(index, req.storyKey, requirementItems(req), [...readManualCards(cwd, c.tests.manualDir), ...(plan.manualTests ?? []).map((m) => ({ story: req.storyKey, acs: m.requirementIds.map((r) => r.toUpperCase()), file: `${c.tests.manualDir}/${req.storyKey ?? `${service.name}-${sha8}`}.md`, line: 0, title: m.title }))]);
 
   // Independent review of the changed tests (fresh read-only agent; advisory, never changes verification).
   let review: ReviewOutcome = { status: "skipped", errors: [], runs: [] };
@@ -354,8 +362,12 @@ export async function generateCommand(o: GenerateOptions): Promise<number> {
   fs.writeFileSync(path.join(run.dir, "summary.md"), description);
   fs.writeFileSync(path.join(cwd, "qa-sentinel-summary.md"), description);
 
+  // Manual test cards for requirements that can't be automated: written by qa-sentinel from the validated plan.
+  const cards = writeCards(cwd, c.tests.manualDir, req.storyKey, req.storyKey ?? `${service.name}-${sha8}`, plan.manualTests ?? []);
+  if (cards.added) log.ok(`${cards.added} manual test card(s) in ${cards.file}`);
+
   // Phase 5: commit exactly the validated paths (deletions and renames included), then publish.
-  const paths = [...new Set(changes.flatMap((x) => (x.from && x.status === "R" ? [x.path, x.from] : [x.path])))];
+  const paths = [...new Set([...changes.flatMap((x) => (x.from && x.status === "R" ? [x.path, x.from] : [x.path])), ...(cards.file ? [cards.file] : [])])];
   git(cwd, ["add", "-A", "--", ...paths]);
   git(cwd, [
     "commit",
@@ -376,7 +388,7 @@ export async function generateCommand(o: GenerateOptions): Promise<number> {
     }
   }
 
-  if (o.push && c.verification.requireVerifiedToPush && verification.status !== "VERIFIED") {
+  if (o.push && c.verification.requireVerifiedToPush && verification.status !== "VERIFIED" && verification.status !== "WAITING_FOR_DEPLOYMENT") {
     log.warn(`not pushed: verification is ${verification.status}${environment ? ` on ${environment}` : ""} and verification.requireVerifiedToPush is on. The branch ${branch} stays local for inspection.`);
     return finish(`not-pushed-${verification.status.toLowerCase()}`, 1);
   }
@@ -394,7 +406,7 @@ export async function generateCommand(o: GenerateOptions): Promise<number> {
       const mr = await createOrUpdateMergeRequest(ctx, project, {
         source: branch,
         target: c.ci.targetBranch,
-        title: `${verified ? "" : "Draft: "}QA agent: tests for ${subject}${verified ? "" : ` (${verification.status})`}`,
+        title: `${verified ? "" : "Draft: "}QA agent: tests for ${subject}${verified ? "" : ` (${verification.status === "WAITING_FOR_DEPLOYMENT" ? "waiting for deployment" : verification.status})`}`,
         description,
         labels: [
           "qa-agent",

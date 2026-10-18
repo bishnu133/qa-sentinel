@@ -124,14 +124,16 @@ export function endpointFactors(op: SpecOperation): RiskFactor[] {
 type TestMap = ReturnType<typeof readTestMap>;
 
 /** Tests per endpoint: @endpoint tags, plus files test-map.yaml maps to the endpoint (their tests count too). */
-export function endpointCoverage(service: ServiceConfig, ops: SpecOperation[], index: IndexedTest[], map: TestMap): EndpointCoverage[] {
+export function endpointCoverage(service: ServiceConfig, ops: SpecOperation[], index: IndexedTest[], map: TestMap, via: (op: SpecOperation) => { service: string; endpoint: string }[] = () => []): EndpointCoverage[] {
   const mapped = new Map<string, string[]>();
   for (const [ep, files] of Object.entries(map?.services?.[service.name]?.endpoints ?? {})) mapped.set(normaliseEndpoint(ep), files ?? []);
   const mappedFiles = (op: SpecOperation) => [...(mapped.get(op.endpoint) ?? []), ...(mapped.get(op.fullEndpoint) ?? [])];
   return ops.map((op) => {
     const tests = index.filter((t) => {
       const tagged = t.endpoints.some((e) => normaliseEndpoint(e) === op.endpoint || normaliseEndpoint(e) === op.fullEndpoint) && (!t.services.length || t.services.includes(service.name));
-      return tagged || mappedFiles(op).includes(t.file);
+      // Tests of a gateway or BFF endpoint that forwards to this one count too.
+      const throughGateway = via(op).some((x) => t.endpoints.some((e) => normaliseEndpoint(e) === normaliseEndpoint(x.endpoint)) && (!t.services.length || t.services.includes(x.service)));
+      return tagged || throughGateway || mappedFiles(op).includes(t.file);
     });
     const active = tests.filter((t) => t.status === "active");
     const status: CoverageStatus = !tests.length ? "untested" : !active.length ? "pending" : active.every((t) => t.statusOnly) ? "weak" : "tested";

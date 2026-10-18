@@ -1,3 +1,4 @@
+import { modelRoute } from "../modelRoute.js";
 import { describeSource, loadContract } from "../contracts.js";
 import { findUp, hasPackage } from "../fsutil.js";
 import { safeUrl } from "../secrets.js";
@@ -13,7 +14,7 @@ import { isGitRepo } from "../git.js";
 import { log } from "../log.js";
 import { SECRET_NAME } from "../env.js";
 import { currentUser, getProject, gitlabContext } from "../scm/gitlab.js";
-import { junitReporter, layers, runCommandRunsEverything, runnerOf } from "../layers.js";
+import { junitReporter, layers, roleEnvNames, runCommandRunsEverything, runnerOf } from "../layers.js";
 import { packageScripts } from "../verification.js";
 
 type Level = "ok" | "warn" | "fail";
@@ -44,8 +45,12 @@ export function runChecks(cwd: string, env: NodeJS.ProcessEnv = process.env): Ch
   if (claude.ok) add("ok", `Claude Code CLI (${claude.version})`);
   else add("fail", "Claude Code CLI installed", "npm i -g @anthropic-ai/claude-code");
 
-  if (env.ANTHROPIC_API_KEY) add("ok", "ANTHROPIC_API_KEY set");
-  else add("warn", "ANTHROPIC_API_KEY set", "required in CI; locally `claude` may use your login");
+  // Which way the agents reach the model: billing and data residency follow it, so say it plainly.
+  const route = modelRoute(env);
+  if (route.missing.length) add("fail", `model route: ${route.label}`, `missing ${route.missing.join("; ")}`);
+  else if (route.unsure?.length) add("warn", `model route: ${route.label}`, route.unsure.join("; "))
+  else if (route.kind === "login") add("warn", `model route: ${route.label}`, "fine locally; CI needs ANTHROPIC_API_KEY, Bedrock (CLAUDE_CODE_USE_BEDROCK) or Vertex (CLAUDE_CODE_USE_VERTEX)");
+  else add("ok", `model route: ${route.label}`, route.managed ? `from ${route.managed}: runs are billed to whoever owns that setup` : undefined);
 
   isGitRepo(cwd) ? add("ok", "test repo is a git repository") : add("fail", "test repo is a git repository", "git init");
 
@@ -110,6 +115,15 @@ export function runChecks(cwd: string, env: NodeJS.ProcessEnv = process.env): Ch
       } else add("ok", `service ${s.name}: agreed spec (${where})`, k.jiraAttachment ? "read from the story at run time" : "checked with `doctor --online`");
       if (!s.openapi) add("warn", `service ${s.name}: implemented spec to compare with the agreed one`, "set `openapi` (and `openapiCommand` if generated) so qa-sentinel can check the code field by field; without it only the tests check it");
     }
+  }
+
+  // Logging in: the helpers agents must reuse, and each role's credentials in the environment.
+  const auth = c.tests.auth;
+  if (auth.helpers) add(fs.existsSync(path.join(cwd, auth.helpers)) ? "ok" : "warn", `login helpers (${auth.helpers})`, fs.existsSync(path.join(cwd, auth.helpers)) ? undefined : "the path in tests.auth.helpers doesn't exist");
+  for (const r of auth.roles) {
+    const names = roleEnvNames(r).filter((n) => !/_TOTP_SEED$/.test(n));
+    const missing = names.filter((n) => !env[n]);
+    add(missing.length ? "warn" : "ok", `role ${r.name}: credentials in the environment`, missing.length ? `set ${missing.join(", ")} (masked CI variables)` : undefined);
   }
 
   const mapFile = path.join(cwd, "test-map.yaml");

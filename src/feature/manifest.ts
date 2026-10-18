@@ -97,22 +97,45 @@ export async function partFromGitLab(ctx: GitLabContext, s: ServiceConfig, story
 const pick = (obj: any, dotPath: string) => dotPath.split(".").reduce((o, k) => (o == null ? undefined : o[k]), obj);
 
 /** Ask the environment which commit is deployed, and whether it includes the change. */
-export async function checkDeployment(part: ServicePart, s: ServiceConfig, environment: string, baseUrl: string, repo?: string): Promise<ServicePart["deployed"]> {
+/** GitLab: does `deployed` contain `sha`? (compare deployed…sha: no commits = contained). Unknown on any error. */
+async function gitlabContains(ctx: GitLabContext, project: string, sha: string, deployed: string): Promise<boolean | undefined> {
+  try {
+    const { data } = await call(ctx, "GET", `/projects/${encodeURIComponent(project)}/repository/compare?from=${encodeURIComponent(deployed)}&to=${encodeURIComponent(sha)}&straight=true`, undefined, 1);
+    return Array.isArray(data?.commits) ? data.commits.length === 0 : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+export async function checkDeployment(part: ServicePart, s: ServiceConfig, environment: string, baseUrl: string, repo?: string, gitlab?: GitLabContext): Promise<ServicePart["deployed"]> {
   if (!s.version) return { environment, error: "no version endpoint configured (workspace.services[].version)" };
   try {
     const res = await fetch(`${baseUrl.replace(/\/$/, "")}${s.version.path}`, { headers: { Accept: "application/json" } });
     if (!res.ok) return { environment, error: `${s.version.path} answered ${res.status}` };
     const deployed = String(pick(await res.json(), s.version.field) ?? "");
     if (!deployed) return { environment, error: `no "${s.version.field}" in ${s.version.path}` };
-    let includesChange: boolean | undefined = !!part.sha && (deployed.startsWith(part.sha) || part.sha.startsWith(deployed));
+    // Same commit: deployed. Otherwise ask git whether the deployed commit contains the change; when that can't be
+    // decided here (no clone, or the deployed commit isn't in it), it's unknown, never "not deployed".
+    let includesChange: boolean | undefined = !!part.sha && (deployed.startsWith(part.sha) || part.sha.startsWith(deployed)) ? true : undefined;
     if (!includesChange && part.sha && repo && isGitRepo(repo)) {
-      try {
-        git(repo, ["merge-base", "--is-ancestor", part.sha, deployed]);
-        includesChange = true;
-      } catch {
-        includesChange = false;
+      const known = (sha: string) => {
+        try {
+          git(repo, ["cat-file", "-e", `${sha}^{commit}`]);
+          return true;
+        } catch {
+          return false;
+        }
+      };
+      if (known(part.sha) && known(deployed)) {
+        try {
+          git(repo, ["merge-base", "--is-ancestor", part.sha, deployed]);
+          includesChange = true;
+        } catch {
+          includesChange = false;
+        }
       }
     }
+    if (includesChange === undefined && part.sha && gitlab && s.gitlabProject) includesChange = await gitlabContains(gitlab, s.gitlabProject, part.sha, deployed);
     return { environment, sha: deployed, includesChange };
   } catch (e) {
     return { environment, error: (e as Error).message };
@@ -146,7 +169,7 @@ export async function assembleFeature(i: {
       notes.push(`${s.name}: could not look for ${i.story}: ${(e as Error).message}`);
     }
     if (!part) continue;
-    if (i.environment && i.baseUrl && part.merged) part.deployed = await checkDeployment(part, s, i.environment, i.baseUrl, fs.existsSync(repo) ? repo : undefined);
+    if (i.environment && i.baseUrl && part.merged) part.deployed = await checkDeployment(part, s, i.environment, i.baseUrl, fs.existsSync(repo) ? repo : undefined, i.gitlab);
     parts.push(part);
   }
   return { story: i.story, environment: i.environment, parts, status: featureStatus(parts, i.environment), notes };
@@ -170,7 +193,7 @@ export function featureMarkdown(m: FeatureManifest, extra: string[] = []): strin
     lines.push("", `| Service | Change | Merged | ${m.environment ? `Deployed on ${m.environment}` : "Deployed"} |`, "| --- | --- | --- | --- |");
     for (const p of m.parts) {
       const change = p.mr ? `[!${p.mr.iid}](${p.mr.url}) ${p.mr.title}` : `${p.branch ?? "commits"} @ \`${(p.sha ?? "").slice(0, 8)}\``;
-      const dep = !m.environment ? "–" : !p.merged ? "–" : p.deployed?.error ? `❔ ${p.deployed.error}` : p.deployed?.includesChange ? `✅ \`${p.deployed.sha?.slice(0, 8)}\`` : `⏳ running \`${p.deployed?.sha?.slice(0, 8)}\``;
+      const dep = !m.environment ? "–" : !p.merged ? "–" : p.deployed?.error ? `❔ ${p.deployed.error}` : p.deployed?.includesChange ? `✅ \`${p.deployed.sha?.slice(0, 8)}\`` : p.deployed?.includesChange === undefined ? `❔ running \`${p.deployed?.sha?.slice(0, 8)}\` (can't tell if it includes the change)` : `⏳ running \`${p.deployed?.sha?.slice(0, 8)}\``;
       lines.push(`| ${p.service} | ${change} | ${p.merged ? "✅" : "🛠️ not yet"} | ${dep} |`);
     }
   }

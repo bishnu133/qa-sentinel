@@ -35,6 +35,8 @@ export interface IndexedTest {
   assertions: number;
   /** Every assertion only checks the HTTP status (a common sign of a weak test). */
   statusOnly: boolean;
+  /** A Cucumber scenario: counts for traceability and coverage; the team's BDD job runs it, not qa-sentinel. */
+  bdd?: boolean;
 }
 
 const SPEC = /\.(spec|test)\.[cm]?[jt]sx?$/;
@@ -138,13 +140,57 @@ export function indexSource(file: string, src: string): IndexedTest[] {
   });
 }
 
+/**
+ * Cucumber feature files: each Scenario (or Scenario Outline) is a test, its tags are the @-lines above it plus the
+ * Feature's (`@service:orders @endpoint:POST_/orders @story:SHOP-1 @ac:AC-2`). @wip/@skip/@ignore → skip, @fixme →
+ * fixme. Then-steps count as assertions. So existing BDD suites count for traceability, coverage and regression.
+ */
+export function indexFeature(file: string, src: string): IndexedTest[] {
+  const lines = src.split(/\r?\n/);
+  let featureTags: string[] = [];
+  let pending: string[] = [];
+  let feature: string | undefined;
+  const found: { line: number; title: string; tags: string[] }[] = [];
+  lines.forEach((raw, i) => {
+    const l = raw.trim();
+    if (l.startsWith("@")) pending.push(...l.split(/\s+/).filter((t) => t.startsWith("@")));
+    else if (/^Feature:/i.test(l)) {
+      feature = l.replace(/^Feature:\s*/i, "");
+      featureTags = pending;
+      pending = [];
+    } else if (/^(Scenario|Scenario Outline|Scenario Template|Example):/i.test(l)) {
+      found.push({ line: i + 1, title: l.replace(/^[^:]+:\s*/, ""), tags: [...featureTags, ...pending] });
+      pending = [];
+    } else if (l && !l.startsWith("#")) pending = l.startsWith("@") ? pending : pending.length && /^(Rule|Background):/i.test(l) ? [] : pending;
+  });
+  return found.map((f, k) => {
+    const end = k + 1 < found.length ? found[k + 1].line - 1 : lines.length;
+    const body = lines.slice(f.line, end);
+    const thens = body.filter((l) => /^\s*(Then|And|But)\b/.test(l)).length;
+    const parsed = parseTags(`${f.title} ${f.tags.join(" ")}`);
+    const tags = f.tags.map((t) => t.slice(1).toLowerCase());
+    return {
+      id: `${file}:${f.line}`,
+      file,
+      line: f.line,
+      endLine: end,
+      describe: feature,
+      status: tags.includes("fixme") ? "fixme" : tags.some((t) => ["wip", "skip", "ignore", "manual"].includes(t)) ? "skip" : "active",
+      assertions: thens,
+      statusOnly: false,
+      bdd: true,
+      ...parsed,
+    } satisfies IndexedTest;
+  });
+}
+
 function walk(dir: string, root: string, out: string[]) {
   if (!fs.existsSync(dir)) return;
   for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
     if (e.name === "node_modules" || e.name.startsWith(".")) continue;
     const p = path.join(dir, e.name);
     if (e.isDirectory()) walk(p, root, out);
-    else if (SPEC.test(e.name)) out.push(path.relative(root, p).split(path.sep).join("/"));
+    else if (SPEC.test(e.name) || /\.feature$/.test(e.name)) out.push(path.relative(root, p).split(path.sep).join("/"));
   }
 }
 
@@ -152,7 +198,7 @@ function walk(dir: string, root: string, out: string[]) {
 export function buildTestIndex(repo: string, testDirs: string | string[]): IndexedTest[] {
   const files: string[] = [];
   for (const d of new Set(Array.isArray(testDirs) ? testDirs : [testDirs])) walk(path.join(repo, d), repo, files);
-  return [...new Set(files)].sort().flatMap((f) => indexSource(f, fs.readFileSync(path.join(repo, f), "utf8")));
+  return [...new Set(files)].sort().flatMap((f) => (f.endsWith(".feature") ? indexFeature : indexSource)(f, fs.readFileSync(path.join(repo, f), "utf8")));
 }
 
 /** Index every enabled layer's tests (API, and web when enabled). */
@@ -228,26 +274,33 @@ export interface AcTrace {
   text?: string;
   active: IndexedTest[];
   pending: IndexedTest[]; // fixme / skip
-  status: "covered" | "weak" | "discrepancy" | "pending-only" | "not-traced";
+  status: "covered" | "weak" | "discrepancy" | "pending-only" | "not-traced" | "manual" | "manual-pending" | "manual-failed";
+  /** Manual test cards for this AC (when no automated test proves it). */
+  manual?: { file: string; line: number; title: string; result?: "pass" | "fail" }[];
 }
 
 export function traceStory(
   index: IndexedTest[],
   storyKey: string | undefined,
   acs: { id: string; text?: string }[],
+  manual: { story?: string; acs: string[]; file: string; line: number; title: string; result?: "pass" | "fail" }[] = [],
 ): { acs: AcTrace[]; storyOnly: IndexedTest[]; outsideAcs: IndexedTest[] } {
   const forStory = index.filter((t) => (storyKey ? t.stories.includes(storyKey) : false) || (!t.stories.length && t.acs.length && !storyKey));
   const rows = acs.map(({ id, text }) => {
     const hits = forStory.filter((t) => t.acs.includes(id.toUpperCase()));
     const active = hits.filter((t) => t.status === "active");
     const pending = hits.filter((t) => t.status !== "active");
-    const status = active.length && pending.length ? "discrepancy" : active.length ? "covered" : pending.length ? "pending-only" : "not-traced";
-    return { ac: id, text, active, pending, status } as AcTrace;
+    const cards = manual.filter((m) => (storyKey ? m.story === storyKey : !m.story) && m.acs.includes(id.toUpperCase())).map(({ file, line, title, result }) => ({ file, line, title, ...(result ? { result } : {}) }));
+    // A card counts as checked by hand once a tester ticked pass on every card for the AC.
+    const handStatus = !cards.length ? "not-traced" : cards.some((m) => m.result === "fail") ? "manual-failed" : cards.every((m) => m.result === "pass") ? "manual" : "manual-pending";
+    const status = active.length && pending.length ? "discrepancy" : active.length ? "covered" : pending.length ? "pending-only" : handStatus;
+    return { ac: id, text, active, pending, status, ...(cards.length ? { manual: cards } : {}) } as AcTrace;
   });
   return { acs: rows, storyOnly: forStory.filter((t) => !t.acs.length && !t.tags.includes("ac:none")), outsideAcs: forStory.filter((t) => t.tags.includes("ac:none")) };
 }
 
-const STATUS_ICON = { covered: "✅", weak: "🟠", discrepancy: "⚠️", "pending-only": "⏸️", "not-traced": "⬜" } as const;
+const STATUS_ICON = { covered: "✅", weak: "🟠", discrepancy: "⚠️", "pending-only": "⏸️", "not-traced": "⬜", manual: "✋", "manual-pending": "✋⏳", "manual-failed": "✋❌" } as const;
+const STATUS_WORDS: Partial<Record<AcTrace["status"], string>> = { manual: "checked by hand", "manual-pending": "to check by hand (card not run yet)", "manual-failed": "failed when checked by hand" };
 
 /**
  * Render the matrix. `flagged` holds tests the independent reviewer judged weak or wrong-oracle: they are marked,
@@ -264,7 +317,7 @@ export function traceMarkdown(storyKey: string | undefined, trace: ReturnType<ty
     "",
     "| AC | Status | Passing tests | Pending (fixme/skip) |",
     "| --- | --- | --- | --- |",
-    ...trace.acs.map((r) => `| ${r.ac} | ${STATUS_ICON[status(r)]} ${status(r)} | ${cell(r.active)} | ${cell(r.pending)} |`),
+    ...trace.acs.map((r) => `| ${r.ac} | ${STATUS_ICON[status(r)]} ${STATUS_WORDS[status(r)] ?? status(r)} | ${r.manual ? r.manual.map((m) => `manual card \`${m.file}:${m.line}\` ${m.title}`).join("<br>") : cell(r.active)} | ${cell(r.pending)} |`),
   ];
   if (trace.outsideAcs.length) lines.push("", `Outside the story's ACs on purpose (\`@ac:none\`): ${trace.outsideAcs.map((t) => `\`${t.file}:${t.line}\` ${t.title}${t.status !== "active" ? ` (${t.status})` : ""}`).join(", ")}.`);
   if (trace.storyOnly.length) lines.push("", `${trace.storyOnly.length} test(s) are tagged with the story but no AC: ${trace.storyOnly.map((t) => `\`${t.file}:${t.line}\``).join(", ")}.`);

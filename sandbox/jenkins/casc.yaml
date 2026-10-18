@@ -1,0 +1,38 @@
+jenkins:
+  systemMessage: "qa-sentinel Jenkins sandbox (local, throwaway)"
+  numExecutors: 2
+  securityRealm:
+    local:
+      allowsSignup: false
+      users:
+        - id: admin
+          password: "${JENKINS_ADMIN_PASSWORD:-admin}"
+  authorizationStrategy: loggedInUsersCanDoAnything
+credentials:
+  system:
+    domainCredentials:
+      - credentials:
+          - string:
+              id: qa-base-url
+              secret: "${QA_BASE_URL:-http://host.docker.internal:8080}"
+          - string:
+              id: anthropic-api-key
+              secret: "${ANTHROPIC_API_KEY:-not-set}"
+          - string:
+              id: qa-sentinel-gitlab-token
+              secret: "${QA_SENTINEL_GITLAB_TOKEN:-not-set}"
+jobs:
+  # The test repo's suite job, from the ShopLite sandbox's qa-tests repo (mounted at /work).
+  - script: >
+      pipelineJob('qa-api-tests') {
+        parameters {
+          stringParam('QA_TEST_ARGS', '', 'Extra arguments for the test command')
+          booleanParam('CHANGED_ONLY', false, 'Run only specs changed vs main (agent MRs)')
+        }
+        definition {
+          cpsScm {
+            scm { git { remote { url('file:///work/shoplite-local/qa-tests') }; branch('*/main') } }
+            scriptPath('ci/qa-sentinel/Jenkinsfile.tests')
+          }
+        }
+      }

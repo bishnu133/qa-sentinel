@@ -1,0 +1,92 @@
+import crypto from "node:crypto";
+import type { APIRequestContext } from "@playwright/test";
+
+/**
+ * Logging in, the same way for every test. Tests ask for a role (`await tokenFor(request, "admin")`), never for a
+ * username or password: those come from environment variables named in qa-sentinel.config.yaml (tests.auth.roles),
+ * set as masked CI variables. Replace the body of `login` with your system's real flow; keep the signature.
+ *
+ * Also here: one-time passwords for test users with an authenticator seed (TOTP, RFC 6238), and DPoP proofs
+ * (RFC 9449) for APIs that bind tokens to a key. For Singpass/Corppass logins, run the tests against MockPass
+ * (the open-source Singpass mock) in test environments and log in as its test identities.
+ */
+export interface Role {
+  user?: string;
+  password?: string;
+  /** Base32 authenticator seed of the test user, when the login asks for a one-time code. */
+  totpSeed?: string;
+}
+
+/** Roles whose variables tests.auth.roles names explicitly: [user, password, totp seed?] (written by qa-sentinel init). */
+const CONFIGURED: Record<string, string[]> = {{authRolesJson}};
+
+/** The credentials of a role: the variables tests.auth.roles names, else QA_<ROLE>_USER / _PASSWORD / _TOTP_SEED. */
+export function role(name: string): Role {
+  const key = name.toUpperCase().replace(/[^A-Z0-9]+/g, "_");
+  const [u, p, t] = CONFIGURED[name] ?? [`QA_${key}_USER`, `QA_${key}_PASSWORD`, `QA_${key}_TOTP_SEED`];
+  return { user: process.env[u], password: process.env[p], totpSeed: t ? process.env[t] : undefined };
+}
+
+const tokens = new Map<string, { token: string; expires: number }>();
+
+/** A bearer token for a role, cached per worker until shortly before it expires. */
+export async function tokenFor(request: APIRequestContext, name: string): Promise<string> {
+  const hit = tokens.get(name);
+  if (hit && hit.expires > Date.now() + 30_000) return hit.token;
+  const r = role(name);
+  if (!r.user) throw new Error(`no credentials for role "${name}": set ${(CONFIGURED[name] ?? [`QA_${name.toUpperCase().replace(/[^A-Z0-9]+/g, "_")}_USER`, "…_PASSWORD"]).slice(0, 2).join(" and ")}`);
+  const got = await login(request, r);
+  tokens.set(name, got);
+  return got.token;
+}
+
+/** Your system's login. Example: a password grant on /auth/token. Replace with the real flow. */
+async function login(request: APIRequestContext, r: Role): Promise<{ token: string; expires: number }> {
+  const res = await request.post("auth/token", { data: { username: r.user, password: r.password, ...(r.totpSeed ? { otp: totp(r.totpSeed) } : {}) } });
+  if (!res.ok()) throw new Error(`login failed for ${r.user}: ${res.status()}`);
+  const body = await res.json();
+  return { token: body.access_token, expires: Date.now() + (Number(body.expires_in) || 300) * 1000 };
+}
+
+/** RFC 6238 time-based one-time password (SHA-1, 30 s, 6 digits) from a base32 seed. */
+export function totp(seedBase32: string, at = Date.now(), digits = 6, stepSeconds = 30): string {
+  const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+  let bits = "";
+  for (const ch of seedBase32.replace(/=+$/, "").replace(/\s+/g, "").toUpperCase()) {
+    const v = alphabet.indexOf(ch);
+    if (v < 0) throw new Error("TOTP seed is not base32");
+    bits += v.toString(2).padStart(5, "0");
+  }
+  const key = Buffer.from(bits.match(/.{8}/g)!.map((b) => parseInt(b, 2)));
+  const counter = Buffer.alloc(8);
+  counter.writeBigUInt64BE(BigInt(Math.floor(at / 1000 / stepSeconds)));
+  const h = crypto.createHmac("sha1", key).update(counter).digest();
+  const o = h[h.length - 1] & 0xf;
+  const code = ((h[o] & 0x7f) << 24) | (h[o + 1] << 16) | (h[o + 2] << 8) | h[o + 3];
+  return String(code % 10 ** digits).padStart(digits, "0");
+}
+
+const b64url = (b: Buffer | string) => Buffer.from(b).toString("base64url");
+
+/** A DPoP key pair for one test run (ES256). */
+export function dpopKey(): crypto.KeyObject {
+  return crypto.generateKeyPairSync("ec", { namedCurve: "P-256" }).privateKey;
+}
+
+/** RFC 9449 DPoP proof for one request; pass the access token to bind the proof to it (ath). */
+export function dpopProof(key: crypto.KeyObject, method: string, url: string, accessToken?: string, nonce?: string): string {
+  const jwk = crypto.createPublicKey(key).export({ format: "jwk" });
+  const u = new URL(url);
+  const header = { typ: "dpop+jwt", alg: "ES256", jwk: { kty: jwk.kty, crv: jwk.crv, x: jwk.x, y: jwk.y } };
+  const payload = {
+    jti: crypto.randomUUID(),
+    htm: method.toUpperCase(),
+    htu: `${u.origin}${u.pathname}`,
+    iat: Math.floor(Date.now() / 1000),
+    ...(accessToken ? { ath: b64url(crypto.createHash("sha256").update(accessToken).digest()) } : {}),
+    ...(nonce ? { nonce } : {}),
+  };
+  const input = `${b64url(JSON.stringify(header))}.${b64url(JSON.stringify(payload))}`;
+  const sig = crypto.sign("sha256", Buffer.from(input), { key, dsaEncoding: "ieee-p1363" });
+  return `${input}.${b64url(sig)}`;
+}

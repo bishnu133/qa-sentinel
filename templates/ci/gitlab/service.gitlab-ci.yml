@@ -9,10 +9,12 @@
 #     QA_TESTS_PROJECT: "my-group/qa-tests"
 #
 # CI/CD variables (masked, protected): ANTHROPIC_API_KEY, QA_SENTINEL_GITLAB_TOKEN (api scope)
+# Model through Amazon Bedrock or Google Vertex AI instead of an Anthropic key: CLAUDE_CODE_USE_BEDROCK=1 + AWS_REGION
+# + AWS credentials (or a runner role), or CLAUDE_CODE_USE_VERTEX=1 + CLOUD_ML_REGION + ANTHROPIC_VERTEX_PROJECT_ID + GCP credentials.
 # The service's name in qa-sentinel.config.yaml must equal $CI_PROJECT_NAME (or set QA_SERVICE_NAME).
 
 variables:
-  QA_SENTINEL_VERSION: "0.8.0-beta.1"
+  QA_SENTINEL_VERSION: "0.8.0-beta.2"
   # Where to install qa-sentinel from: set QA_SENTINEL_PACKAGE as a group/project CI/CD variable, e.g.
   # "github:bishnu133/qa-sentinel#main" until it is on npm. Default: qa-sentinel@$QA_SENTINEL_VERSION.
   # (Not defined here on purpose: trigger jobs forward YAML variables downstream, where they override CI/CD variables.)
@@ -91,6 +93,26 @@ qa-gap-report:
   # QA_SERVICE_NAME (global, above) is forwarded as-is; redefining it here as "$QA_SERVICE_NAME" would send the
   # literal text "$QA_SERVICE_NAME" downstream.
   variables:
+    QA_SERVICE_PROJECT: "$CI_PROJECT_PATH"
+    QA_SERVICE_SHA: "$CI_COMMIT_SHA"
+    QA_SERVICE_BEFORE_SHA: "$CI_COMMIT_BEFORE_SHA"
+  trigger:
+    project: "$QA_TESTS_PROJECT"
+    branch: {{targetBranch}}
+
+# After deploying this service to an environment, have the test repo check the stories it touches (every service
+# deployed? then run their tests there and comment on the story). Add after your deploy job:
+#
+#   qa-after-deploy-sit:
+#     extends: .qa-trigger-post-deploy
+#     stage: <a stage after deploy>
+#     needs: [<your deploy job>]
+#     variables: { QA_ENVIRONMENT: sit }   # a name from environments: in qa-sentinel.config.yaml
+#     rules:
+#       - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+.qa-trigger-post-deploy:
+  variables:
+    QA_POST_DEPLOY: "true"
     QA_SERVICE_PROJECT: "$CI_PROJECT_PATH"
     QA_SERVICE_SHA: "$CI_COMMIT_SHA"
     QA_SERVICE_BEFORE_SHA: "$CI_COMMIT_BEFORE_SHA"

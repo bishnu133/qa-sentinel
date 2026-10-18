@@ -1,3 +1,4 @@
+import { readManualCards } from "../manualTests.js";
 import { requirementItems } from "../requirements.js";
 import fs from "node:fs";
 import path from "node:path";
@@ -92,7 +93,7 @@ export async function gapReportCommand(o: GapReportOptions): Promise<{ report: s
   fs.writeFileSync(path.join(run.dir, "change.diff"), cs.diff);
   fs.writeFileSync(path.join(run.dir, "story.md"), storyMarkdown(req));
   fs.writeFileSync(path.join(run.dir, "requirements.json"), JSON.stringify(req, null, 2));
-  const manifest = startManifest(cwd, c, run, "gap-report", { service, base: cs.base, head: cs.head, changedFiles: relevant }, req);
+  const manifest = startManifest(cwd, c, run, "gap-report", { service, base: cs.base, head: cs.head, changedFiles: relevant, diff: cs.diff }, req);
   log.step(`${o.story ? `story ${o.story}` : `${service.name}@${cs.head.slice(0, 8)}`}: ${relevant.length} relevant file(s) changed; planning`);
 
   const testBefore = snapshotTree(cwd);
@@ -142,7 +143,7 @@ export async function gapReportCommand(o: GapReportOptions): Promise<{ report: s
     const selection = parts ? mergeSelections(parts.map((p) => select(p.service.name))) : select(service.name);
     fs.writeFileSync(path.join(run.dir, "regression.json"), JSON.stringify(selection, null, 2));
     fs.writeFileSync(path.join(path.dirname(out), "qa-regression.txt"), selection.runFullSuite ? "" : selection.args.join("\n") + "\n");
-    const trace = traceStory(index, req.storyKey, requirementItems(req));
+    const trace = traceStory(index, req.storyKey, requirementItems(req), readManualCards(cwd, c.tests.manualDir));
     const traced = trace.acs.some((r) => r.status !== "not-traced");
     log.step(`regression selection: ${selection.runFullSuite ? "full suite" : `${selection.tests.length} test(s)`}`);
     report =

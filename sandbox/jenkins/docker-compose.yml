@@ -1,0 +1,20 @@
+# docker compose -f sandbox/jenkins/docker-compose.yml up --build    → http://localhost:8090 (admin / admin)
+services:
+  jenkins:
+    build: .
+    ports: ["127.0.0.1:8090:8080"]   # this laptop only: the container has the Docker socket
+    environment:
+      - QA_BASE_URL=${QA_BASE_URL:-http://host.docker.internal:8080}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-not-set}
+      - QA_SENTINEL_PACKAGE=${QA_SENTINEL_PACKAGE:-github:bishnu133/qa-sentinel#main}
+      - QA_SENTINEL_GITLAB_TOKEN=${QA_SENTINEL_GITLAB_TOKEN:-not-set}
+      - JENKINS_ADMIN_PASSWORD=${JENKINS_ADMIN_PASSWORD:-admin}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      # The ShopLite sandbox (node sandbox/shoplite/local.mjs setup) from the qa-sentinel checkout.
+      - ../..:/work:ro
+      - jenkins_home:/var/jenkins_home
+    extra_hosts: ["host.docker.internal:host-gateway"]
+    user: root   # to use the Docker socket; this Jenkins is local and throwaway
+volumes:
+  jenkins_home:
