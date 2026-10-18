@@ -14,7 +14,10 @@ services:
       # The ShopLite sandbox (node sandbox/shoplite/local.mjs setup) from the qa-sentinel checkout.
       - ../..:/work:ro
       - jenkins_home:/var/jenkins_home
+      # CA bundle (incl. certs/ roots) for the pipeline's containers, which get this container's volumes.
+      - qa_certs:/qa-certs
     extra_hosts: ["host.docker.internal:host-gateway"]
     user: root   # to use the Docker socket; this Jenkins is local and throwaway
 volumes:
   jenkins_home:
+  qa_certs:

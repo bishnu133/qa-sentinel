@@ -8,6 +8,16 @@ jenkins:
         - id: admin
           password: "${JENKINS_ADMIN_PASSWORD:-admin}"
   authorizationStrategy: loggedInUsersCanDoAnything
+  # npm, Node and git in the pipeline's containers trust the same CA bundle (with your company's root, if any).
+  globalNodeProperties:
+    - envVars:
+        env:
+          - key: NODE_EXTRA_CA_CERTS
+            value: /qa-certs/ca-bundle.pem
+          - key: GIT_SSL_CAINFO
+            value: /qa-certs/ca-bundle.pem
+          - key: npm_config_cafile
+            value: /qa-certs/ca-bundle.pem
 credentials:
   system:
     domainCredentials:

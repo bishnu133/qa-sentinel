@@ -4,6 +4,7 @@
 
 - **post-deploy runs only the story's tests:** it ran every test in the files that hold them, so an unrelated failing test in the same file failed the story. Playwright layers now get `--grep @story:<key>`; other runners still run whole files, and the report says so.
 - **Healing on macOS:** Bubblegum started its engine with `python`, which macOS doesn't have (`spawn python ENOENT`). The scaffold now falls back to `python3` (or `BUBBLEGUM_PYTHON`, or the active virtualenv); `doctor` checks the same Python.
+- **Jenkins sandbox behind a company proxy:** `PKIX path building failed` when downloading plugins. A root certificate put in `sandbox/jenkins/certs/` is now trusted by Java, npm and git, in Jenkins and in the pipeline's containers.
 - **Sandbox `reset` undoes `merge`:** a merged scenario (SHOP-101's required delivery slot) stayed on main and made later scenarios' tests fail.
 
 ## 0.8.0-beta.2 — Environments, toggles, manual checks, gateways, personal data
