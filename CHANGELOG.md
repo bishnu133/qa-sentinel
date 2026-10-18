@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased — fixes from the first full v0.8 test run
+
+- **post-deploy runs only the story's tests:** it ran every test in the files that hold them, so an unrelated failing test in the same file failed the story. Playwright layers now get `--grep @story:<key>`; other runners still run whole files, and the report says so.
+- **Healing on macOS:** Bubblegum started its engine with `python`, which macOS doesn't have (`spawn python ENOENT`). The scaffold now falls back to `python3` (or `BUBBLEGUM_PYTHON`, or the active virtualenv); `doctor` checks the same Python.
+- **Sandbox `reset` undoes `merge`:** a merged scenario (SHOP-101's required delivery slot) stayed on main and made later scenarios' tests fail.
+
 ## 0.8.0-beta.2 — Environments, toggles, manual checks, gateways, personal data
 
 - **Waiting for deployment (C1):** tests that fail only because the change isn't running in the environment yet (the service's `version` endpoint) come back as `WAITING_FOR_DEPLOYMENT`, not `FAILED`, in `generate` and `verify` (exit 4). The agent MR goes up as a draft labelled `qa-sentinel::waiting_for_deployment`.

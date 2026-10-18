@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import type { TestInfo } from "@playwright/test";
 
 /**
@@ -10,6 +11,7 @@ import type { TestInfo } from "@playwright/test";
  * attached to the test ("healed-step") and listed by `qa-sentinel healed` as a page-object fix to make.
  *
  * Needs: npm i -D {{bubblegumPackage}} and pip install "bubblegum-ai[web]" on the machine running the tests.
+ * The engine runs with BUBBLEGUM_PYTHON, else the active virtualenv, else `python`, else `python3` (macOS has only that).
  */
 
 export interface HealedStep {
@@ -51,6 +53,8 @@ export async function recoverStep(testInfo: TestInfo, o: { failedLocator: string
   } catch {
     throw new Error(`QA_HEALING=bubblegum but ${pkg} is not installed. Run: npm i -D ${pkg} && pip install "bubblegum-ai[web]" (or set QA_HEALING=off).`);
   }
+  // Bubblegum starts its engine with `python`; many machines (macOS) only have `python3`.
+  if (!process.env.BUBBLEGUM_PYTHON && !process.env.VIRTUAL_ENV && spawnSync("python", ["--version"]).status !== 0) process.env.BUBBLEGUM_PYTHON = "python3";
   const bg = await mod.Bubblegum.attach({ cdpEndpoint: `http://127.0.0.1:${cdpPort(testInfo.parallelIndex)}` });
   try {
     const r = await bg.recover({ failedSelector: o.failedLocator, intent: o.intent });

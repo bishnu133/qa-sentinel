@@ -107,7 +107,9 @@ export async function postDeployCommand(o: PostDeployOptions): Promise<number> {
       log.step(`${story}: every part is deployed on ${environment}; running ${tests.length} test(s)`);
       const run = createRunDir(cwd, `post-deploy-${story}`);
       const files = [...new Set(tests.map((t) => t.file))].map((p) => ({ path: p, status: "M" }));
-      const report = await verifyChanges({ cwd, c, changes: files, runDir: run.dir, env: testEnv(c, process.env, { healing: true }), environment });
+      // Only this story's tests: other tests in the same files are not what this check is about.
+      const grep = `@story:(?:\\S*,)?${story.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![\\w-])`;
+      const report = await verifyChanges({ cwd, c, changes: files, runDir: run.dir, env: testEnv(c, process.env, { healing: true }), environment, grep });
       outcomes.push({ story, status: report.status === "VERIFIED" ? "passed" : report.status === "FAILED" ? "failed" : "blocked", manifest, report });
     }
   }

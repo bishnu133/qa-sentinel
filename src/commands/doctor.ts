@@ -201,7 +201,7 @@ export function webChecks(cwd: string, c: Config, env: NodeJS.ProcessEnv): Check
     const pkg = w.bubblegum.package;
     const hasPkg = fs.existsSync(path.join(cwd, "node_modules", ...pkg.split("/"), "package.json"));
     hasPkg ? add("ok", `healing: ${pkg} installed`) : add("fail", `healing: ${pkg} installed`, `npm i -D ${pkg}`);
-    const py = spawnSync("python3", ["-c", "import bubblegum"], { encoding: "utf8" });
+    const py = spawnSync(process.env.BUBBLEGUM_PYTHON || "python3", ["-c", "import bubblegum"], { encoding: "utf8" });
     py.status === 0 ? add("ok", "healing: Bubblegum engine importable (python3 -c 'import bubblegum')") : add("fail", "healing: Bubblegum engine installed", 'pip install "bubblegum-ai[web]" on the machine running the tests');
     add("ok", "healing runs only when QA_HEALING=bubblegum (scheduled/post-deploy jobs, feature --run); never while verifying agent-written tests");
   }

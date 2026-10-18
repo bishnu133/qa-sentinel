@@ -11,7 +11,7 @@
 //   node sandbox/shoplite/local.mjs merge SHOP-106                 # merge a scenario's branch into main (like merging the MR)
 //   node sandbox/shoplite/local.mjs feature SHOP-106 [--run]       # one story across services: merged? deployed? AC tests? (then run them)
 //   node sandbox/shoplite/local.mjs story SHOP-106 [--generate]    # one gap report (and one test branch) for the whole story, all services
-//   node sandbox/shoplite/local.mjs reset                          # every service back to main, env stopped
+//   node sandbox/shoplite/local.mjs reset                          # every service back to main (merges undone), env stopped
 //   node sandbox/shoplite/local.mjs env start|stop
 //   node sandbox/shoplite/local.mjs app build                      # (setup --mobile) build the Android app → shoplite-app/build/shoplite.apk
 //   node sandbox/shoplite/local.mjs run SHOP-109 --generate --showcase   # mobile: app change, screen objects + app tests (emulator + Appium running)
@@ -85,6 +85,8 @@ function envStop(quiet = false) {
   run("bash", [path.join(HERE, "tests-extra/qa-env/stop.sh")], { stdio: quiet ? "ignore" : "inherit" });
 }
 
+const BEFORE_MERGE = "refs/sandbox/before-merge";
+
 switch (cmd) {
   case "setup": {
     fs.mkdirSync(work, { recursive: true });
@@ -111,7 +113,16 @@ switch (cmd) {
     break;
   case "reset":
     envStop(true);
-    for (const svc of servicesIn(work)) git(path.join(work, svc), "checkout", "-q", "-f", "main");
+    for (const svc of servicesIn(work)) {
+      const dir = path.join(work, svc);
+      git(dir, "checkout", "-q", "-f", "main");
+      // Undo `merge`: otherwise a merged scenario (e.g. SHOP-101's required deliverySlot) leaks into the next one.
+      if (spawnSync("git", ["rev-parse", "-q", "--verify", BEFORE_MERGE], { cwd: dir }).status === 0) {
+        git(dir, "reset", "-q", "--hard", BEFORE_MERGE);
+        git(dir, "update-ref", "-d", BEFORE_MERGE);
+        log(`${svc}: scenario merges undone (main as set up)`);
+      }
+    }
     testsToMain();
     log("all repos back on main; environment stopped");
     break;
@@ -120,6 +131,8 @@ switch (cmd) {
     const s = scenario(arg);
     const dir = path.join(work, s.service);
     git(dir, "checkout", "-q", "-f", "main");
+    // Remember main as set up, so `reset` can undo the merge.
+    if (spawnSync("git", ["rev-parse", "-q", "--verify", BEFORE_MERGE], { cwd: dir }).status !== 0) git(dir, "update-ref", BEFORE_MERGE, "main");
     git(dir, "merge", "-q", "--no-ff", s.branch, "-m", `Merge branch '${s.branch}' into 'main'`);
     log(`${s.service}: merged ${s.branch} into main`);
     break;

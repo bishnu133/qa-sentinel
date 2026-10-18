@@ -87,3 +87,27 @@ describe("toggle command safety", () => {
     await expect(withToggles(c, "sit", { "a;b": "on" }, process.env, async () => 1)).rejects.toThrow(/refusing toggle/);
   });
 });
+
+describe("post-deploy runs only the story's tests", () => {
+  it("passes the story tag to Playwright as --grep, so other tests in the same file don't decide the result", async () => {
+    const repo = fs.mkdtempSync(path.join(os.tmpdir(), "qas-grep-"));
+    fs.mkdirSync(path.join(repo, "tests/api"), { recursive: true });
+    fs.writeFileSync(path.join(repo, "tests/api/orders.spec.ts"), 'test("qty 0 @story:SHOP-101", () => {});\ntest("other", () => {});\n');
+    // Stand-in for `playwright test`: records its arguments, writes JUnit where Playwright would.
+    fs.writeFileSync(
+      path.join(repo, "pw.mjs"),
+      `import fs from "node:fs"; fs.writeFileSync("args.json", JSON.stringify(process.argv.slice(2)));
+fs.writeFileSync(process.env.PLAYWRIGHT_JUNIT_OUTPUT_NAME, '<testsuite><testcase name="qa" classname="tests/api/orders.spec.ts"/></testsuite>');`,
+    );
+    const c = ConfigSchema.parse({ version: 1, mode: "existing", project: { name: "p" }, tests: { api: { framework: "playwright", runCommand: "node pw.mjs" } }, ci: { platform: "gitlab" }, verification: { typecheck: "never", preflight: false } });
+    const runDir = fs.mkdtempSync(path.join(os.tmpdir(), "qas-run-"));
+    const grep = "@story:(?:\\S*,)?SHOP-101(?![\\w-])";
+    const r = await verifyChanges({ cwd: repo, c, runDir, env: process.env, changes: [{ path: "tests/api/orders.spec.ts", status: "M" }], grep });
+    const args: string[] = JSON.parse(fs.readFileSync(path.join(repo, "args.json"), "utf8"));
+    expect(args[args.indexOf("--grep") + 1]).toBe(grep);
+    expect(r.status).toBe("VERIFIED");
+    const re = new RegExp(grep, "i");
+    expect(["qty 0 @story:SHOP-101", "x @story:SHOP-7,SHOP-101"].every((t) => re.test(t))).toBe(true);
+    expect(["x @story:SHOP-1010", "x @story:SHOP-101-b", "x @story:SHOP-10"].some((t) => re.test(t))).toBe(false);
+  });
+});

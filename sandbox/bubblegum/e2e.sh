@@ -16,6 +16,8 @@ node "$CLI" init --yes --mode scratch --web --ci gitlab --name healing-demo >/de
 npm install --no-audit --no-fund --loglevel=error
 npm i -D --no-audit --no-fund --loglevel=error @bubblegum-ai/node
 python3 -m pip install --quiet "bubblegum-ai[web]" 2>/dev/null || python3 -m pip install --quiet --break-system-packages "bubblegum-ai[web]"
+# The engine must run with the same Python pip just installed into.
+export BUBBLEGUM_PYTHON="${BUBBLEGUM_PYTHON:-$(command -v python3)}"
 [ -n "${QA_BROWSER_PATH:-}" ] || npx playwright install chromium
 
 cat > site.mjs <<'JS'

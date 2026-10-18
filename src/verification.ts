@@ -108,6 +108,11 @@ export interface VerifyOptions {
   changes: FileChange[];
   runDir: string;
   env: NodeJS.ProcessEnv;
+  /**
+   * Run only the tests whose title matches (a regex, e.g. one story's tag) instead of every test in the files.
+   * Playwright layers only (`--grep`); other runners run the whole files, and the check says so.
+   */
+  grep?: string;
 }
 
 const shq = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`;
@@ -223,7 +228,8 @@ export async function verifyChanges(o: VerifyOptions): Promise<VerificationRepor
         ...(l.resultsDirEnv ? { [l.resultsDirEnv]: path.join(o.runDir, `results-${l.layer}${sfx}`) } : {}),
         ...(!o.env[l.baseUrlEnv] && l.defaultBaseUrl ? { [l.baseUrlEnv]: l.defaultBaseUrl } : {}),
       };
-      const runArgs = (files: string[]) => `${l.runCommand} ${specArgs(l, files, shq)}${l.isPlaywright ? " --reporter=line,junit" : (auto?.args ?? "")}`;
+      const grep = o.grep && l.isPlaywright ? ` --grep ${shq(o.grep)}` : "";
+      const runArgs = (files: string[]) => `${l.runCommand} ${specArgs(l, files, shq)}${grep}${l.isPlaywright ? " --reporter=line,junit" : (auto?.args ?? "")}`;
       const cmd = runArgs(layerSpecs);
       let r = await runProcess(cmd, [], { cwd, env, timeoutMs, shell: true });
       let mine = readJUnitAt(junit).map((x) => ({ ...x, layer: l.layer }));
@@ -257,7 +263,8 @@ export async function verifyChanges(o: VerifyOptions): Promise<VerificationRepor
       else if (envFailures) [status, detail] = ["blocked", `environment errors: ${failed[0].message}`];
       else if (r.code !== 0 || failed.length) [status, detail] = ["failed", `${failed.length} failed${failed[0] ? `: ${failed[0].name}` : `, exit ${r.code}`}`];
       else [status, detail] = ["passed", mine.length ? `${mine.filter((x) => x.status === "passed").length} passed, ${mine.filter((x) => x.status === "skipped").length} skipped${mine.some((x) => x.message === "passed on retry (flaky)") ? `, ${mine.filter((x) => x.message === "passed on retry (flaky)").length} only on retry (flaky)` : ""}` : "exit 0 (no JUnit report configured)"];
-      checks.push({ name: "tests", ...(specsByLayer.size > 1 || l.layer !== "api" ? { layer: l.layer } : {}), status, detail: label ? `${detail} (${label})` : detail, durationMs: r.durationMs });
+      const notes = [label, o.grep && !l.isPlaywright ? "whole files: this runner can't filter by tag" : ""].filter(Boolean).join("; ");
+      checks.push({ name: "tests", ...(specsByLayer.size > 1 || l.layer !== "api" ? { layer: l.layer } : {}), status, detail: notes ? `${detail} (${notes})` : detail, durationMs: r.durationMs });
       outputs.push(`### ${l.layer}: ${cmd}\n${r.stdout}\n${r.stderr}`);
   
   };
