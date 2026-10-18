@@ -11,6 +11,11 @@ docker compose -f sandbox/jenkins/docker-compose.yml up --build -d
 docker compose -f sandbox/jenkins/docker-compose.yml down -v     # remove it again
 ```
 
+**`PKIX path building failed` / `unable to find valid certification path`** while building: your network inspects
+HTTPS (Zscaler, Netskope, a company proxy). Put its root certificate in `sandbox/jenkins/certs/` (how: see
+[certs/README.md](certs/README.md)), then `down -v` and `up --build -d` again. Java, npm and git in Jenkins and in the
+pipeline's containers then trust it.
+
 **What to check:** the build pulls the Playwright image, installs, type-checks, runs the API (and web) tests
 against ShopLite on `host.docker.internal:8080`, and the "Tests" tab shows the JUnit results. With
 `CHANGED_ONLY=true` on a `qa-sentinel/*` branch it runs `qa-sentinel verify --policy` instead.
