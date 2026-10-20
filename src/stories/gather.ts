@@ -71,6 +71,11 @@ export function inputsFromDir(c: Config, dir: string): StoryInput[] {
       log.warn(`${name}: no story key found (${c.requirements.storyKeyPattern}); skipped`);
       continue;
     }
+    const first = out.find((x) => x.key === key);
+    if (first) {
+      log.warn(`${name}: story ${key} is already read from another file; this one is skipped (one file per story)`);
+      continue;
+    }
     out.push({ key, title: title?.replace(new RegExp(`^${key}\\s*:?\\s*`), ""), labels: [], text, source: "story-file" });
   }
   return out;

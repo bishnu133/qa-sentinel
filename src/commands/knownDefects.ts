@@ -5,6 +5,8 @@ import { indexTests } from "../analysis/testIndex.js";
 import { defectStatuses, removeAllMarkers, type DefectStatus } from "../analysis/markers.js";
 import { readRunResults } from "../showcase/results.js";
 import { git, workingChanges } from "../git.js";
+import { matchesAny } from "../fsutil.js";
+import { ARTIFACT_GLOBS } from "../run.js";
 import { createOrUpdateMergeRequest, gitlabContext, pushUrl } from "../scm/gitlab.js";
 import { log } from "../log.js";
 
@@ -55,7 +57,7 @@ export async function knownDefectsCommand(o: KnownDefectsOptions): Promise<numbe
   }
 
   if (o.commit) {
-    const dirty = workingChanges(cwd);
+    const dirty = workingChanges(cwd).filter((d) => !matchesAny(d.path, [...ARTIFACT_GLOBS, "test-results/**", "playwright-report/**"]));
     if (dirty.length) throw new Error(`--commit needs a clean working tree; these files have changes: ${dirty.slice(0, 5).map((d) => d.path).join(", ")}`);
   }
   const byFile = new Map<string, DefectStatus[]>();

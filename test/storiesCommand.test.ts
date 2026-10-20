@@ -92,6 +92,12 @@ describe("stories (files)", () => {
     const { list } = await run({ storiesDir: "stories" });
     expect(list[0]).toMatchObject({ state: "needs-attention", next: "fix" });
   });
+  it("reads a story once when two files carry the same key (the later file is skipped)", async () => {
+    fs.writeFileSync(path.join(stories, "SHOP-1.md"), storyMd("SHOP-1"));
+    fs.writeFileSync(path.join(stories, "SHOP-1b.md"), storyMd("SHOP-1", "Other text entirely."));
+    const { list } = await run({ storiesDir: "stories" });
+    expect(list.filter((x) => x.key === "SHOP-1")).toHaveLength(1);
+  });
   it("skips files with no story key, and fails clearly when there is nothing to read", async () => {
     fs.writeFileSync(path.join(stories, "notes.md"), "# just notes\nnothing here");
     const out = await storiesCommand({ cwd: repo, storiesDir: "stories" });

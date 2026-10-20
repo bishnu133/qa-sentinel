@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased — automation (phase 2)
+
+- **Credentials check** before the first AI call (one tiny call, `agent.accessCheckSeconds`): a missing, malformed or wrong key, a wrong Bedrock region or a missing `claude` stops at once (exit 3) with the fix. `doctor --online` runs it too.
+- **`qa-sentinel stories`** (no AI): a background check of every story from Jira (`requirements.jira.search`) or story files: state, next step, who acts, and what blocks it. Writes `qa-stories.md` and a record per story (`.qa-sentinel/stories/`, optionally mirrored to a Jira issue property with `automation.record: jira`).
+- **Job keys:** `spec` and `generate` skip work already done for the same ACs (in CI by default; `--once`, `--force`), respect running locks (dead local runs are detected), and stop after `automation.jobs.maxAttempts` failures.
+- **Budgets** (`automation.budgets`: per story, per day, per month): every AI call is clamped to what is left; a refused step exits 4. All AI commands count, `--force` never overrides budgets. See [docs/AUTOMATION.md](docs/AUTOMATION.md).
+- **`qa-sentinel known-defects`** (no AI): finds `test.fail` tests whose bug is fixed and, with `--apply`, takes the marker and the QA-BUG / QA-AGENT notes off (optionally on a branch / MR for review).
+
 ## Unreleased — AC-first generation (phase 1)
 
 **Upgrading:** `qa-sentinel upgrade` refreshes the planning and authoring skills, but not your `write-api-test`, `write-web-test` and `write-mobile-test` skills (they hold your learned conventions). Copy the discrepancy line (`test.fixme` + `// QA-AGENT:` with the behaviour id, never `test.fail`) and the "never assert the code's value" line from `templates/skills/…` by hand.
