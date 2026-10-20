@@ -62,7 +62,10 @@ function fromJUnit(xml: string, baseDir: string): RunResult[] {
       return { kind: kindOf(path.basename(p).replace(/\.[^.]+$/, ""), "", p), name: path.basename(p), path: p };
     });
     const cls = attr("classname");
-    out.push({ file: attr("file") ?? (cls && /\.([cm]?[jt]sx?|py|java|kt|cs|rb|go|php|feature)$/.test(cls.trim()) ? cls : undefined), title: (attr("name") ?? "").replace(/&quot;/g, '"').replace(/&amp;/g, "&"), status, evidence });
+    // The failure's message ("Expected to fail, but passed." for a test.fail test that now passes), when the report has one.
+    const message = status === "failed" ? body.match(/<(?:failure|error)\b[^>]*?\smessage="([^"]*)"/)?.[1] : undefined;
+    const error = message?.replace(/&#10;|&#xA;/gi, " ").replace(/&quot;/g, '"').replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&").replace(/\u001b\[[0-9;]*m/g, "").slice(0, 300);
+    out.push({ file: attr("file") ?? (cls && /\.([cm]?[jt]sx?|py|java|kt|cs|rb|go|php|feature)$/.test(cls.trim()) ? cls : undefined), title: (attr("name") ?? "").replace(/&quot;/g, '"').replace(/&amp;/g, "&"), status, evidence, ...(error ? { error } : {}) });
   }
   return out;
 }

@@ -13,6 +13,7 @@ import { specCommand } from "./commands/spec.js";
 import { storiesCommand } from "./commands/stories.js";
 import { reviewStoryCommand } from "./commands/reviewStoryCmd.js";
 import { bugsCommand } from "./commands/bugs.js";
+import { knownDefectsCommand } from "./commands/knownDefects.js";
 import { tagCommand } from "./commands/tag.js";
 import { metricsCommand } from "./commands/metrics.js";
 import { storyCheckCommand } from "./commands/storyCheck.js";
@@ -133,6 +134,16 @@ program
   .option("--no-record", "don't update the story records")
   .option("-o, --out <file>", "markdown output", "qa-stories.md")
   .action(wrap(async (o) => storiesCommand({ cwd: cwd(), story: o.story, storiesDir: o.storiesDir, all: o.all, json: o.json, noRecord: o.record === false, out: o.out })));
+
+program
+  .command("known-defects")
+  .description("no AI: find known-defect tests (test.fail + QA-BUG) that now pass because the bug is fixed; --apply takes the markers off")
+  .option("--results <file>", "Playwright JSON report", "test-results/results.json")
+  .option("--apply", "edit the test files (test.fail -> test, remove QA-BUG / QA-AGENT note lines)")
+  .option("--commit", "also commit on a new branch (needs --apply)")
+  .option("--push", "also push and open a merge request (needs --commit)")
+  .option("--branch <name>", "branch for --commit")
+  .action(wrap(async (o) => knownDefectsCommand({ cwd: cwd(), results: o.results, apply: o.apply, commit: o.commit, push: o.push, branch: o.branch })));
 
 program
   .command("bugs")
