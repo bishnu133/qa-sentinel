@@ -11,6 +11,8 @@ import type { RiskedChange } from "./plan/risk.js";
 import { RISK_BADGE, decisionTable } from "./plan/render.js";
 
 export interface MrDescriptionInput {
+  /** The requirements pass's changes to the expected file and the PO's open questions. */
+  expected?: { rel: string; changes: string[]; questions: string[] };
   /** Named environment the tests ran against (from `environments`), if any. */
   environment?: string;
   service: string;
@@ -51,6 +53,15 @@ export function mrDescription(i: MrDescriptionInput): string {
     parts.push("", "### Plan (validated by qa-sentinel)", i.plan.plan.verdict, "", decisionTable(i.plan.plan, i.plan.risked.changes));
     if (i.plan.corrections.length) parts.push("", ...i.plan.corrections.map((x) => `- correction: ${x}`));
     parts.push("", contractDiffMarkdown(i.plan.contract, i.plan.specPath));
+  }
+  if (i.expected && (i.expected.changes.length || i.expected.questions.length)) {
+    parts.push(
+      "",
+      `### Expected behaviour (\`${i.expected.rel}\`)`,
+      "Written from the story alone, before the code was read. The tests assert its `ready` values. **Review them: merging this MR approves them.**",
+      ...(i.expected.changes.length ? ["", ...i.expected.changes.map((x) => `- ${x}`)] : []),
+      ...(i.expected.questions.length ? ["", "Questions for the PO (not tested until answered):", ...i.expected.questions.map((q) => `- ${q}`)] : []),
+    );
   }
   if (i.discrepancies.length) {
     parts.push(

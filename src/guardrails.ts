@@ -266,8 +266,8 @@ export function claudePermissions(o: { write: WritePolicy | undefined; bash: str
   return { allow, deny };
 }
 
-/** `test.fail(` / `it.fail(`: a test expected to fail (Playwright). Only a person marks one, after triage. */
-export const KNOWN_DEFECT = /\b(?:test|it)\.fail\s*\(\s*["'`]/;
+/** `test.fail(...)` in any form (declaration, `test.fail()` / `test.fail(cond)` inside a test, `test.describe.fail`): expected to fail. Only a person marks one, after triage. */
+export const KNOWN_DEFECT = /\b(?:test|it)(?:\.describe)?\.fail\s*\(/;
 
 /**
  * An AI run may not mark a test as a known defect (`test.fail`): that says "QA confirmed a product defect, here is

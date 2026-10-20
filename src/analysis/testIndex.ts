@@ -111,14 +111,14 @@ export function indexSource(file: string, src: string): IndexedTest[] {
   const subst = constSubstituter(src);
 
   const lines = src.split(/\r?\n/);
-  const describes: { indent: number; title: string }[] = [];
+  const describes: { indent: number; title: string; fail?: boolean }[] = [];
   const found: { line: number; kind?: string; raw: string; indent: number }[] = [];
   lines.forEach((l, i) => {
     const indent = l.length - l.trimStart().length;
     const d = l.match(DESCRIBE);
     if (d) {
       while (describes.length && describes[describes.length - 1].indent >= indent) describes.pop();
-      describes.push({ indent, title: subst(d[2]) });
+      describes.push({ indent, title: subst(d[2]), fail: /\bdescribe\.fail\b/.test(l) });
       return;
     }
     const t = l.match(DECL);
@@ -126,6 +126,7 @@ export function indexSource(file: string, src: string): IndexedTest[] {
       while (describes.length && describes[describes.length - 1].indent >= indent) describes.pop();
       found.push({ line: i + 1, kind: t[2], raw: subst(t[4]), indent });
       (found[found.length - 1] as any).describe = describes.map((x) => x.title).join(" › ") || undefined;
+      (found[found.length - 1] as any).failGroup = describes.some((x) => x.fail);
     }
   });
   return found.map((f, k) => {
@@ -133,14 +134,16 @@ export function indexSource(file: string, src: string): IndexedTest[] {
     const body = lines.slice(f.line - 1, end).join("\n");
     const asserts = body.split("\n").filter((l) => ASSERT.test(l) && ((ASSERT.lastIndex = 0), true));
     const parsed = parseTags(f.raw);
+    // test.fail("title", …), test.fail() / test.fail(cond) inside the body, or a test.describe.fail group around it.
+    const defect = f.kind === "fail" || /\btest\.fail\s*\(/.test(lines.slice(f.line, end).join("\n")) || (f as any).failGroup;
     return {
       id: `${file}:${f.line}`,
       file,
       line: f.line,
       endLine: end,
       describe: (f as any).describe,
-      status: f.kind === "fail" ? "known-defect" : f.kind === "fixme" ? "fixme" : f.kind === "skip" ? "skip" : "active",
-      ...(f.kind === "fail" ? bugLink(lines, f.line, end) : {}),
+      status: defect ? "known-defect" : f.kind === "fixme" ? "fixme" : f.kind === "skip" ? "skip" : "active",
+      ...(defect ? bugLink(lines, f.line, end) : {}),
       assertions: (body.match(ASSERT) ?? []).length,
       statusOnly: asserts.length > 0 && asserts.every((l) => /\.status\(\)\)?\s*\)?\s*\.(toBe|toEqual)\(\s*\d{3}\s*\)/.test(l) || /expect\([^)]*status\(\)\)/.test(l)),
       ...parsed,

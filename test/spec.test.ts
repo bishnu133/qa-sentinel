@@ -75,6 +75,23 @@ describe("validateProposal (code-blind requirements pass)", () => {
   });
 });
 
+describe("validateProposal: what agents really write", () => {
+  it("drops entries for ACs that weren't asked for (e.g. copied from current.json) instead of failing on them", () => {
+    const only1: SpecAc[] = [{ ...acs[0] }, { ...acs[1], needsProposal: false }];
+    const p = good() as { acs: unknown[] };
+    p.acs[1] = { id: "AC-2", hash: "abc", text: AC2, services: [], behaviours: [{ id: "B3", kind: "main", statement: "x", expect: { cap: 9 }, state: "ready", source: "ac" }] };
+    const v = validateProposal(p, { acs: only1, sources: STORY });
+    expect(v.errors).toEqual([]);
+    expect(v.proposal?.acs.map((a) => a.id)).toEqual(["AC-1"]);
+  });
+
+  it("rejects values in an unspecified behaviour (strings too)", () => {
+    const p = good();
+    p.acs[1].behaviours[0].expect = { message: "Slot is full" } as never;
+    expect(validateProposal(p, { acs, sources: STORY }).errors.join()).toMatch(/an unspecified behaviour has no values yet/);
+  });
+});
+
 describe("proposalToFile", () => {
   it("keeps stored ids, numbers new behaviours after them, and drops numbers from unspecified", () => {
     const stored: ExpectedFile = {
@@ -83,11 +100,11 @@ describe("proposalToFile", () => {
       acs: [{ id: "AC-1", hash: acHash("old text"), text: "old text", services: [], behaviours: [{ id: "B4", kind: "main", statement: "x", expect: {}, state: "ready", source: "ac" }] }],
     };
     const p = validateProposal(good(), { acs, sources: STORY }).proposal!;
-    p.acs[1].behaviours[0].expect = { cap: 5, note: "ask" };
+    p.acs[1].behaviours[0].expect = { cap: 5, note: "ask", accepted: false };
     const f = proposalToFile("SHOP-101", "Delivery slots", acs, p, stored);
     expect(f.acs.flatMap((a) => a.behaviours.map((b) => b.id))).toEqual(["B5", "B6", "B7"]);
     expect(f.acs[0].hash).toBe(acHash(AC1));
-    expect(f.acs[1].behaviours[0].expect).toEqual({ note: "ask" });
+    expect(f.acs[1].behaviours[0].expect).toEqual({ accepted: false });
     expect(f.acs[0].behaviours[0].basis).toBe("A slot takes at most 3 orders");
   });
 });

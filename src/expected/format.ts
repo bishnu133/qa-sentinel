@@ -181,7 +181,7 @@ const DATA_HELP = [
   "# Expected behaviour for {story}: the data qa-sentinel's tests assert. QA edits it here, in this block.",
   "# Edit: statement, expect (the values), state, question, source, services, untestable. basis = the story's words it comes from.",
   "# Don't edit: id, hash and text (qa-sentinel copies hash and text from the story; to change an AC, change the story in Jira).",
-  "# state: ready = tests assert it · needs-review = the AC changed or was removed, check it, then set ready · unspecified = the story doesn't say, ask the PO (question), not tested until answered.",
+  "# state: ready = tests assert it · needs-review = the AC changed in the story, check it, then set ready · unspecified = the story doesn't say, ask the PO (question), not tested until answered.",
   "# PO answered outside Jira? Fill in expect, set state: ready, delete question, and add",
   "#   source: { clarification: { by: <name>, date: <yyyy-mm-dd>, link: <chat or mail> } }",
 ];

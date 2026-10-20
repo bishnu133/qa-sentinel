@@ -10,7 +10,7 @@ The words qa-sentinel uses in reports, merge requests and Jira, so QA, developer
 | **Scope item** | A requirement written outside the ACs (IS-1 in scope, TS-1 tech note, ER-1 expected result). A weaker oracle than an AC. |
 | **Expected behaviour** | `expected/<STORY>.md`: what each AC means in testable terms (values, boundaries, negative cases). Written from the story alone, reviewed by QA. |
 | **Behaviour id** | B1, B2, … in the expected file. Stable within the story, never reused: `SHOP-101/B3`. |
-| **ready** | QA approved the behaviour (merged): tests assert it. |
+| **ready** | Tests assert it. Written by the requirements pass or by QA; QA approves it by merging the merge request. |
 | **needs-review** | The AC changed after the behaviour was written. Not tested until QA sets it back to ready. |
 | **unspecified** | The story doesn't give the value. A question goes to the PO; nothing is invented, nothing is tested until answered. |
 | **Requirements pass** | The code-blind AI run that writes expected behaviour from the story (`qa-sentinel spec`, first step of `generate`). |
@@ -32,7 +32,8 @@ The words qa-sentinel uses in reports, merge requests and Jira, so QA, developer
 | ❓ **unclassified – needs triage** | It fails and nobody has said why yet. **The default.** | A person |
 | 🐞 **product defect** | QA confirmed the product is wrong (known defect, bug link). | QA |
 | 🌐 **environment** | The environment failed (network, certificates, gateway 502/503/504). No bug card is drafted. | qa-sentinel (from the error) |
-| 🚧 **not built** | No code in the story's services does it (from the plan). Suspected until confirmed. | qa-sentinel suggests, QA confirms |
+| 🚧 **not built** | No code in the story's services does it (the plan says `not-found`; shown on bug cards as suspected). | QA confirms |
+| ✅ **known defect now passes** | A `test.fail` test passed: the bug looks fixed. Remove `test.fail` and the `QA-BUG` line. | qa-sentinel (from the result), QA removes the marker |
 | ⏳ **not deployed** | The change isn't running where the test ran (service `version` endpoint). | qa-sentinel (from the deployment check) |
 
 qa-sentinel never reports a failure as a product defect on its own, and "the AI says it's implemented" is never a gate.

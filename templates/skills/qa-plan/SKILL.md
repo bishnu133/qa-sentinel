@@ -50,7 +50,9 @@ For a single-line or trivial diff you may do steps 2 and 3 yourself, but the rul
       "decision": "update",
       "existingTests": ["tests/api/orders/create-order.spec.ts"],
       "proposedScenarios": [
-        { "title": "returns 400 when deliverySlot is missing", "requirementIds": ["AC-1"], "behaviourIds": ["B1"], "setup": [], "assertions": ["status 400", "error mentions deliverySlot"] }
+        { "title": "returns 400 when deliverySlot is missing", "requirementIds": ["AC-1"], "behaviourIds": ["B1"], "setup": [], "assertions": ["status 400", "error mentions deliverySlot"] },
+        { "title": "rejects a 4th order for a full slot", "requirementIds": ["AC-3"], "behaviourIds": ["B4"], "setup": ["create 3 orders for one slot"], "assertions": ["4th order is rejected (story: at most 3 per slot)"] },
+        { "title": "the created order shows its deliverySlot", "requirementIds": ["AC-4"], "behaviourIds": ["B6"], "setup": [], "assertions": ["response body has deliverySlot as sent"] }
       ],
       "evidence": [{ "source": "existing-test", "file": "tests/api/orders/create-order.spec.ts", "line": 9, "reference": "posts { item, qty } without deliverySlot and expects 201" }],
       "reason": "spec exists for POST /orders; its happy path now gets 400"
@@ -63,6 +65,7 @@ For a single-line or trivial diff you may do steps 2 and 3 yourself, but the rul
   "specDrift": ["deliverySlot is required in code but absent from openapi.yaml"],
   "requirementStatus": [
     { "id": "AC-1", "status": "implemented", "where": "src/server.js:14", "evidence": [{ "source": "source-code", "file": "src/server.js", "line": 14, "reference": "if (!deliverySlot …) return 400" }] },
+    { "id": "AC-2", "status": "implemented", "where": "src/server.js:20", "noScenario": "already proved by tests/api/orders/slots.spec.ts", "evidence": [{ "source": "source-code", "file": "src/server.js", "line": 20, "reference": "listSlots()" }] },
     { "id": "AC-3", "status": "conflict", "where": "src/server.js:5", "note": "cap is 5, story says 3", "evidence": [{ "source": "source-code", "file": "src/server.js", "line": 5, "reference": "MAX_ORDERS_PER_SLOT = 5" }] },
     { "id": "AC-4", "status": "not-found", "note": "the response never includes deliverySlot" },
     { "id": "TS-1", "status": "elsewhere", "where": "notifications-service", "coveredByAcs": [] },
@@ -117,7 +120,9 @@ Scope items can be cited in `requirementIds` like ACs. They are weaker oracles t
 
 ### Expected behaviour (`expectedBehaviour` in context.json)
 When the prompt names an expected-behaviour file (`expected/<STORY>.md`, or its copy in the run directory), it is the
-oracle for **values**: it was written from the story alone, before anyone looked at the code, and QA reviewed it.
+oracle for **values**: it was written from the story alone, before anyone looked at the code (QA reviews it in the
+merge request).
+- Without such a file, leave `behaviourIds` empty (`[]`); the example above assumes one.
 - Plan scenarios from it, not from the code: one or more per `ready` behaviour, citing it in `behaviourIds` (and its AC
   in `requirementIds`). Assertions use its `expect` values exactly.
 - Behaviours in state `unspecified` or `needs-review` are not tested yet: no scenarios for them.
@@ -126,8 +131,8 @@ oracle for **values**: it was written from the story alone, before anyone looked
 - You can't change the file. If a value in it looks wrong, say so in `openQuestions`.
 
 ### Every AC gets a scenario or a reason
-Each AC needs at least one: a proposed scenario citing it; a `reuse` decision whose change cites it (existing tests
-cover it); `automation` other than automated; status `elsewhere` or `not-applicable`; or `noScenario` in its
+Each AC needs at least one: a proposed scenario citing it; a `reuse` or `review` decision with coverage `covered` whose
+change cites it (existing tests cover it); `automation` other than automated; status `elsewhere` or `not-applicable`; or `noScenario` in its
 `requirementStatus` entry with the reason (e.g. "already proved by tests/api/orders/slots.spec.ts"). An AC that isn't
 built (`not-found`) still gets its scenario: the test is written to the requirement and reports the defect.
 

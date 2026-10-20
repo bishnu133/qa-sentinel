@@ -7,6 +7,7 @@ describe("result categories", () => {
     expect(classifyFailure({ message: "expect(received).toBe(expected) Expected: 409 Received: 201" })).toBe("unclassified");
     expect(classifyFailure({ message: "Received: 500" })).toBe("unclassified");
     expect(classifyFailure({ knownDefect: true })).toBe("product-defect");
+    expect(classifyFailure({ message: "Error: Expected to fail, but passed." })).toBe("defect-fixed");
   });
   it("recognises the environment, deployment and not-built cases", () => {
     expect(classifyFailure({ message: "apiRequestContext.post: connect ECONNREFUSED 127.0.0.1:8080" })).toBe("environment");

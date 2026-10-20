@@ -184,7 +184,7 @@ export async function planChange(i: PlanInput): Promise<PlanOutcome> {
     prompt: [
       "Use the qa-plan skill.",
       `Run context: ${run.rel}/context.json, diff: ${run.rel}/change.diff, story: ${run.rel}/story.md, computed contract diff: ${run.rel}/contract-diff.md.`,
-      ...(i.expected && typeof i.context?.expectedBehaviour === "string" ? [`Expected behaviour (written from the story alone and reviewed by QA; the oracle for values): ${i.context.expectedBehaviour}. Plan scenarios for its ready behaviours and cite them in behaviourIds.`] : []),
+      ...(i.expected && typeof i.context?.expectedBehaviour === "string" ? [`Expected behaviour (written from the story alone, before the code was read; QA reviews it in the merge request; the oracle for values): ${i.context.expectedBehaviour}. Plan scenarios for its ready behaviours and cite them in behaviourIds.`] : []),
       ...(knowledge ? [`Team domain rules: ${knowledge}. They rank after the story and the API contract as an oracle; cite them as evidence source "domain-rule".`] : []),
       `Write the plan as JSON to ${planRel}. That is the only file you may write. Then answer "done".`,
     ].join("\n"),

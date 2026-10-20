@@ -27,13 +27,14 @@ acs:
         expect: { maxOrdersPerSlot: 3, status: 409 }
         state: ready
         source: ac
+        basis: A slot takes at most 3 orders   # the story words the values come from
 ---
 ```
 
 | State | Meaning |
 | --- | --- |
 | `ready` | Tests assert it. |
-| `needs-review` | The AC changed (or was removed) after this was written. Check it, then set `ready`. |
+| `needs-review` | The AC changed in the story after this was written. Check it, then set `ready`. |
 | `unspecified` | The story doesn't say (\"orders are capped\" without a number). No value is invented; `question` asks the PO. Not tested until answered. |
 
 **Approval.** Merging the test merge request approves every `ready` row in it. `unspecified` and `needs-review` rows
@@ -51,6 +52,18 @@ case, spacing and closing punctuation don't count; words and numbers do. Only an
 re-proposed (as a reviewed change in the next test merge request); the others stay exactly as they are, including
 your edits. An AC that is no longer in the story is never deleted or retired by qa-sentinel (it may be a parsing
 gap): its expectations stay, still tested, and the run lists it so a QA engineer can set `removed: true` on it.
+
+## How the file is written
+
+- `qa-sentinel spec --story KEY` (or `--story-file`), any time after the story is written: before development is
+  the best moment. `--dry-run` shows what the AI would see; `--commit` commits the file on the current branch.
+- `generate` does the same as its first step, and commits the file on the agent branch before any test is written.
+- The AI sees only the story, `kb/` and the agreed API spec, never the code or the tests. Each `ready` behaviour quotes
+  its `basis` (the story words it comes from), and every value must appear in that quote. What the story doesn't say
+  becomes `unspecified` with a question for the PO; the run prints the questions, and the merge request lists them.
+- Only new or changed ACs are sent to the AI; when every AC is current, nothing runs.
+- `tests.expectations: off` turns this off. With `requirements.jira.featureIssueTypes` set, only those issue types
+  get an expected file (a Bug or Task is tested from its text).
 
 ## The lock
 
@@ -100,7 +113,7 @@ The lock reads code; it doesn't run it. It is a strong net, not a proof, and thr
 - **Shared helpers in other files** (support modules, page objects): a changed value or assertion there is a
   *warning*, because qa-sentinel can't tell which requirement tests use it. Reviewers look at those warnings.
 - **An AC missing from the story's current list stays locked** (it may be a parsing gap rather than a removal). To
-  retire its expectations, a person removes or edits them.
+  retire its expectations, a person sets `removed: true` on the AC.
 - **The `QA-Sentinel-ACs:` line** in qa-sentinel's commits is trusted for stories that don't come from Jira. Anyone
   who can push to the branch can write it; with Jira as the source, `verify --policy` asks Jira instead.
 

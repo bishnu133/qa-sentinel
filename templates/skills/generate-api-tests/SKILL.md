@@ -23,8 +23,9 @@ The analysis is already done. `test-plan.validated.json` (path in the prompt) is
 
 **Expected behaviour.** When the prompt names an expected-behaviour file, each scenario's `behaviourIds` point into it.
 Assert exactly the `expect` values of those behaviours, never the value the code returns. If a test fails because the
-product returns something else, that is a product defect: keep the expected value, and report it under "Needs human
-attention" with the behaviour id (e.g. `SHOP-101/B3: expected 409, got 201`). The file and the tests written for it are
+product returns something else, that is a discrepancy for QA to triage: keep the expected value, mark the test
+`test.fixme` with a `// QA-AGENT:` note naming the behaviour id (e.g. `// QA-AGENT: SHOP-101/B3: expected 409, got 201`),
+and list it under "Needs human attention". Never write `test.fail`. The file and the tests written for it are
 locked: changing its values or weakening such a test rejects the whole run.
 
 Keep the scope tight. Do not refactor unrelated tests.

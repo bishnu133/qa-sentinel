@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { indexSource, traceMarkdown, traceStory } from "../src/analysis/testIndex.js";
-import { checkKnownDefectMarkers } from "../src/guardrails.js";
+import { KNOWN_DEFECT, checkKnownDefectMarkers } from "../src/guardrails.js";
 
 const SRC = `import { test, expect } from "@playwright/test";
 
@@ -43,6 +43,18 @@ describe("known defects (test.fail)", () => {
     expect(md).toMatch(/known defect: https:\/\/jira.example.com\/browse\/SHOP-140/);
     expect(md).toMatch(/known defect, no bug link/);
     expect(md).toMatch(/pending-only/);
+  });
+
+  it("are recognised in every form: test.fail() in the body, test.fail(cond), describe.fail", () => {
+    const src = [
+      'test("a @ac:AC-1", async () => {', "  test.fail();", "  expect(1).toBe(2);", "});",
+      'test("b @ac:AC-1", async () => {', '  test.fail(true, "SHOP-9");', "});",
+      'test.describe.fail("group", () => {', '  test("c @ac:AC-1", async () => {', "    expect(1).toBe(2);", "  });", "});",
+      'test("d @ac:AC-1", async () => {', "  expect(1).toBe(1);", "});",
+    ].join("\n");
+    expect(indexSource("x.spec.ts", src).map((t) => t.status)).toEqual(["known-defect", "known-defect", "known-defect", "active"]);
+    
+    for (const l of ["  test.fail();", '  test.fail(true, "bug");', 'test.describe.fail("g", () => {', 'test.fail("t", async () => {']) expect(KNOWN_DEFECT.test(l)).toBe(true);
   });
 
   it("may not be added by an AI run", () => {

@@ -11,6 +11,7 @@ import { agentEnv } from "../run.js";
 import { readTemplate } from "../templates.js";
 import { log } from "../log.js";
 import { type ExpectedFile, ExpectedFileSchema, acHash, freshness, mergeExpected } from "./format.js";
+import { acTrailer } from "./commits.js";
 
 /**
  * The requirements pass: expected behaviour per AC, written from the story alone.
@@ -92,6 +93,12 @@ export interface SpecAc {
 }
 
 export function validateProposal(raw: unknown, i: { acs: SpecAc[]; sources: string; stored?: ExpectedFile }): { proposal?: Proposal; errors: string[] } {
+  // Entries for ACs that weren't asked for (e.g. copied from current.json) are dropped, not judged: qa-sentinel keeps
+  // the stored entry for those anyway.
+  const needed = new Set(i.acs.filter((a) => a.needsProposal).map((a) => a.id));
+  const known0 = new Set(i.acs.map((a) => a.id));
+  if (raw && typeof raw === "object" && Array.isArray((raw as { acs?: unknown }).acs))
+    raw = { ...(raw as object), acs: (raw as { acs: { id?: unknown }[] }).acs.filter((a) => !(a && typeof a.id === "string" && known0.has(a.id) && !needed.has(a.id))) };
   const p = ProposalSchema.safeParse(raw);
   if (!p.success) return { errors: p.error.issues.map((x) => `${x.path.join(".") || "(root)"}: ${x.message}`) };
   const errors: string[] = [];
@@ -110,6 +117,8 @@ export function validateProposal(raw: unknown, i: { acs: SpecAc[]; sources: stri
       if (b.id && !storedIds.has(b.id)) errors.push(`${where}: ${b.id} isn't one of ${ac.id}'s stored ids; leave "id" out for a new behaviour`);
       if (b.state === "unspecified") {
         if (!b.question) errors.push(`${where}: unspecified needs a "question" for the PO`);
+        const vals = valuesToCheck(b.expect);
+        if (vals.length) errors.push(`${where}: an unspecified behaviour has no values yet (found ${vals.map((v) => JSON.stringify(v)).join(", ")}); leave "expect" empty, or only true/false outcomes`);
         return;
       }
       if (!b.basis) {
@@ -118,7 +127,7 @@ export function validateProposal(raw: unknown, i: { acs: SpecAc[]; sources: stri
       }
       if (!hay.includes(plain(b.basis))) errors.push(`${where}: basis "${b.basis.slice(0, 80)}" isn't in story.md, knowledge.md or the agreed spec; copy the words exactly`);
       for (const v of valuesToCheck(b.expect)) {
-        if (!inText(v, plain(b.basis))) errors.push(`${where}: value ${JSON.stringify(v)} isn't in its basis. If the requirements don't give it, set "state": "unspecified", ask in "question", and leave the value out`);
+        if (!inText(v, plain(b.basis))) errors.push(`${where}: value ${JSON.stringify(v)} isn't in its basis. Quote words that contain it exactly as written (3 needs "3", not "three"), or, if the requirements don't give it, set "state": "unspecified", ask in "question", and leave the value out`);
       }
       for (const [k2, v] of Object.entries(b.expect)) if (v === null) errors.push(`${where}: ${k2} is null; a ready behaviour needs every value (or make it unspecified)`);
     });
@@ -145,7 +154,7 @@ export function proposalToFile(story: string, title: string | undefined, acs: Sp
           id: b.id ?? `B${++next}`,
           kind: b.kind,
           statement: b.statement,
-          expect: b.state === "unspecified" ? Object.fromEntries(Object.entries(b.expect).filter(([, v]) => v !== null && typeof v !== "number")) : b.expect,
+          expect: b.state === "unspecified" ? Object.fromEntries(Object.entries(b.expect).filter(([, v]) => typeof v === "boolean")) : b.expect,
           state: b.state,
           ...(b.question ? { question: b.question } : {}),
           source: "ac",
@@ -187,10 +196,12 @@ export async function runSpecPass(i: { cwd: string; c: Config; engine: AgentEngi
   // A fresh folder with only the requirements in it.
   const ws = fs.mkdtempSync(path.join(os.tmpdir(), "qas-spec-"));
   const sources: string[] = [];
+  const files: string[] = [];
   const put = (name: string, text: string, isSource = false) => {
     fs.mkdirSync(path.dirname(path.join(ws, name)), { recursive: true });
     fs.writeFileSync(path.join(ws, name), text);
     if (isSource) sources.push(text);
+    if (!name.startsWith(".")) files.push(name);
   };
   put("story.md", storyMarkdown(i.req), true);
   sources.push(i.req.rawText);
@@ -221,8 +232,8 @@ export async function runSpecPass(i: { cwd: string; c: Config; engine: AgentEngi
       cwd: ws,
       prompt: [
         "Use the write-expectations skill.",
-        `Story ${i.story}. The files in this folder are all you may use: story.md${kb ? ", knowledge.md" : ""}${sources.length > (kb ? 3 : 2) ? ", agreed-spec-*" : ""}${i.stored ? ", current.json" : ""}, acs.json.`,
-        `Write expectations for the ACs in acs.json with "needsProposal": true (copy the others from current.json unchanged, or leave them out).`,
+        `Story ${i.story}. The files in this folder are all you may use: ${files.join(", ")}.`,
+        `Write expectations only for the ACs in acs.json with "needsProposal": true. Leave the others out: qa-sentinel keeps them as stored.`,
         `Write the JSON to ${out}. That is the only file you may write. Then answer "done".`,
         ...extra,
       ].join("\n"),
@@ -283,4 +294,20 @@ function keepMissing(m: { file: ExpectedFile; changes: string[] }, stored?: Expe
   const changes = m.changes.filter((x) => ![...gone].some((id) => x.startsWith(`${id} is no longer in the story`)));
   for (const id of gone) changes.push(`${id} isn't in the story's current list: its expectations stay as they are (still tested). If the story really dropped it, a QA engineer sets "removed: true" on it.`);
   return { file: { ...m.file, acs }, changes };
+}
+
+/** Folders the code-blind pass may not read: the test repository and every service repository. */
+export function specDenyRead(cwd: string, c: Config): string[] {
+  return [cwd, ...c.workspace.services.map((s) => path.resolve(cwd, s.path))];
+}
+
+/** The commit message for qa-sentinel's expected-behaviour commit (with the AC hashes it was written for). */
+export function expectedCommitMessage(story: string, acs: { id: string; text: string }[], version: string, runId: string): string {
+  const t = acTrailer(story, acs);
+  return `test(expected): expected behaviour for ${story}\n\nGenerated by qa-sentinel ${version} from the story alone (requirements pass). Run: ${runId}${t ? `\n\n${t}` : ""}`;
+}
+
+/** Behaviours waiting for the PO, as "AC-2/B3: question". */
+export function poQuestions(f: ExpectedFile): string[] {
+  return f.acs.filter((a) => !a.removed).flatMap((a) => a.behaviours.filter((b) => b.state === "unspecified").map((b) => `${a.id}/${b.id}: ${b.question ?? "(no question)"}`));
 }
