@@ -6,6 +6,8 @@ import { resolveRequirements, storyMarkdown } from "../requirements.js";
 import { createRunDir } from "../run.js";
 import { writeKnowledge } from "../kb.js";
 import { engineFor } from "../engines/ClaudeCodeEngine.js";
+import type { AgentEngine } from "../engines/AgentEngine.js";
+import { withSpend } from "../stories/start.js";
 import { formatUsage } from "../claude.js";
 import { addUsage } from "../engines/AgentEngine.js";
 import { reviewStory, storyReviewMarkdown } from "../review/storyReview.js";
@@ -28,6 +30,11 @@ export interface ReviewStoryOptions {
  */
 export async function reviewStoryCommand(o: ReviewStoryOptions): Promise<number> {
   const cwd = path.resolve(o.cwd);
+  return withSpend({ cwd, c: loadConfig(cwd), story: o.story, label: "story-review", skip: o.dryRun }, (code) => code, (wrap) => reviewStoryRun(o, wrap), (code) => code);
+}
+
+async function reviewStoryRun(o: ReviewStoryOptions, wrap: (e: AgentEngine) => AgentEngine): Promise<number> {
+  const cwd = path.resolve(o.cwd);
   const c = loadConfig(cwd);
   ensureAgentFiles(cwd, c);
   if (!o.story && !o.storyFile) throw new Error("Pass --story KEY (from Jira) or --story-file path");
@@ -42,7 +49,7 @@ export async function reviewStoryCommand(o: ReviewStoryOptions): Promise<number>
     log.info(`dry run: would ask the agent to review ${run.rel}/story.md`);
     return 0;
   }
-  const r = await reviewStory({ cwd, c, run, engine: engineFor(c), req, knowledge });
+  const r = await reviewStory({ cwd, c, run, engine: wrap(engineFor(c)), req, knowledge });
   const usage = formatUsage(addUsage(...r.runs));
   if (!r.review) {
     log.fail(`story review failed: ${r.errors.slice(0, 3).join("; ")}`);

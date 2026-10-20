@@ -8,6 +8,8 @@ import { ARTIFACT_GLOBS, agentEnv, createRunDir, testEnv } from "../run.js";
 import { specAt } from "../specs.js";
 import { layers } from "../layers.js";
 import { engineFor } from "../engines/ClaudeCodeEngine.js";
+import type { AgentEngine } from "../engines/AgentEngine.js";
+import { withSpend } from "../stories/start.js";
 import { runProcess } from "../proc.js";
 import { createOrUpdateMergeRequest, gitlabContext, pushUrl } from "../scm/gitlab.js";
 import { formatUsage } from "../claude.js";
@@ -54,6 +56,11 @@ export interface TagOptions {
 /** `qa-sentinel tag`: one-off backfill of @service/@endpoint/@page tags on existing tests, as a branch (and MR). */
 export async function tagCommand(o: TagOptions): Promise<number> {
   const cwd = path.resolve(o.cwd);
+  return withSpend({ cwd, c: loadConfig(cwd), label: "tag", skip: o.dryRun }, (code) => code, (wrap) => tagRun(o, wrap), (code) => code);
+}
+
+async function tagRun(o: TagOptions, wrap: (e: AgentEngine) => AgentEngine): Promise<number> {
+  const cwd = path.resolve(o.cwd);
   const c = loadConfig(cwd);
   const index = indexTests(cwd, c);
   const missing = index.filter((t) => !t.endpoints.length && !t.pages.length).slice(0, o.limit ?? 200);
@@ -81,7 +88,7 @@ export async function tagCommand(o: TagOptions): Promise<number> {
   const branch = "qa-sentinel/tag-backfill";
   git(cwd, ["checkout", "-q", "-B", branch]);
   const allowed = layers(c).map((l) => `${l.dir}/**`);
-  const r = await engineFor(c).run({
+  const r = await wrap(engineFor(c)).run({
     kind: "tag",
     cwd,
     prompt: [

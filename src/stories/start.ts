@@ -1,8 +1,10 @@
 import type { Config } from "../config.js";
 import { jiraContext } from "../scm/jira.js";
 import { log } from "../log.js";
-import { type JobHandle, beginJob, endJob, jobPolicy } from "./jobs.js";
-import { type JobKind, type RecordStore, fileStore, jiraStore } from "./record.js";
+import { ClaudeAccessError } from "../claude.js";
+import type { AgentEngine } from "../engines/AgentEngine.js";
+import { type JobHandle, beginJob, budgetedEngine, endJob, jobPolicy } from "./jobs.js";
+import { type JobKind, NO_STORY, type RecordStore, fileStore, jiraStore } from "./record.js";
 
 /** The configured record store. A Jira store that can't be set up (no credentials, no URL) falls back to files, with a warning. */
 export function openStore(cwd: string, c: Config, env: NodeJS.ProcessEnv = process.env): RecordStore {
@@ -74,3 +76,28 @@ function noRecordHandle(o: StartJobOptions): JobHandle {
 }
 
 export { endJob };
+
+/**
+ * AI spend that is not a spec or generate job (gap report, story review, tag, lessons, learn): no job key, but the
+ * day and month budgets apply and the cost lands in the ledger. `run` gets a function that puts the budget on its
+ * engine; `refused` builds the command's result when a limit stops it.
+ */
+export async function withSpend<T>(
+  o: { cwd: string; c: Config; story?: string; label: string; skip?: boolean; env?: NodeJS.ProcessEnv },
+  refused: (exitCode: number) => T,
+  run: (wrap: (e: AgentEngine) => AgentEngine, handle?: JobHandle) => Promise<T>,
+  exitCodeOf: (t: T) => number,
+): Promise<T> {
+  if (o.skip) return run((e) => e);
+  const story = (o.story ?? "").toUpperCase() || NO_STORY;
+  const start = await startJob({ cwd: o.cwd, c: o.c, story, kind: "other", key: `other:${o.label}:${Date.now().toString(36)}-${process.pid}`, env: o.env });
+  if (!start.run) return refused(start.exitCode);
+  try {
+    const result = await run((e) => budgetedEngine(e, start.handle), start.handle);
+    await endJob(start.store, start.handle, { state: exitCodeOf(result) === 0 ? "done" : "failed", outcome: `${o.label} exit ${exitCodeOf(result)}` });
+    return result;
+  } catch (e) {
+    await endJob(start.store, start.handle, { state: e instanceof ClaudeAccessError ? "aborted" : "failed", outcome: `${o.label} error`, error: (e as Error).message });
+    throw e;
+  }
+}

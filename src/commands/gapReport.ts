@@ -15,6 +15,8 @@ import { gitlabContext, gitlabMrFromEnv } from "../scm/gitlab.js";
 import { assembleFeature } from "../feature/manifest.js";
 import { publish } from "../reporting/publish.js";
 import { engineFor } from "../engines/ClaudeCodeEngine.js";
+import type { AgentEngine } from "../engines/AgentEngine.js";
+import { withSpend } from "../stories/start.js";
 import { addUsage } from "../engines/AgentEngine.js";
 import { oracleOf, planChange } from "../plan/planner.js";
 import { renderGapReport } from "../plan/render.js";
@@ -47,6 +49,16 @@ export interface GapReportOptions {
 }
 
 export async function gapReportCommand(o: GapReportOptions): Promise<{ report: string; skipped: boolean; exitCode: number }> {
+  const cwd = path.resolve(o.cwd);
+  return withSpend(
+    { cwd, c: loadConfig(cwd), story: o.story, label: "gap-report", skip: o.dryRun },
+    (exitCode) => ({ report: "", skipped: true, exitCode }),
+    (wrap) => gapReportRun(o, wrap),
+    (r) => r.exitCode,
+  );
+}
+
+async function gapReportRun(o: GapReportOptions, wrap: (e: AgentEngine) => AgentEngine): Promise<{ report: string; skipped: boolean; exitCode: number }> {
   const cwd = path.resolve(o.cwd);
   const c = loadConfig(cwd);
   const mr = gitlabMrFromEnv();
@@ -101,7 +113,7 @@ export async function gapReportCommand(o: GapReportOptions): Promise<{ report: s
   const testBefore = snapshotTree(cwd);
   const repos = parts ? parts.map((p) => ({ name: p.service.name, repo: p.repo })) : [{ name: service.name, repo }];
   const before = repos.map((r) => ({ ...r, snap: snapshotTree(r.repo) }));
-  const engine = engineFor(c);
+  const engine = wrap(engineFor(c));
   // The story's stored expected behaviour (written before development, reviewed by QA), when it has one.
   let expected: ExpectedFile | undefined;
   if (req.storyKey) {

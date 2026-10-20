@@ -6,6 +6,7 @@ import { git, resolveSha, workingChanges } from "../git.js";
 import { matchesAny } from "../fsutil.js";
 import { ARTIFACT_GLOBS, createRunDir } from "../run.js";
 import { engineFor } from "../engines/ClaudeCodeEngine.js";
+import { withSpend } from "../stories/start.js";
 import type { AgentEngine } from "../engines/AgentEngine.js";
 import { addUsage } from "../engines/AgentEngine.js";
 import { formatUsage } from "../claude.js";
@@ -30,6 +31,11 @@ export interface LessonsOptions {
  * proposes them in kb/review-lessons.md on a branch (and an MR with --push). Every agent reads kb/ on its next run.
  */
 export async function lessonsCommand(o: LessonsOptions): Promise<number> {
+  const cwd = path.resolve(o.cwd);
+  return withSpend({ cwd, c: loadConfig(cwd), label: "lessons", skip: o.dryRun }, (code) => code, (wrap) => lessonsRun(o, wrap), (code) => code);
+}
+
+async function lessonsRun(o: LessonsOptions, wrap: (e: AgentEngine) => AgentEngine): Promise<number> {
   const cwd = path.resolve(o.cwd);
   const c = loadConfig(cwd);
   const target = targetRef(cwd, c.ci.targetBranch);
@@ -91,7 +97,7 @@ export async function lessonsCommand(o: LessonsOptions): Promise<number> {
   })();
   // What was already changed before the agent ran (e.g. a skill this version just added) is not the agent's doing.
   const before = new Set(workingChanges(cwd).map((x) => x.path));
-  const r = await learnLessons({ cwd, c, run, engine: o.engine ?? engineFor(c), edits, lessonsPath, existingHeadings: lessonHeadings(current) });
+  const r = await learnLessons({ cwd, c, run, engine: wrap(o.engine ?? engineFor(c)), edits, lessonsPath, existingHeadings: lessonHeadings(current) });
   const usage = formatUsage(addUsage(...r.runs));
   // Read-only agent: nothing in the repo may have changed but its output in the run directory.
   const touched = workingChanges(cwd).filter((x) => !matchesAny(x.path, ARTIFACT_GLOBS) && !before.has(x.path));

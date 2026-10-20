@@ -115,3 +115,52 @@ describe("generate: job keys and budgets", () => {
     expect(await generateCommand({ ...opts(), force: true })).toBe(4);
   });
 });
+
+import { withSpend } from "../src/stories/start.js";
+import { ClaudeAccessError } from "../src/claude.js";
+import { loadConfig } from "../src/config.js";
+import type { AgentEngine, AgentTask } from "../src/engines/AgentEngine.js";
+
+describe("withSpend (commands that are not spec or generate)", () => {
+  const fake = (cost: number): AgentEngine => ({ name: "f", available: () => ({ ok: true }), run: async () => ({ ok: true, status: "ok" as const, result: "", costUsd: cost }) });
+  it("refuses when the day's budget is used, and does not run the command", async () => {
+    const c = loadConfig(repo);
+    c.automation.budgets.perDayUsd = 1;
+    const s = fileStore(repo);
+    const r = emptyRecord("_no-story");
+    r.ledger = [{ at: new Date().toISOString(), job: "x", kind: "other", costUsd: 0.9 }];
+    await s.save(r);
+    let ran = false;
+    const out = await withSpend({ cwd: repo, c, label: "gap-report" }, (code) => ({ code }), async () => ((ran = true), { code: 0 }), (x) => x.code);
+    expect(out).toEqual({ code: 4 });
+    expect(ran).toBe(false);
+  });
+  it("counts what the wrapped engine spends into the ledger, and closes the job", async () => {
+    const c = loadConfig(repo);
+    const out = await withSpend(
+      { cwd: repo, c, story: "shop-101", label: "story-review" },
+      (code) => code,
+      async (wrap) => {
+        await wrap(fake(0.42)).run({ maxBudgetUsd: 1 } as AgentTask);
+        return 0;
+      },
+      (x) => x,
+    );
+    expect(out).toBe(0);
+    const rec = (await fileStore(repo).load("SHOP-101"))!;
+    expect(rec.totalCostUsd).toBeCloseTo(0.42);
+    expect(Object.values(rec.jobs)[0]).toMatchObject({ kind: "other", state: "done" });
+  });
+  it("marks the job failed on an error, aborted when Claude can't be used, and rethrows", async () => {
+    const c = loadConfig(repo);
+    await expect(withSpend({ cwd: repo, c, story: "SHOP-102", label: "tag" }, (x) => x, async () => { throw new Error("boom"); }, (x: number) => x)).rejects.toThrow("boom");
+    await expect(withSpend({ cwd: repo, c, story: "SHOP-103", label: "tag" }, (x) => x, async () => { throw new ClaudeAccessError("no key"); }, (x: number) => x)).rejects.toThrow("no key");
+    expect(Object.values((await fileStore(repo).load("SHOP-102"))!.jobs)[0]).toMatchObject({ state: "failed", attempts: 1 });
+    expect(Object.values((await fileStore(repo).load("SHOP-103"))!.jobs)[0]).toMatchObject({ state: "aborted", attempts: 0 });
+  });
+  it("makes no record when skipped (dry runs)", async () => {
+    const c = loadConfig(repo);
+    await withSpend({ cwd: repo, c, label: "tag", skip: true }, (x) => x, async () => 0, (x: number) => x);
+    expect(await fileStore(repo).list()).toEqual([]);
+  });
+});
