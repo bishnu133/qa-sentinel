@@ -122,26 +122,38 @@ export interface BeginOptions {
   now?: Date;
 }
 
+export type Gate = { ok: true; notes: string[]; expire?: boolean } | { ok: false; reason: "done" | "running" | "attempts"; message: string };
+
+/** Can a job with this key start, given what the record says about its earlier runs? Pure: nothing is changed. */
+export function jobGate(key: string, prev: Job | undefined, policy: JobPolicy, now: Date): Gate {
+  const notes: string[] = [];
+  let expire = false;
+  if (prev?.state === "running") {
+    // A run on this machine whose process is gone (Ctrl-C, crash) is dead at once; others are dead after the lock time.
+    const alive = now.getTime() - Date.parse(prev.startedAt) < policy.lockMinutes * 60_000 && ownerAlive(prev.owner);
+    if (alive && !policy.force)
+      return { ok: false, reason: "running", message: `${key} is already running (started ${ago(prev.startedAt, now)}${prev.owner ? ` by ${prev.owner}` : ""}). If that run died, wait ${policy.lockMinutes} min or use --force.` };
+    notes.push(alive ? `--force: starting although ${key} was marked running ${ago(prev.startedAt, now)}` : `${key} was marked running ${ago(prev.startedAt, now)}; that run never finished, so it is started again`);
+    expire = true;
+  }
+  const last = expire ? undefined : prev;
+  if (last?.state === "done" && policy.skipDone && !policy.force)
+    return { ok: false, reason: "done", message: `${key} was already done ${last.finishedAt ? ago(last.finishedAt, now) : ""}${last.outcome ? ` (${last.outcome})` : ""}, $${last.costUsd.toFixed(2)}. Nothing has changed since; use --force to run it again.` };
+  if (last?.state === "failed" && last.attempts >= policy.maxAttempts && !policy.force)
+    return { ok: false, reason: "attempts", message: `${key} failed ${last.attempts} times with these exact inputs (last: ${last.outcome ?? last.error ?? "unknown"}). Fix the cause (the story, the config), or use --force.` };
+  return { ok: true, notes, ...(expire ? { expire } : {}) };
+}
+
 /** Claim a job: refuse when the same work is done, running or has failed too often, or when the budget is used up. */
 export async function beginJob(store: RecordStore, o: BeginOptions): Promise<BeginResult> {
   const now = o.now ?? new Date();
   return store.locked(o.story, async () => {
     const rec = (await store.load(o.story)) ?? emptyRecord(o.story, now);
-    const notes: string[] = [];
     const prev = rec.jobs[o.key];
-    if (prev?.state === "running") {
-      // A run on this machine whose process is gone (Ctrl-C, crash) is dead at once; others are dead after the lock time.
-      const alive = now.getTime() - Date.parse(prev.startedAt) < o.policy.lockMinutes * 60_000 && ownerAlive(prev.owner);
-      if (alive && !o.policy.force)
-        return { run: false as const, reason: "running" as const, message: `${o.key} is already running (started ${ago(prev.startedAt, now)}${prev.owner ? ` by ${prev.owner}` : ""}). If that run died, wait ${o.policy.lockMinutes} min or use --force.` };
-      notes.push(alive ? `--force: starting although ${o.key} was marked running ${ago(prev.startedAt, now)}` : `${o.key} was marked running ${ago(prev.startedAt, now)}; that run never finished, so it is started again`);
-      rec.jobs[o.key] = { ...prev, state: "aborted", finishedAt: now.toISOString(), error: "the run never finished (lock expired)" };
-    }
+    const gate = jobGate(o.key, prev, o.policy, now);
+    if (!gate.ok) return { run: false as const, reason: gate.reason, message: gate.message };
+    if (gate.expire && prev) rec.jobs[o.key] = { ...prev, state: "aborted", finishedAt: now.toISOString(), error: "the run never finished (lock expired)" };
     const last = rec.jobs[o.key];
-    if (last?.state === "done" && o.policy.skipDone && !o.policy.force)
-      return { run: false as const, reason: "done" as const, message: `${o.key} was already done ${last.finishedAt ? ago(last.finishedAt, now) : ""}${last.outcome ? ` (${last.outcome})` : ""}, $${last.costUsd.toFixed(2)}. Nothing has changed since; use --force to run it again.` };
-    if (last?.state === "failed" && last.attempts >= o.policy.maxAttempts && !o.policy.force)
-      return { run: false as const, reason: "attempts" as const, message: `${o.key} failed ${last.attempts} times with these exact inputs (last: ${last.outcome ?? last.error ?? "unknown"}). Fix the cause (the story, the config), or use --force.` };
     const need = MIN_USEFUL_USD[o.kind];
     const status = budgetStatus(o.budgets, await store.list(), rec, need, now);
     if (status.message) return { run: false as const, reason: "budget" as const, message: status.message };
@@ -170,7 +182,7 @@ export async function beginJob(store: RecordStore, o: BeginOptions): Promise<Beg
         return spent;
       },
     };
-    return { run: true as const, handle, notes };
+    return { run: true as const, handle, notes: gate.notes };
   });
 }
 

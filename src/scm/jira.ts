@@ -29,6 +29,7 @@ export interface JiraIssue {
   status: string;
   /** Issue type name (Story, Bug, Task, …). */
   issueType?: string;
+  labels?: string[];
   url: string;
   updated?: string;
   /** Extra fields asked for (scope fields), as text. */
@@ -36,7 +37,7 @@ export interface JiraIssue {
 }
 
 export async function fetchIssue(ctx: JiraContext, key: string, acField?: string, extraFields: string[] = []): Promise<JiraIssue> {
-  const fields = ["summary", "description", "status", "issuetype", "updated", ...(acField ? [acField] : []), ...extraFields].join(",");
+  const fields = ["summary", "description", "status", "issuetype", "labels", "updated", ...(acField ? [acField] : []), ...extraFields].join(",");
   const res = await netFetch(`${ctx.baseUrl}/rest/api/2/issue/${encodeURIComponent(key)}?fields=${fields}`, {
     headers: { Authorization: ctx.authHeader, Accept: "application/json" },
   });
@@ -50,6 +51,7 @@ export async function fetchIssue(ctx: JiraContext, key: string, acField?: string
     acceptanceCriteria: acField ? toText(f[acField]) || undefined : undefined,
     status: String(f.status?.name ?? ""),
     ...(f.issuetype?.name ? { issueType: String(f.issuetype.name) } : {}),
+    ...(Array.isArray(f.labels) ? { labels: f.labels.map(String) } : {}),
     url: `${ctx.baseUrl}/browse/${j.key ?? key}`,
     updated: f.updated,
     extra: Object.fromEntries(extraFields.map((x) => [x, toText(f[x])]).filter(([, v]) => v)),
@@ -369,4 +371,75 @@ export async function downloadAttachment(ctx: JiraContext, url: string, size?: n
     chunks.push(value);
   }
   return Buffer.concat(chunks).toString("utf8");
+}
+
+// ---------------------------------------------------------------------------------------------
+// Finding stories (JQL). Jira Cloud's search was replaced by /rest/api/3/search/jql (token paging);
+// Server and Data Center still use /rest/api/2/search (offset paging).
+
+export interface FoundStory {
+  key: string;
+  summary: string;
+  status: string;
+  issueType?: string;
+  labels: string[];
+  updated?: string;
+}
+
+const quoteJql = (v: string) => `"${v.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
+
+/** The JQL `qa-sentinel stories` asks when none is configured. */
+export function storiesJql(o: { projectKeys: string[]; statuses: string[]; issueTypes: string[]; lookbackDays: number }): string {
+  if (!o.projectKeys.length) throw new Error("set requirements.jira.projectKeys (or requirements.jira.search.jql): the search must name the projects it covers");
+  const parts = [`project in (${o.projectKeys.map(quoteJql).join(", ")})`];
+  if (o.statuses.length) parts.push(`status in (${o.statuses.map(quoteJql).join(", ")})`);
+  if (o.issueTypes.length) parts.push(`issuetype in (${o.issueTypes.map(quoteJql).join(", ")})`);
+  parts.push(`updated >= -${Math.round(o.lookbackDays)}d`);
+  return `${parts.join(" AND ")} ORDER BY updated DESC`;
+}
+
+const toFound = (i: any): FoundStory => ({
+  key: String(i.key),
+  summary: String(i.fields?.summary ?? ""),
+  status: String(i.fields?.status?.name ?? ""),
+  ...(i.fields?.issuetype?.name ? { issueType: String(i.fields.issuetype.name) } : {}),
+  labels: Array.isArray(i.fields?.labels) ? i.fields.labels.map(String) : [],
+  ...(i.fields?.updated ? { updated: String(i.fields.updated) } : {}),
+});
+
+const SEARCH_FIELDS = "summary,status,issuetype,labels,updated";
+
+export async function searchStories(ctx: JiraContext, jql: string, o: { max: number; api?: "auto" | "cloud" | "server" }): Promise<FoundStory[]> {
+  const api = o.api ?? "auto";
+  const cloud = async () => {
+    const out: FoundStory[] = [];
+    let token: string | undefined;
+    do {
+      const q = `jql=${encodeURIComponent(jql)}&fields=${SEARCH_FIELDS}&maxResults=${Math.min(100, o.max - out.length)}${token ? `&nextPageToken=${encodeURIComponent(token)}` : ""}`;
+      const page = await jiraCall(ctx, "GET", `/rest/api/3/search/jql?${q}`);
+      out.push(...(page.issues ?? []).map(toFound));
+      token = page.isLast === true ? undefined : page.nextPageToken;
+    } while (token && out.length < o.max);
+    return out.slice(0, o.max);
+  };
+  const server = async () => {
+    const out: FoundStory[] = [];
+    for (let startAt = 0; out.length < o.max; ) {
+      const page = await jiraCall(ctx, "GET", `/rest/api/2/search?jql=${encodeURIComponent(jql)}&fields=${SEARCH_FIELDS}&startAt=${startAt}&maxResults=${Math.min(100, o.max - out.length)}`);
+      const issues: any[] = page.issues ?? [];
+      out.push(...issues.map(toFound));
+      startAt += issues.length;
+      if (!issues.length || startAt >= (page.total ?? 0)) break;
+    }
+    return out.slice(0, o.max);
+  };
+  if (api === "cloud") return cloud();
+  if (api === "server") return server();
+  try {
+    return await cloud();
+  } catch (e) {
+    // Server and Data Center have no /search/jql: 404 (or 405). Anything else (bad JQL, no permission) is a real error.
+    if (!/ 40[45] /.test((e as Error).message)) throw e;
+    return server();
+  }
 }

@@ -10,6 +10,7 @@ import { Command, Option } from "commander";
 import { addDataLedgerCommand, addMobileCommand, addWebCommand, initCommand, upgradeCommand } from "./commands/init.js";
 import { healedCommand } from "./commands/healed.js";
 import { specCommand } from "./commands/spec.js";
+import { storiesCommand } from "./commands/stories.js";
 import { reviewStoryCommand } from "./commands/reviewStoryCmd.js";
 import { bugsCommand } from "./commands/bugs.js";
 import { tagCommand } from "./commands/tag.js";
@@ -121,6 +122,17 @@ program
   .option("--force", "run even if the same job (same ACs) finished, failed too often or looks to be running; budgets still apply")
   .option("--once", "skip the AI run if the same job already finished (the default in CI)")
   .action(wrap(async (o) => specCommand({ cwd: cwd(), story: o.story, storyFile: o.storyFile, commit: o.commit, dryRun: o.dryRun, force: o.force, once: o.once })));
+
+program
+  .command("stories")
+  .description("background check, no AI: for each story, what it needs next (expected behaviour, tests, QA triage) and who does it")
+  .option("--story <key...>", "these Jira stories (default: search Jira, see requirements.jira.search)")
+  .option("--stories-dir <dir>", "read stories from markdown files in this folder instead of Jira")
+  .option("--all", "also list the stories that are left alone (opted out, not approved, not a feature)")
+  .option("--json", "print JSON (state, next step, tasks per story) for a pipeline to act on")
+  .option("--no-record", "don't update the story records")
+  .option("-o, --out <file>", "markdown output", "qa-stories.md")
+  .action(wrap(async (o) => storiesCommand({ cwd: cwd(), story: o.story, storiesDir: o.storiesDir, all: o.all, json: o.json, noRecord: o.record === false, out: o.out })));
 
 program
   .command("bugs")
