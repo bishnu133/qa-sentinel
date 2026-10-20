@@ -155,6 +155,24 @@ export function changesSince(repo: string, base: string): FileChange[] {
   return [...out, ...untracked.filter((u) => !out.some((o) => o.path === u.path))];
 }
 
+/** Files changed between two commits (no working tree). */
+export function changesBetween(repo: string, from: string, to: string): FileChange[] {
+  const raw = execFileSync("git", ["diff", "--name-status", "-z", "-M", from, to, "--", "."], { cwd: repo, encoding: "utf8" });
+  const parts = raw.split("\0").filter(Boolean);
+  const out: FileChange[] = [];
+  for (let i = 0; i < parts.length; i++) {
+    const letter = parts[i][0];
+    if (letter === "R" || letter === "C") {
+      out.push({ path: fromRoot(repo, parts[i + 2]), status: letter, from: fromRoot(repo, parts[i + 1]) });
+      i += 2;
+    } else {
+      out.push({ path: fromRoot(repo, parts[i + 1]), status: letter });
+      i += 1;
+    }
+  }
+  return out;
+}
+
 /** File content at a ref, or undefined if it did not exist there. */
 export function showFile(repo: string, ref: string, file: string): string | undefined {
   try {

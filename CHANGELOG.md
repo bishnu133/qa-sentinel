@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased — AC-first generation (phase 1, part 1)
+
+- **Expected behaviour per story** (`expected/<STORY>.md`, `tests.expectedDir`): what each acceptance criterion means in testable terms, with stable behaviour ids, values, states (ready / needs-review / unspecified with a question for the PO), clarifications agreed outside Jira, and a hash of the AC's normalised text. QA edits the data block; the readable view is generated. Updates are diff-only: unchanged ACs keep QA's edits; edited ACs are re-proposed for review; removed ACs are kept and marked. See [docs/EXPECTED-BEHAVIOUR.md](docs/EXPECTED-BEHAVIOUR.md).
+- **Expectation lock** (generate and `verify --policy`): an AI run may not change, weaken, re-tag, switch off or remove a requirement test or its stored expectation while the AC's text is unchanged. Covers assertion values and any literal in the test, top-level constants it uses, `test.each` tables, describe-level tags and early returns or skips. `verify --policy` checks an agent MR's net change and tells qa-sentinel's commits from people's (people's changes are listed as QA overrides). qa-sentinel's commits record the AC hashes they were written for (`QA-Sentinel-ACs:`).
+
 ## Unreleased — fixes from the first full v0.8 test run
 
 - **post-deploy runs only the story's tests:** it ran every test in the files that hold them, so an unrelated failing test in the same file failed the story. Playwright layers now get `--grep @story:<key>`; other runners still run whole files, and the report says so.

@@ -11,6 +11,7 @@ import { findDiscrepancies, verificationMarkdown, verifyChanges } from "../verif
 import { layers } from "../layers.js";
 import { applyDeploymentGate, deploymentStates, needsFromCommits } from "../deployment.js";
 import { log } from "../log.js";
+import { lockByAuthor } from "../expected/commits.js";
 
 export interface VerifyOptions {
   cwd: string;
@@ -47,6 +48,8 @@ export async function verifyCommand(o: VerifyOptions): Promise<number> {
           extraBaseUrls: layers(c).map((l) => process.env[l.baseUrlEnv]).filter((u): u is string => Boolean(u)),
           assertionRemoval: c.guardrails.assertionRemoval,
         }),
+        // Expected values follow the story: qa-sentinel's commits may not move them; people's edits are listed.
+        ...(await lockByAuthor(cwd, c, base)),
       ]
     : [];
   if (findings.length) log.info(findingsMarkdown(findings));

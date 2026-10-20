@@ -67,7 +67,7 @@ describe("env scrubbing", () => {
 describe("write policy", () => {
   const policy = generatePolicy(config());
   it("derives allowed paths from config and blocks sensitive files even inside them", () => {
-    expect(policy.allowed).toEqual(["tests/api/**", "src/api/**", "src/data/**", "test-map.yaml", "manual-tests/**"]);
+    expect(policy.allowed).toEqual(["tests/api/**", "src/api/**", "src/data/**", "test-map.yaml", "manual-tests/**", "expected/**"]);
     const f = checkPaths(
       [
         { path: "tests/api/a.spec.ts", status: "M" },

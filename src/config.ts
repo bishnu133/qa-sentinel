@@ -92,6 +92,8 @@ export const ConfigSchema = z.object({
     language: z.enum(["typescript", "javascript"]).default("typescript"),
     /** Manual test cards (one markdown file per story) for requirements that can't be automated. */
     manualDir: z.string().default("manual-tests"),
+    /** Expected behaviour per story (expected/<STORY>.md): written from the ACs alone, reviewed by QA, locked against the code. */
+    expectedDir: z.string().default("expected"),
     /**
      * Test hooks the system offers for behaviour tests can't reach directly: run a scheduled job now, move the
      * clock, read the emails sent, publish a queue message. Agents use these instead of waiting, and story review

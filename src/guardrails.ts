@@ -8,7 +8,7 @@ import { type FileChange, showFile, workingChanges } from "./git.js";
 
 export interface Finding {
   level: "violation" | "warning";
-  rule: "blocked-path" | "outside-allowed" | "service-repo-modified" | "url-host" | "secret" | "assertion-removed" | "test-deleted" | "traceability" | "test-data" | "fixed-wait";
+  rule: "blocked-path" | "outside-allowed" | "service-repo-modified" | "url-host" | "secret" | "assertion-removed" | "test-deleted" | "traceability" | "test-data" | "fixed-wait" | "expectation-changed" | "expectation-removed" | "expected-file-invalid" | "ac-test-disabled" | "expectation-override";
   file: string;
   message: string;
 }
@@ -33,7 +33,8 @@ export function generatePolicy(c: Config): WritePolicy {
   const derived = [...layers(c).flatMap((t) => [`${t.dir}/**`, `${t.helpersDir}/**`, ...t.extraWritePaths]), "test-map.yaml"];
   return {
     // Manual test cards (qa-sentinel writes them from the plan) are part of every agent MR.
-    allowed: [...(c.guardrails.allowedWritePaths.length ? c.guardrails.allowedWritePaths : derived), `${c.tests.manualDir}/**`],
+    // The expected-behaviour files too: the lock (expected/lock.ts) decides which of their changes are accepted.
+    allowed: [...(c.guardrails.allowedWritePaths.length ? c.guardrails.allowedWritePaths : derived), `${c.tests.manualDir}/**`, `${c.tests.expectedDir}/**`],
     blocked: [...c.guardrails.blockedWritePaths, ...(c.tests.web.enabled ? PROTECTED_WEB_FILES : []), ...(c.tests.mobile.enabled ? PROTECTED_MOBILE_FILES : [])],
   };
 }
