@@ -48,6 +48,8 @@ export function listTemplateDir(rel: string): string[] {
   const out: string[] = [];
   const visit = (dir: string) => {
     for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+      // Files the OS drops (macOS Finder, Windows Explorer) are never templates.
+      if (/^(\.DS_Store|Thumbs\.db|desktop\.ini|\._.*)$/i.test(e.name)) continue;
       const p = path.join(dir, e.name);
       if (e.isDirectory()) visit(p);
       else out.push(path.relative(base, p).split(path.sep).join("/"));
