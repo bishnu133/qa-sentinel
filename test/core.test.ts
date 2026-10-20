@@ -263,3 +263,19 @@ describe("findService", () => {
     expect(findService(c, "payments-service", "/tmp", "/tmp/services/payments-service")).toMatchObject({ name: "payments-service", path: "/tmp/services/payments-service" });
   });
 });
+
+describe("template listing", () => {
+  it("never lists files the OS drops (.DS_Store) as templates", async () => {
+    const fs = await import("node:fs");
+    const path = await import("node:path");
+    const { fileURLToPath } = await import("node:url");
+    const dir = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "templates", "skills");
+    const junk = path.join(dir, ".DS_Store");
+    fs.writeFileSync(junk, "x");
+    try {
+      expect(listTemplateDir("skills").some((f) => f.includes(".DS_Store"))).toBe(false);
+    } finally {
+      fs.rmSync(junk, { force: true });
+    }
+  });
+});

@@ -92,6 +92,10 @@ export const ConfigSchema = z.object({
     language: z.enum(["typescript", "javascript"]).default("typescript"),
     /** Manual test cards (one markdown file per story) for requirements that can't be automated. */
     manualDir: z.string().default("manual-tests"),
+    /** Expected behaviour per story (expected/<STORY>.md): written from the ACs alone, reviewed by QA, locked against the code. */
+    expectedDir: z.string().default("expected"),
+    /** Write expected behaviour from the story (requirements pass) before planning tests: "write" or "off". */
+    expectations: z.enum(["write", "off"]).default("write"),
     /**
      * Test hooks the system offers for behaviour tests can't reach directly: run a scheduled job now, move the
      * clock, read the emails sent, publish a queue message. Agents use these instead of waiting, and story review
@@ -214,6 +218,12 @@ export const ConfigSchema = z.object({
           scopeFields: z.array(z.object({ field: z.string(), name: z.string(), prefix: z.string().regex(/^[A-Z]{1,4}$/) })).default([]),
           /** Statuses that mean the story is agreed and testable. Anything else is "unverified". */
           approvedStatuses: z.array(z.string()).default(["Ready for Development", "Ready for Dev", "Selected for Development", "In Progress", "In Development", "In Review", "In QA", "Ready for QA", "Done"]),
+          /**
+           * Issue types that are features with acceptance criteria (e.g. ["Story", "Enhancement"]): only these get
+           * expected behaviour and the every-AC-gets-a-scenario rule. Others (Bug, Task, Spike) are still tested from
+           * their text, without those. Empty (default): every issue type counts as a feature.
+           */
+          featureIssueTypes: z.array(z.string()).default([]),
         })
         .default({}),
     })
@@ -402,6 +412,8 @@ export const ConfigSchema = z.object({
           generate: z.number().int().positive().default(60),
           learn: z.number().int().positive().default(40),
           review: z.number().int().positive().default(25),
+          /** The code-blind requirements pass (expected behaviour per story). */
+          spec: z.number().int().positive().default(20),
         })
         .default({}),
       maxFixAttempts: z.number().int().min(0).max(10).default(3),
@@ -411,6 +423,7 @@ export const ConfigSchema = z.object({
           generate: z.number().positive().default(30),
           learn: z.number().positive().default(20),
           review: z.number().positive().default(10),
+          spec: z.number().positive().default(10),
         })
         .default({}),
       maxBudgetUsd: z
@@ -419,6 +432,7 @@ export const ConfigSchema = z.object({
           generate: z.number().positive().default(5),
           learn: z.number().positive().default(3),
           review: z.number().positive().default(1),
+          spec: z.number().positive().default(1),
         })
         .default({}),
       skipPaths: z

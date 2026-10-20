@@ -21,6 +21,15 @@ The analysis is already done. `test-plan.validated.json` (path in the prompt) is
 4. **test-executor** sub-agent: run only the changed specs, each layer with its own run command from `testLayers` in `context.json`, and fix test bugs (max attempts in `context.json`).
 5. Review the overall diff yourself (`git diff`, `git status`). Check for: every new test tagged with `@endpoint` (API) or `@page` (web), `@story` and `@ac`; no locators in web specs (page objects only); no secrets, no environment URLs, no unreported assertion removals, no duplicate tests for `update` decisions, and nothing outside the allowed paths.
 
+**Expected behaviour.** When the prompt names an expected-behaviour file, each scenario's `behaviourIds` point into it.
+Tag each test with the behaviours it proves (`@b:B1`, several: `@b:B1,B2`, next to `@ac:`). Assert exactly the
+`expect` values of those behaviours, never the value the code returns: qa-sentinel checks that every expected number
+and text appears in the test file, and rejects the run otherwise. If a test fails because the
+product returns something else, that is a discrepancy for QA to triage: keep the expected value, mark the test
+`test.fixme` with a `// QA-AGENT:` note naming the behaviour id (e.g. `// QA-AGENT: SHOP-101/B3: expected 409, got 201`),
+and list it under "Needs human attention". Never write `test.fail`. The file and the tests written for it are
+locked: changing its values or weakening such a test rejects the whole run.
+
 Keep the scope tight. Do not refactor unrelated tests.
 
 ## Final answer: merge request notes (markdown)

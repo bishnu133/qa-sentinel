@@ -56,7 +56,9 @@ export function selectRegression(i: {
   const picked = new Map<string, SelectedTest>();
   const notes: string[] = [];
   const add = (t: IndexedTest, reason: SelectionReason, detail: string) => {
-    if (t.status !== "active") return; // fixme/skip tests don't run; they're reported as discrepancies elsewhere
+    // fixme/skip tests don't run (reported as discrepancies elsewhere). Known defects (test.fail) do: they go red when
+    // the product is fixed, which is how the team learns the marker can come off.
+    if (t.status !== "active" && t.status !== "known-defect") return;
     const s = picked.get(t.id) ?? { test: t, reasons: [], detail: [] };
     if (!s.reasons.includes(reason)) s.reasons.push(reason);
     if (!s.detail.includes(detail)) s.detail.push(detail);

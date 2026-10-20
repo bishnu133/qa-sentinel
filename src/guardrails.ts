@@ -8,7 +8,7 @@ import { type FileChange, showFile, workingChanges } from "./git.js";
 
 export interface Finding {
   level: "violation" | "warning";
-  rule: "blocked-path" | "outside-allowed" | "service-repo-modified" | "url-host" | "secret" | "assertion-removed" | "test-deleted" | "traceability" | "test-data" | "fixed-wait";
+  rule: "blocked-path" | "outside-allowed" | "service-repo-modified" | "url-host" | "secret" | "assertion-removed" | "test-deleted" | "traceability" | "test-data" | "fixed-wait" | "expectation-changed" | "expectation-removed" | "expected-file-invalid" | "ac-test-disabled" | "expectation-override" | "known-defect-by-agent" | "expected-value-missing";
   file: string;
   message: string;
 }
@@ -33,7 +33,8 @@ export function generatePolicy(c: Config): WritePolicy {
   const derived = [...layers(c).flatMap((t) => [`${t.dir}/**`, `${t.helpersDir}/**`, ...t.extraWritePaths]), "test-map.yaml"];
   return {
     // Manual test cards (qa-sentinel writes them from the plan) are part of every agent MR.
-    allowed: [...(c.guardrails.allowedWritePaths.length ? c.guardrails.allowedWritePaths : derived), `${c.tests.manualDir}/**`],
+    // The expected-behaviour files too: the lock (expected/lock.ts) decides which of their changes are accepted.
+    allowed: [...(c.guardrails.allowedWritePaths.length ? c.guardrails.allowedWritePaths : derived), `${c.tests.manualDir}/**`, `${c.tests.expectedDir}/**`],
     blocked: [...c.guardrails.blockedWritePaths, ...(c.tests.web.enabled ? PROTECTED_WEB_FILES : []), ...(c.tests.mobile.enabled ? PROTECTED_MOBILE_FILES : [])],
   };
 }
@@ -237,7 +238,7 @@ export function findingsMarkdown(f: Finding[]): string {
  * Claude Code permission settings for a run. Defence in depth only: the post-run checks above are what
  * actually decide whether a change is accepted.
  */
-export function claudePermissions(o: { write: WritePolicy | undefined; bash: string[]; readOnlyDirs: string[] }) {
+export function claudePermissions(o: { write: WritePolicy | undefined; bash: string[]; readOnlyDirs: string[]; readDeny?: string[] }) {
   const allow = ["Read", "Grep", "Glob", "Agent"];
   if (o.write) for (const g of o.write.allowed) allow.push(`Edit(${g.replace(/^\.\//, "")})`);
   for (const b of o.bash) allow.push(`Bash(${b})`);
@@ -259,6 +260,33 @@ export function claudePermissions(o: { write: WritePolicy | undefined; bash: str
     "WebSearch",
     ...(o.write?.blocked ?? []).map((g) => `Edit(${g})`),
     ...o.readOnlyDirs.map((d) => `Edit(/${path.resolve(d)}/**)`),
+    // Read rules also govern Grep and Glob.
+    ...(o.readDeny ?? []).map((d) => `Read(/${path.resolve(d)}/**)`),
   ];
   return { allow, deny };
+}
+
+/** `test.fail(...)` in any form (declaration, `test.fail()` / `test.fail(cond)` inside a test, `test.describe.fail`): expected to fail. Only a person marks one, after triage. */
+export const KNOWN_DEFECT = /(?<![\w$.])(?!(?:assert|expect|chai|should|Promise|promise)\b)[A-Za-z_$][\w$]*(?:\.describe)?\.fail(?:\.only)?\s*\(/;
+const CODE_FILE = /\.[cm]?[jt]sx?$/;
+
+/**
+ * An AI run may not mark a test as a known defect (`test.fail`): that says "QA confirmed a product defect, here is
+ * the bug", which only a person can say. The agent writes `test.fixme` with a `// QA-AGENT:` note instead.
+ */
+export function checkKnownDefectMarkers(changes: FileChange[], repo: string, ref: string, added: (file: string) => string[] = (f) => addedLines(repo, ref, f)): Finding[] {
+  const out: Finding[] = [];
+  for (const ch of changes) {
+    // Any code file: a test.fail() in a shared fixture or hook marks every test that uses it.
+    if (ch.status === "D" || !CODE_FILE.test(ch.path)) continue;
+    const n = added(ch.path).filter((l) => KNOWN_DEFECT.test(l)).length;
+    if (n)
+      out.push({
+        level: "violation",
+        rule: "known-defect-by-agent",
+        file: ch.path,
+        message: `${n} test(s) marked as a known defect (test.fail). Only a QA engineer does that, after triage, with the bug link; write test.fixme with a "// QA-AGENT:" note instead`,
+      });
+  }
+  return out;
 }

@@ -18,6 +18,8 @@ export const RequirementSnapshotSchema = z.object({
   revision: z.string().optional(),
   storyKey: z.string().optional(),
   title: z.string().optional(),
+  /** Tracker issue type (Jira), e.g. Story or Bug. */
+  issueType: z.string().optional(),
   /** Source branch of the MR the text came from (or the MR behind a merged commit). */
   sourceBranch: z.string().optional(),
   acceptanceCriteria: z.array(z.object({ id: z.string(), text: z.string() })),
@@ -180,7 +182,7 @@ export async function resolveRequirements(c: Config, o: ResolveOptions): Promise
       const issue = await fetchIssue(jctx, key, c.requirements.jira.acceptanceCriteriaField, c.requirements.jira.scopeFields.map((f) => f.field));
       const text = jiraIssueText(c, issue);
       const branch = o.mr?.sourceBranch ?? looked?.source_branch;
-      const snap = snapshot("jira", text, c, { sourceUrl: issue.url, revision: issue.updated, title: issue.summary, trackerStatus: issue.status, storyKey: issue.key, ...(branch ? { sourceBranch: branch } : {}) });
+      const snap = snapshot("jira", text, c, { sourceUrl: issue.url, revision: issue.updated, title: issue.summary, trackerStatus: issue.status, storyKey: issue.key, ...(issue.issueType ? { issueType: issue.issueType } : {}), ...(branch ? { sourceBranch: branch } : {}) });
       const approved = c.requirements.jira.approvedStatuses.some((s) => s.toLowerCase() === issue.status.toLowerCase());
       return { ...snap, approvalStatus: snap.rawText.trim() ? (approved ? "approved" : "unverified") : "missing" };
     }
@@ -264,4 +266,14 @@ export function skippedBranch(c: Config, ...candidates: (string | undefined)[]):
     if (branch && res.some((r) => r.test(branch))) return branch;
   }
   return undefined;
+}
+
+/**
+ * Is this a feature with acceptance criteria (requirements.jira.featureIssueTypes)? Stories that don't come from
+ * Jira (story files, MR text) have no issue type and count as features. Empty list: every type counts.
+ */
+export function isFeature(c: Config, req: Pick<RequirementSnapshot, "issueType">): boolean {
+  const types = c.requirements.jira.featureIssueTypes;
+  if (!types.length || !req.issueType) return true;
+  return types.some((t) => t.toLowerCase() === req.issueType!.toLowerCase());
 }

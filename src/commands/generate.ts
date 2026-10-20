@@ -1,12 +1,17 @@
 import fs from "node:fs";
 import path from "node:path";
 import { loadConfig } from "../config.js";
-import { changeSet, commitMessages, ensureAtCommit, git, hasChanges, isGitRepo, resolveSha, workingChanges } from "../git.js";
+import { changeSet, commitMessages, ensureAtCommit, git, hasChanges, isGitRepo, resolveSha, showFile, workingChanges } from "../git.js";
+import { checkExpectationLock, expectedDirOf } from "../expected/lock.js";
+import { acTrailer } from "../expected/commits.js";
+import { type ExpectedFile, expectedPath, readExpected, renderExpected } from "../expected/format.js";
+import { expectedCommitMessage, poQuestions, runSpecPass, specDenyRead } from "../expected/spec.js";
+import { checkExpectedValues } from "../expected/assertions.js";
 import { matchesAny } from "../fsutil.js";
 import { formatUsage } from "../claude.js";
 import { useEnvironment, ARTIFACT_GLOBS, VERSION, agentEnv, bashRulesForTests, cleanAgentAnswer, createRunDir, findService, startManifest, testEnv, writeManifest } from "../run.js";
-import { checkContent, checkPaths, checkServiceUntouched, findingsMarkdown, generatePolicy, snapshotTree, violations } from "../guardrails.js";
-import { emptySnapshot, requirementItems, resolveRequirements, skippedBranch, storyMarkdown } from "../requirements.js";
+import { checkKnownDefectMarkers, checkContent, checkPaths, checkServiceUntouched, findingsMarkdown, generatePolicy, snapshotTree, violations } from "../guardrails.js";
+import { isFeature, emptySnapshot, requirementItems, resolveRequirements, skippedBranch, storyMarkdown } from "../requirements.js";
 import { findDiscrepancies, verifyChanges } from "../verification.js";
 import { mrDescription } from "../reporting.js";
 import { generationSummary } from "../reporting/jiraSummary.js";
@@ -168,7 +173,7 @@ export async function generateCommand(o: GenerateOptions): Promise<number> {
   fs.writeFileSync(path.join(run.dir, "story.md"), storyMarkdown(req));
   fs.writeFileSync(path.join(run.dir, "requirements.json"), JSON.stringify(req, null, 2));
   const manifest = startManifest(cwd, c, run, "generate", { service, base: cs.base, head: cs.head, changedFiles: relevant, diff: cs.diff }, req);
-  const startSha = resolveSha(cwd, "HEAD");
+  let startSha = resolveSha(cwd, "HEAD");
   const before = (parts ? parts.map((p) => ({ name: p.service.name, repo: p.repo })) : [{ name: service.name, repo }]).map((r) => ({ ...r, snap: snapshotTree(r.repo) }));
   const engine = engineFor(c);
   const runs: AgentResult[] = [];
@@ -182,6 +187,65 @@ export async function generateCommand(o: GenerateOptions): Promise<number> {
     writeManifest(run, manifest);
     return code;
   };
+
+  // Phase 0: expected behaviour from the story alone (code-blind), before anyone looks at the code.
+  const expDir = expectedDirOf(c.tests.expectedDir);
+  let pendingExpected: { rel: string; text: string } | undefined;
+  let expectedForPlan: string | undefined;
+  let expectedFile: ExpectedFile | undefined;
+  /** For the merge request: what the requirements pass changed, and the PO's open questions. */
+  let expectedNotes: { rel: string; changes: string[]; questions: string[] } | undefined;
+  const feature = isFeature(c, req);
+  if (!feature) log.info(`${req.storyKey} is a ${req.issueType}, not a feature type (requirements.jira.featureIssueTypes): no expected behaviour, tests from its text`);
+  // A story the developer wrote themselves (the MR description) can't be the oracle for the developer's code.
+  const devWritten = req.source === "gitlab-mr";
+  if (devWritten && feature && c.tests.expectations === "write" && req.acceptanceCriteria.length) log.warn("the ACs come from the merge request description (written by the developer), not Jira or a story file: no expected behaviour is written from them");
+  if (!o.backfill && feature && !devWritten && c.tests.expectations === "write" && req.storyKey && req.acceptanceCriteria.length) {
+    const story = req.storyKey.toUpperCase();
+    const rel = expectedPath(expDir, story);
+    let stored: ExpectedFile | undefined;
+    let unreadable = false;
+    try {
+      stored = readExpected(cwd, expDir, story);
+    } catch (e) {
+      // Never write over a file QA is editing: skip the pass, plan without expected behaviour this run.
+      unreadable = true;
+      log.warn(`${rel} can't be read (${(e as Error).message}). A person must fix it in its own commit. Tests are planned without expected behaviour this run.`);
+    }
+    if (!unreadable) {
+      log.step(`expected behaviour for ${story}: requirements pass (code-blind)`);
+      const spec = await runSpecPass({ cwd, c, engine, req, story, stored, runDir: run.dir, denyRead: specDenyRead(cwd, c, [repo, ...(parts ?? []).map((p) => p.repo)]), dryRun: o.dryRun });
+      runs.push(...spec.runs);
+      if (spec.errors.length) {
+        // Without expectations for its new or changed ACs, the tests would be written from the code: stop instead.
+        log.fail(`requirements pass failed: ${spec.errors.slice(0, 5).join("; ")}`);
+        log.info(`Fix the story (or write ${rel} by hand) and run again; or set tests.expectations: off to generate without expected behaviour.`);
+        return finish("expectations-failed", 1);
+      }
+      const file = spec.file ?? stored;
+      if (file) {
+        const text = renderExpected(file);
+        fs.writeFileSync(path.join(run.dir, "expected.md"), text);
+        expectedForPlan = `${run.rel}/expected.md`;
+        expectedFile = file;
+        if (!stored || renderExpected(stored) !== text) pendingExpected = { rel, text };
+        spec.changes.forEach((x) => log.warn(`  ${x}`));
+        expectedNotes = { rel, changes: spec.changes, questions: poQuestions(file) };
+      }
+    }
+  } else if (!o.backfill && req.storyKey) {
+    // No requirements pass this run: a stored, reviewed file still guides the plan (the lock uses it either way).
+    try {
+      const stored = readExpected(cwd, expDir, req.storyKey.toUpperCase());
+      if (stored) {
+        fs.writeFileSync(path.join(run.dir, "expected.md"), renderExpected(stored));
+        expectedForPlan = `${run.rel}/expected.md`;
+        expectedFile = stored;
+      }
+    } catch (e) {
+      log.warn(`${(e as Error).message}; planning without it`);
+    }
+  }
 
   // Phase 1: plan (read-only) and validate in code.
   log.step(`${subject}: planning`);
@@ -201,9 +265,11 @@ export async function generateCommand(o: GenerateOptions): Promise<number> {
       allowedWritePaths: policy.allowed,
       blockedWritePaths: policy.blocked,
       maxFixAttempts: c.agent.maxFixAttempts,
+      ...(expectedForPlan ? { expectedBehaviour: expectedForPlan } : {}),
       ...(o.backfill ? { backfill: o.backfill } : {}),
     },
     parts,
+    expected: expectedFile,
   });
   runs.push(...planned.runs);
   manifest.plan = { status: planned.status, risk: planned.risked?.overall, corrections: planned.validation?.corrections.length ?? 0 };
@@ -216,6 +282,12 @@ export async function generateCommand(o: GenerateOptions): Promise<number> {
   planned.validation?.corrections.forEach((x) => log.warn(`correction: ${x}`));
   const todo = actionable(plan);
   log.step(`plan: ${planned.risked.overall} risk · ${plan.decisions.map((d) => `${d.changeId}=${d.decision}`).join(", ") || "no decisions"}`);
+  if (todo.length === 0 && pendingExpected) {
+    // No branch is made for no test changes: the proposal goes to the working tree for QA to review and commit.
+    fs.mkdirSync(path.dirname(path.join(cwd, pendingExpected.rel)), { recursive: true });
+    fs.writeFileSync(path.join(cwd, pendingExpected.rel), pendingExpected.text);
+    log.info(`expected behaviour proposed (no test changes needed): written to ${pendingExpected.rel}. Review it, then commit it in a merge request.`);
+  }
   if (todo.length === 0) {
     const summary = [`## QA agent: ${subject} – no test changes needed`, "", plan.verdict, "", decisionTable(plan, planned.risked.changes)].join("\n");
     fs.writeFileSync(path.join(run.dir, "summary.md"), summary);
@@ -241,6 +313,17 @@ export async function generateCommand(o: GenerateOptions): Promise<number> {
 
   // Phase 2: author only what the validated plan says, with scoped writes.
   git(cwd, ["checkout", "-q", "-B", branch]);
+  const startShaBefore = startSha;
+  // The expected behaviour goes in as its own commit, before the author runs: the lock then protects it from the
+  // author too, and QA reviews it on its own in the merge request.
+  if (pendingExpected) {
+    fs.mkdirSync(path.dirname(path.join(cwd, pendingExpected.rel)), { recursive: true });
+    fs.writeFileSync(path.join(cwd, pendingExpected.rel), pendingExpected.text);
+    git(cwd, ["add", "--", pendingExpected.rel]);
+    git(cwd, ["commit", "-q", "-m", expectedCommitMessage(req.storyKey!, req.acceptanceCriteria, VERSION, run.id)]);
+    startSha = resolveSha(cwd, "HEAD");
+    log.ok(`expected behaviour committed: ${pendingExpected.rel}`);
+  }
   log.step(`authoring ${todo.length} decision(s) on ${branch}`);
   const author = await engine.run({
     kind: "author",
@@ -287,12 +370,23 @@ export async function generateCommand(o: GenerateOptions): Promise<number> {
       assertionRemoval: c.guardrails.assertionRemoval,
     }),
     ...before.flatMap((b) => checkServiceUntouched(b.repo, b.name, b.snap)),
+    ...checkKnownDefectMarkers(changes, cwd, startSha),
+    // The tests assert the expected values (named by @b: tags), not the code's.
+    ...(expectedFile ? checkExpectedValues({ repo: cwd, ref: startSha, changes, expected: expectedFile, plannedBehaviours: [...new Set(todo.flatMap((d) => d.proposedScenarios.flatMap((s) => s.behaviourIds)))] }) : []),
+    // Expected values follow the story, never the code: an AI run may not change them unless the AC changed.
+    ...checkExpectationLock({
+      expectedDir: c.tests.expectedDir,
+      changes,
+      before: (f) => showFile(cwd, startSha, f),
+      after: (f) => (fs.existsSync(path.join(cwd, f)) ? fs.readFileSync(path.join(cwd, f), "utf8") : undefined),
+      currentAcs: req.storyKey && requirementItems(req).length ? new Map([[req.storyKey.toUpperCase(), requirementItems(req).map((a) => ({ id: a.id, text: a.text }))]]) : undefined,
+    }),
   ];
   const bad = violations(findings);
   manifest.guardrails = { violations: bad.length, warnings: findings.length - bad.length };
   fs.writeFileSync(path.join(run.dir, "guardrails.json"), JSON.stringify(findings, null, 2));
   if (bad.length) {
-    log.fail(`run rejected: ${bad.length} guardrail violation(s). Nothing was committed.`);
+    log.fail(`run rejected: ${bad.length} guardrail violation(s). No tests were committed${pendingExpected ? ` (the expected-behaviour commit stays on ${branch}; reset it with: git reset --hard ${startShaBefore})` : ""}.`);
     log.info(findingsMarkdown(bad));
     log.info(`The changes are left uncommitted on ${branch} for inspection.`);
     return finish("guardrail-violation", 1);
@@ -352,6 +446,7 @@ export async function generateCommand(o: GenerateOptions): Promise<number> {
     verification,
     findings,
     discrepancies,
+    expected: expectedNotes,
     traceability: traceMarkdown(req.storyKey, trace, new Map((review.review?.tests ?? []).filter((t) => t.verdict === "weak" || t.verdict === "wrong-oracle").map((t) => [t.id, t.verdict]))),
     review: reviewMarkdown(review, toReview),
     agentSummary: cleanAgentAnswer(author.result),
@@ -369,11 +464,13 @@ export async function generateCommand(o: GenerateOptions): Promise<number> {
   // Phase 5: commit exactly the validated paths (deletions and renames included), then publish.
   const paths = [...new Set([...changes.flatMap((x) => (x.from && x.status === "R" ? [x.path, x.from] : [x.path])), ...(cards.file ? [cards.file] : [])])];
   git(cwd, ["add", "-A", "--", ...paths]);
+  // The AC texts this commit was written for: lets `verify --policy` check it later, even without Jira access.
+  const trailer = acTrailer(req.storyKey, requirementItems(req));
   git(cwd, [
     "commit",
     "-q",
     "-m",
-    `test(${service.name}): QA agent ${o.backfill ? `backfill (${o.backfill.map((b) => b.endpoint).join(", ")})` : `updates for ${sha8}`}\n\nGenerated by qa-sentinel ${VERSION} from ${parts ? parts.map((p) => `${p.service.name}@${p.cs.head}`).join(", ") : `${service.name}@${cs.head}`}.\nRisk: ${planned.risked.overall}. Verification: ${verification.status}. Run: ${run.id}`,
+    `test(${service.name}): QA agent ${o.backfill ? `backfill (${o.backfill.map((b) => b.endpoint).join(", ")})` : `updates for ${sha8}`}\n\nGenerated by qa-sentinel ${VERSION} from ${parts ? parts.map((p) => `${p.service.name}@${p.cs.head}`).join(", ") : `${service.name}@${cs.head}`}.\nRisk: ${planned.risked.overall}. Verification: ${verification.status}. Run: ${run.id}${trailer ? `\n\n${trailer}` : ""}`,
   ]);
   log.ok(`committed ${paths.length} file(s) on ${branch}`);
 

@@ -14,7 +14,12 @@ import { layers } from "../layers.js";
  * every run, it cannot drift from the tests the way a hand-written scenario list would.
  */
 
-export type TestStatus = "active" | "fixme" | "skip";
+/**
+ * active: runs and must pass. fixme/skip: doesn't run (fixme = written to the requirement, product disagrees, waiting
+ * for QA triage). known-defect: `test.fail`, QA confirmed a product defect (bug link in `bug`): it runs and passes while
+ * the defect is there, and goes red once the product is fixed (then the marker comes off).
+ */
+export type TestStatus = "active" | "fixme" | "skip" | "known-defect";
 
 export interface IndexedTest {
   id: string; // file:line
@@ -37,6 +42,8 @@ export interface IndexedTest {
   statusOnly: boolean;
   /** A Cucumber scenario: counts for traceability and coverage; the team's BDD job runs it, not qa-sentinel. */
   bdd?: boolean;
+  /** known-defect tests: the bug link (`// QA-BUG: <link>` above the test, or an `issue` annotation). */
+  bug?: string;
 }
 
 const SPEC = /\.(spec|test)\.[cm]?[jt]sx?$/;
@@ -104,14 +111,14 @@ export function indexSource(file: string, src: string): IndexedTest[] {
   const subst = constSubstituter(src);
 
   const lines = src.split(/\r?\n/);
-  const describes: { indent: number; title: string }[] = [];
+  const describes: { indent: number; title: string; fail?: boolean }[] = [];
   const found: { line: number; kind?: string; raw: string; indent: number }[] = [];
   lines.forEach((l, i) => {
     const indent = l.length - l.trimStart().length;
     const d = l.match(DESCRIBE);
     if (d) {
       while (describes.length && describes[describes.length - 1].indent >= indent) describes.pop();
-      describes.push({ indent, title: subst(d[2]) });
+      describes.push({ indent, title: subst(d[2]), fail: /\bdescribe\.fail\b/.test(l) });
       return;
     }
     const t = l.match(DECL);
@@ -119,6 +126,7 @@ export function indexSource(file: string, src: string): IndexedTest[] {
       while (describes.length && describes[describes.length - 1].indent >= indent) describes.pop();
       found.push({ line: i + 1, kind: t[2], raw: subst(t[4]), indent });
       (found[found.length - 1] as any).describe = describes.map((x) => x.title).join(" › ") || undefined;
+      (found[found.length - 1] as any).failGroup = describes.some((x) => x.fail);
     }
   });
   return found.map((f, k) => {
@@ -126,13 +134,16 @@ export function indexSource(file: string, src: string): IndexedTest[] {
     const body = lines.slice(f.line - 1, end).join("\n");
     const asserts = body.split("\n").filter((l) => ASSERT.test(l) && ((ASSERT.lastIndex = 0), true));
     const parsed = parseTags(f.raw);
+    // test.fail("title", …), test.fail() / test.fail(cond) inside the body, or a test.describe.fail group around it.
+    const defect = f.kind === "fail" || /\b(?:test|it)\.fail(?:\.only)?\s*\(/.test(lines.slice(f.line, end).join("\n")) || (f as any).failGroup;
     return {
       id: `${file}:${f.line}`,
       file,
       line: f.line,
       endLine: end,
       describe: (f as any).describe,
-      status: f.kind === "fixme" || f.kind === "fail" ? "fixme" : f.kind === "skip" ? "skip" : "active",
+      status: defect ? "known-defect" : f.kind === "fixme" ? "fixme" : f.kind === "skip" ? "skip" : "active",
+      ...(defect ? bugLink(lines, f.line, end) : {}),
       assertions: (body.match(ASSERT) ?? []).length,
       statusOnly: asserts.length > 0 && asserts.every((l) => /\.status\(\)\)?\s*\)?\s*\.(toBe|toEqual)\(\s*\d{3}\s*\)/.test(l) || /expect\([^)]*status\(\)\)/.test(l)),
       ...parsed,
@@ -267,6 +278,18 @@ export function checkNewTests(index: IndexedTest[], changedFiles: string[], stor
 const dedupe = (xs: TraceFinding[]) => [...new Map(xs.map((x) => [`${x.file}|${x.message}`, x])).values()];
 
 // ---------------------------------------------------------------------------------------------
+/** The bug link of a known-defect test: `// QA-BUG: <link>` in the 4 lines above, or `type: "issue", description: "<link>"` in it. */
+function bugLink(lines: string[], line: number, end: number): { bug?: string } {
+  for (let j = line - 2; j >= Math.max(0, line - 6); j--) {
+    const m = lines[j].match(/\/\/\s*QA-BUG:\s*(\S+)/);
+    if (m) return { bug: m[1] };
+    if (!/^\s*(\/\/|\*|\/\*)/.test(lines[j]) && lines[j].trim()) break;
+  }
+  const body = lines.slice(line - 1, Math.min(end, line + 5)).join("\n");
+  const a = body.match(/type:\s*["'`]issue["'`]\s*,\s*description:\s*["'`]([^"'`]+)/);
+  return a ? { bug: a[1] } : {};
+}
+
 // Requirement → test matrix.
 
 export interface AcTrace {
@@ -309,13 +332,14 @@ const STATUS_WORDS: Partial<Record<AcTrace["status"], string>> = { manual: "chec
 export function traceMarkdown(storyKey: string | undefined, trace: ReturnType<typeof traceStory>, flagged: Map<string, string> = new Map()): string {
   if (!trace.acs.length) return "";
   const mark = (t: IndexedTest) => (flagged.has(t.id) ? ` 🟠 _${flagged.get(t.id)}_` : "");
-  const cell = (ts: IndexedTest[]) => (ts.length ? ts.map((t) => `\`${t.file}:${t.line}\` ${t.title}${mark(t)}`).join("<br>") : "–");
+  const defect = (t: IndexedTest) => (t.status === "known-defect" ? ` _(known defect${t.bug ? `: ${t.bug}` : ", no bug link"})_` : "");
+  const cell = (ts: IndexedTest[]) => (ts.length ? ts.map((t) => `\`${t.file}:${t.line}\` ${t.title}${mark(t)}${defect(t)}`).join("<br>") : "–");
   const status = (r: AcTrace) => (r.status === "covered" && r.active.every((t) => flagged.has(t.id)) ? "weak" : r.status);
   const lines = [
     `### Requirement traceability${storyKey ? ` (${storyKey})` : ""}`,
     `_Built from test tags (\`@story\`, \`@ac\`), not from the agent's claims${flagged.size ? "; 🟠 = judged weak or wrong-oracle by the independent review" : ""}._`,
     "",
-    "| AC | Status | Passing tests | Pending (fixme/skip) |",
+    "| AC | Status | Passing tests | Pending (fixme/skip, known defects) |",
     "| --- | --- | --- | --- |",
     ...trace.acs.map((r) => `| ${r.ac} | ${STATUS_ICON[status(r)]} ${STATUS_WORDS[status(r)] ?? status(r)} | ${r.manual ? r.manual.map((m) => `manual card \`${m.file}:${m.line}\` ${m.title}`).join("<br>") : cell(r.active)} | ${cell(r.pending)} |`),
   ];

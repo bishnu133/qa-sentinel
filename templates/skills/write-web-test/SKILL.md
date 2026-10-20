@@ -29,7 +29,10 @@ The site's base URL comes from `process.env.{{webBaseUrlEnv}}`; API calls for te
   While you write tests, your own runs happen with toggles as they are in the environment: a `@toggle` test may fail there only because the feature is off. Don't change the test for that; say so in your notes (qa-sentinel's verification sets the toggles).
 - **Tags in the title (required):** `@service:<front end> @page:/orders/:id @story:SHOP-123 @ac:AC-2`. Use the route as in the page object (`:param` style). `@ac:none` for tests beyond the ACs.
 - Waits: rely on Playwright's auto-waiting and web-first assertions (`await expect(locator).toHaveText(…)`). No `waitForTimeout`, no sleeps.
-- Known product bug / AC mismatch: `test.fixme(...)` with `// QA-AGENT: <mismatch>` above it, written to the requirement.
+- With an expected-behaviour file (`expected/<STORY>.md`): tag `@b:B1` (the behaviours the test proves) and assert
+  their values.
+- Product disagrees with the requirement (discrepancy): `test.fixme(...)` with `// QA-AGENT: <mismatch>` above it (with the behaviour id, e.g.
+  `SHOP-101/B2`), written to the requirement. Never `test.fail`: only QA marks a confirmed defect, with the bug link.
 {{#if a11y}}
 - **Accessibility:** for a new page, or a page whose form or controls changed, add one test that opens it in the state the user sees and asserts `expect(await checkAccessibility(page, testInfo)).toEqual([])` (import from `src/web/a11y`; WCAG 2 AA, critical and serious issues). Title it `has no serious accessibility issues @service:… @page:… @a11y` (plus `@story`, and `@ac:none` unless an AC asks for accessibility).
 {{/if}}
@@ -39,4 +42,6 @@ The site's base URL comes from `process.env.{{webBaseUrlEnv}}`; API calls for te
 ## Never
 - Locators in specs, positional selectors, sleeps, production URLs, credentials in code.
 - Weakening or deleting an assertion to make a test pass; say so in the summary instead.
+- Asserting what the product shows instead of the expected behaviour's value (`expected/<STORY>.md`). A mismatch
+  is a defect to report, not a test to adjust.
 - Setting `QA_HEALING`: qa-sentinel verifies your tests with healing off, so a locator must work on its own.

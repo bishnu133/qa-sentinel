@@ -24,14 +24,17 @@ These conventions ship with the qa-sentinel Playwright scaffold. Change them her
   While you write tests, your own runs happen with toggles as they are in the environment: a `@toggle` test may fail there only because the feature is off. Don't change the test for that; say so in your notes (qa-sentinel's verification sets the toggles).
 - **Tags (required on every new or changed test, fixme tests included):** in the title, e.g.
   `test('rejects the 4th order in a slot @service:orders-service @endpoint:POST_/orders @story:SHOP-123 @ac:AC-3', …)`.
-  `@ac:` lists the acceptance criteria the test proves (comma-separated, `@ac:AC-1,AC-2`), using the ids from the story.
+  `@b:` lists the expected behaviours the test proves (`@b:B1,B2`, ids from `expected/<STORY>.md`) when the story has
+  that file. `@ac:` lists the acceptance criteria the test proves (comma-separated, `@ac:AC-1,AC-2`), using the ids from the story.
   Use `@ac:none` for a test that deliberately goes beyond the ACs (e.g. contract-only behaviour). Only tag ACs the
   test really proves: an unrelated setup call doesn't count (an independent reviewer checks this).
   qa-sentinel builds the requirement → test matrix in the MR from these tags, so a test without them is invisible
   to traceability. qa-sentinel reads tags statically: write them as literal text, a string constant (`const tags = "…"`),
   or a one-line helper (`const tags = (ac: string) => \`… @ac:${ac}\``) in the same file, nothing more dynamic. Use the endpoint exactly as in test-map.yaml
   (`METHOD_/path/{param}`).
-- **Known product bug / AC mismatch:** `test.fixme(...)` with a comment `// QA-AGENT: <mismatch>`.
+- **Product disagrees with the requirement (discrepancy):** `test.fixme(...)` with a comment `// QA-AGENT: <mismatch>` (name the behaviour id
+  when there is one: `// QA-AGENT: SHOP-101/B2: expected 409, got 201`). Never `test.fail`: only QA marks a confirmed
+  defect, with the bug link.
 - **Example:** `{{apiDir}}/example/health.spec.ts`.
 {{/if}}
 {{#unless isScratch}}
@@ -49,3 +52,5 @@ Until then, mirror the closest existing spec in `{{apiDir}}` exactly: imports, c
 ## Never
 - Sleeps or fixed waits, secrets in code, production URLs, disabling TLS checks.
 - Removing or loosening assertions without saying so in the summary.
+- Asserting the value the code returns instead of the expected behaviour's value (`expected/<STORY>.md`). A mismatch
+  is a defect to report, not a test to adjust.

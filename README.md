@@ -132,6 +132,7 @@ Starting from nothing? `qa-sentinel init --mode scratch` scaffolds Playwright AP
 | `generate -s <service>` | Writes and updates tests on a branch. **Rejected with nothing committed** on any guardrail violation. Otherwise independently verified, then committed. `--push` opens or updates a GitLab MR (Draft unless VERIFIED). Exit code 0 only when VERIFIED. |
 | `verify [--policy] [--base <ref>]` | The same independent checks, for any branch. Use it as the blocking CI gate on agent MRs. |
 | `gap-report --story KEY` / `generate --story KEY` | Story mode: the story's changes in every service (from MRs, branches and commits naming the key) as one analysis and one test MR on `qa-sentinel/story-KEY`. |
+| `spec --story KEY [--story-file f] [--commit] [--dry-run]` | Writes or updates `expected/<STORY>.md` from the story alone (code-blind): what each AC means in testable terms; lists questions for the PO. `generate` does it as its first step. See [docs/EXPECTED-BEHAVIOUR.md](docs/EXPECTED-BEHAVIOUR.md) and [docs/GLOSSARY.md](docs/GLOSSARY.md). |
 | `story-check --story KEY [--fields]` | Onboarding: how qa-sentinel reads one of your stories (each heading's role, ACs from lists, Gherkin or Given/When/Then tables, scope items, out of scope, services named) and what to change in `requirements.template`. `--fields` lists the issue's Jira fields with their ids. No AI call. |
 | `review-story --story KEY [--post]` | Before development: reviews the story's ACs and scope (ambiguity, missing negative/edge cases, scope without an AC). `--post` comments on the story. |
 | `add-mobile [--platform android\|ios]` | Adds the mobile layer (WebdriverIO + Appium): turns `tests.mobile` on, writes `wdio.conf.ts`, screen objects, ui helper, evidence hooks, example spec, the write-mobile-test skill and the WebdriverIO packages. (`init --mobile` for new projects.) |
@@ -226,6 +227,7 @@ requirements:
     acceptanceCriteriaField: customfield_10045   # optional; else AC are read from the description
     scopeFields: [{ field: customfield_10050, name: Tech scope, prefix: TS }]   # optional: scope kept in Jira fields
     approvedStatuses: [Ready for Dev, In Progress, Done]   # these statuses make AC "approved"
+    featureIssueTypes: [Story]   # only these get expected behaviour (empty = every type)
   template:                          # how your team writes stories (`story-check` shows how a story is read)
     - { role: acceptance-criteria, name: Acceptance criteria, headings: [acceptance criteria, acs] }
     - { role: scope, name: In scope, prefix: IS, headings: [in scope, scope] }
