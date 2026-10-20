@@ -13,6 +13,7 @@ npm test                      # all green
 
 ## 1. Sandbox (no AI)
 
+Use a new, empty folder (not one from an earlier sandbox run):
 ```bash
 mkdir -p ~/qa-try && cd ~/qa-try
 node <path-to-qa-sentinel>/sandbox/shoplite/local.mjs setup --level maintenance
@@ -55,8 +56,11 @@ Expect: only that AC is sent to the AI; the others stay exactly as they were, in
 Remove an AC instead: the run says it isn't in the story's current list and **keeps** its expectations (a person sets
 `removed: true`).
 
-Commit the file when you're happy: `git add expected && git commit -m "SHOP-101 expected behaviour"`
-(or rerun with `--commit`).
+Before step 6:
+- **Put the story back** as it was (undo your AC edit), so step 6 shows the 3-vs-5 catch.
+- Run `spec` once more, then **commit** the file on `main`: `git add expected && git commit -m "SHOP-101 expected behaviour"`.
+  Step 6 resets the test repo to `main` and stashes anything uncommitted, so an uncommitted expected file would
+  disappear from view (`git stash list` in qa-tests gets it back).
 
 ## 6. Generate tests from it (AI, the full run)
 
@@ -64,8 +68,9 @@ Commit the file when you're happy: `git add expected && git commit -m "SHOP-101 
 cd ~/qa-try && node <path-to-qa-sentinel>/sandbox/shoplite/local.mjs run SHOP-101 --generate
 ```
 SHOP-101's catch: the story says 3 orders per slot, the code allows 5. Expect:
-- If `expected/SHOP-101.md` changed, the agent branch starts with a separate commit
-  `test(expected): expected behaviour for SHOP-101`.
+- Since you committed `expected/SHOP-101.md` in step 5, the requirements pass says it is up to date (no AI run).
+  (Skip steps 4–5 instead and the agent branch starts with a separate commit
+  `test(expected): expected behaviour for SHOP-101`.)
 - In the run folder (`qa-tests/.qa-sentinel/runs/<latest>/test-plan.validated.json`): scenarios cite `behaviourIds`,
   and every AC has a scenario or a reason.
 - Each new test carries `@b:B…` tags next to `@ac:`; qa-sentinel rejects the run if a test doesn't contain the
