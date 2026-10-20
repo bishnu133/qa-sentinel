@@ -9,7 +9,8 @@ import path from "node:path";
 import YAML from "yaml";
 import { indexTests, checkTestMap, readTestMap } from "../analysis/testIndex.js";
 import { CONFIG_FILE, type Config, configPath, loadConfig } from "../config.js";
-import { claudeAvailable } from "../claude.js";
+import { checkClaudeAccess, claudeAvailable, staticAccessProblem } from "../claude.js";
+import { agentEnv } from "../run.js";
 import { isGitRepo } from "../git.js";
 import { log } from "../log.js";
 import { SECRET_NAME } from "../env.js";
@@ -51,6 +52,9 @@ export function runChecks(cwd: string, env: NodeJS.ProcessEnv = process.env): Ch
   else if (route.unsure?.length) add("warn", `model route: ${route.label}`, route.unsure.join("; "))
   else if (route.kind === "login") add("warn", `model route: ${route.label}`, "fine locally; CI needs ANTHROPIC_API_KEY, Bedrock (CLAUDE_CODE_USE_BEDROCK) or Vertex (CLAUDE_CODE_USE_VERTEX)");
   else add("ok", `model route: ${route.label}`, route.managed ? `from ${route.managed}: runs are billed to whoever owns that setup` : undefined);
+
+  const keyProblem = route.missing.length ? undefined : staticAccessProblem(env, route);
+  if (keyProblem) add("fail", "Claude credentials look right", keyProblem);
 
   isGitRepo(cwd) ? add("ok", "test repo is a git repository") : add("fail", "test repo is a git repository", "git init");
 
@@ -272,9 +276,19 @@ export async function onlineChecks(cwd: string, env: NodeJS.ProcessEnv = process
   return checks;
 }
 
+/** A real one-word call to Claude, the way a run would make it (costs a fraction of a cent). */
+export async function claudeLiveCheck(cwd: string): Promise<Check> {
+  const c = loadConfig(cwd);
+  const seconds = c.agent.accessCheckSeconds || 60;
+  const r = await checkClaudeAccess({ cwd, env: agentEnv(c), model: c.agent.model, seconds });
+  if (r.ok) return { level: r.warning ? "warn" : "ok", label: "Claude answers a test call", hint: r.warning ?? (r.durationMs !== undefined ? `${Math.round(r.durationMs / 100) / 10}s` : r.skipped) };
+  return { level: "fail", label: "Claude answers a test call", hint: r.message };
+}
+
 export async function doctorCommand(cwd: string, o: { online?: boolean } = {}): Promise<number> {
   log.title("qa-sentinel doctor");
   const checks = runChecks(path.resolve(cwd));
+  if (o.online && !checks.some((c) => c.level === "fail" && c.label.includes("valid"))) checks.push(await claudeLiveCheck(path.resolve(cwd)));
   if (o.online && !checks.some((c) => c.level === "fail" && c.label.includes("valid"))) checks.push(...(await onlineChecks(path.resolve(cwd))));
   for (const ch of checks) {
     const line = ch.hint ? `${ch.label}  — ${ch.hint}` : ch.label;

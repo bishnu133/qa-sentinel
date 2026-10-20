@@ -84,7 +84,7 @@ export function authHint(r: ModelRoute = modelRoute()): string {
     case "gateway":
       return `Claude Code sends requests to ${r.host}${r.managed ? ` (set in ${r.managed})` : ""}: that gateway refused the credentials. A personal Anthropic key won't work there; ask its owners, or use a setup without it. Test with: claude -p "reply with OK"`;
     case "api-key":
-      return 'Claude Code has no valid credentials. Check ANTHROPIC_API_KEY (length: echo ${#ANTHROPIC_API_KEY}; it starts with sk-ant-) and test with: claude -p "reply with OK"';
+      return 'Claude Code has no valid credentials. Check ANTHROPIC_API_KEY (length: echo ${#ANTHROPIC_API_KEY}; it starts with sk-ant-) and test with: claude -p "reply with OK". If you meant to use your Claude login instead, an old key in the environment overrides it: run `unset ANTHROPIC_API_KEY`.';
     default:
       return 'Claude Code is not logged in. Run `claude`, then /login, or set ANTHROPIC_API_KEY; test with: claude -p "reply with OK"';
   }

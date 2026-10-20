@@ -45,6 +45,7 @@ export async function learnCommand(o: LearnOptions): Promise<number> {
     timeoutMs: c.agent.timeoutMinutes.learn * 60_000,
     env: agentEnv(c),
     dryRun: o.dryRun,
+    accessCheckSeconds: c.agent.accessCheckSeconds,
   });
   if (!res.ok) throw new Error(`learn ${res.status}: ${res.result.slice(0, 500)}`);
 

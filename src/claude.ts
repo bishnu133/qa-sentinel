@@ -1,4 +1,5 @@
-import { authHint } from "./modelRoute.js";
+import crypto from "node:crypto";
+import { authHint, modelRoute, type ModelRoute } from "./modelRoute.js";
 import { spawnSync } from "node:child_process";
 import { log } from "./log.js";
 import { runProcess } from "./proc.js";
@@ -19,6 +20,11 @@ export interface ClaudeRunOptions {
   timeoutMs: number;
   env: NodeJS.ProcessEnv;
   dryRun?: boolean;
+  /**
+   * Seconds to wait for a one-line test call before the real run (default 60; 0 = skip the check). A wrong or
+   * stale credential makes Claude Code retry for minutes before it gives up; this finds out in seconds.
+   */
+  accessCheckSeconds?: number;
 }
 
 export type ClaudeStatus = "ok" | "error" | "timeout" | "max-turns" | "max-budget";
@@ -66,11 +72,11 @@ export function buildClaudeArgs(o: ClaudeRunOptions): string[] {
 export class ClaudeAccessError extends Error {}
 
 /** Account or API problems that no retry or repair round can fix. Returns a short, actionable message. */
-export function accessProblem(json: any): string | undefined {
+export function accessProblem(json: any, route?: ModelRoute): string | undefined {
   const text = String(json?.result ?? "");
   const status = json?.api_error_status;
   if (/not logged in|please run \/login|invalid x-api-key|authentication_error/i.test(text) || status === 401)
-    return authHint();
+    return authHint(route);
   if (status === 429 || /rate limit|\(429\)/i.test(text))
     return `The Anthropic API refused the request (rate limit). Check the key's workspace limits and credits in the Anthropic Console.\n  ${text.slice(0, 300)}`;
   if (status === 403 || /credit balance|billing/i.test(text))
@@ -88,6 +94,87 @@ export function statusFromJson(json: any, code: number | null): ClaudeStatus {
   return "error";
 }
 
+// ---------------------------------------------------------------------------------------------
+// Access check: find out in seconds, before a long run, whether Claude can be used at all.
+
+export interface AccessCheck {
+  ok: boolean;
+  /** What is wrong and what to do (set when ok is false). */
+  message?: string;
+  /** Why no live call was made (already checked in this process, or switched off). */
+  skipped?: string;
+  /** Not blocking, but worth saying (e.g. the API answered with a temporary error). */
+  warning?: string;
+  /** Cost of the test call, in USD. */
+  costUsd?: number;
+  durationMs?: number;
+}
+
+/** Problems visible without calling anything: a key with spaces or quotes, a missing region. Undefined = nothing found. */
+export function staticAccessProblem(env: NodeJS.ProcessEnv = process.env, route: ModelRoute = modelRoute(env)): string | undefined {
+  if (route.missing.length) return authHint(route);
+  const key = env.ANTHROPIC_API_KEY;
+  if (key !== undefined && key.trim() === "" && (route.kind === "login" || route.kind === "api-key"))
+    return "ANTHROPIC_API_KEY is set but empty. Unset it to use your Claude login (unset ANTHROPIC_API_KEY), or set it to your key.";
+  if (route.kind === "api-key" && key !== undefined) {
+    if (key.trim() === "") return "ANTHROPIC_API_KEY is set but empty. Unset it to use your Claude login (unset ANTHROPIC_API_KEY), or set it to your key.";
+    if (key !== key.trim() || /["'\r\n]/.test(key))
+      return "ANTHROPIC_API_KEY has a space, a quote or a line break around the key. Set it again without them (the key itself starts with sk-ant-).";
+    if (!env.ANTHROPIC_AUTH_TOKEN && !key.startsWith("sk-ant-"))
+      return "ANTHROPIC_API_KEY does not start with sk-ant-, so it is not an Anthropic API key. If you meant to use your Claude login, run: unset ANTHROPIC_API_KEY";
+  }
+  return undefined;
+}
+
+const verifiedAccess = new Set<string>();
+/** For tests. */
+export function resetAccessMemo(): void {
+  verifiedAccess.clear();
+}
+const accessKey = (env: NodeJS.ProcessEnv, model?: string) =>
+  crypto.createHash("sha256").update([model ?? "", env.ANTHROPIC_API_KEY ?? "", env.ANTHROPIC_AUTH_TOKEN ?? "", env.ANTHROPIC_BASE_URL ?? "", env.CLAUDE_CODE_USE_BEDROCK ?? "", env.CLAUDE_CODE_USE_VERTEX ?? ""].join("\u0000")).digest("hex");
+
+/**
+ * One cheap test call ("reply OK", no tools, one turn) before the first real run of a command. It stops a wrong key,
+ * an expired login or an unreachable gateway in under a minute instead of after minutes of retries. The result is
+ * remembered for the rest of the process, so a command that runs the agent several times checks once.
+ */
+export async function checkClaudeAccess(o: { cwd: string; env: NodeJS.ProcessEnv; model?: string; seconds?: number; run?: typeof runProcess }): Promise<AccessCheck> {
+  const seconds = o.seconds ?? 60;
+  if (seconds <= 0 || /^(1|true|yes)$/i.test(process.env.QA_SENTINEL_SKIP_ACCESS_CHECK ?? "")) return { ok: true, skipped: "switched off" };
+  const route = modelRoute(o.env);
+  const fixed = staticAccessProblem(o.env, route);
+  if (fixed) return { ok: false, message: fixed };
+  const key = accessKey(o.env, o.model);
+  if (verifiedAccess.has(key)) return { ok: true, skipped: "already checked in this run" };
+  const args = ["-p", "Reply with the single word OK.", "--output-format", "json", "--max-turns", "1", "--permission-mode", "dontAsk", "--tools", ""];
+  if (o.model) args.push("--model", o.model);
+  const r = await (o.run ?? runProcess)("claude", args, { cwd: o.cwd, env: o.env, timeoutMs: seconds * 1000 });
+  if (r.error) return { ok: false, message: `Could not start claude: ${r.error}. Install Claude Code and check that \`claude --version\` works.` };
+  if (r.timedOut)
+    return {
+      ok: false,
+      durationMs: r.durationMs,
+      message:
+        `Claude gave no answer within ${seconds}s to a one-word test. That is what a wrong or expired credential, a blocked network or a gateway that is down looks like (Claude Code keeps retrying for minutes).\n  ` +
+        authHint(route) +
+        `\n  A slow but working setup can raise the wait: agent.accessCheckSeconds in qa-sentinel.config.yaml (0 skips this check).`,
+    };
+  let json: any;
+  try {
+    json = JSON.parse(r.stdout.trim().split("\n").pop() ?? "{}");
+  } catch {
+    const text = (r.stdout || r.stderr || "").trim().slice(0, 300);
+    return { ok: false, durationMs: r.durationMs, message: `Claude answered the test call with something unexpected (exit code ${r.code}): ${text || "no output"}\n  ${authHint(route)}` };
+  }
+  const problem = accessProblem(json, route);
+  if (problem) return { ok: false, durationMs: r.durationMs, message: problem };
+  const costUsd = json.total_cost_usd ?? json.cost_usd;
+  if (json.is_error) return { ok: true, durationMs: r.durationMs, costUsd, warning: `the test call returned an error that is not about access (${String(json.result ?? json.subtype ?? "").slice(0, 200)}); continuing` };
+  verifiedAccess.add(key);
+  return { ok: true, durationMs: r.durationMs, costUsd };
+}
+
 /** Run Claude Code headless with a hard timeout, a budget cap and a scrubbed environment. */
 export async function runClaude(o: ClaudeRunOptions): Promise<ClaudeRunResult> {
   const args = buildClaudeArgs(o);
@@ -95,6 +182,9 @@ export async function runClaude(o: ClaudeRunOptions): Promise<ClaudeRunResult> {
     log.dim("[dry-run] claude " + args.map((a) => (/[\s"{]/.test(a) ? JSON.stringify(a) : a)).join(" "));
     return { ok: true, status: "ok", result: "(dry run: Claude was not invoked)" };
   }
+  const access = await checkClaudeAccess({ cwd: o.cwd, env: o.env, model: o.model, seconds: o.accessCheckSeconds });
+  if (!access.ok) throw new ClaudeAccessError(access.message ?? "Claude can't be used");
+  if (access.warning) log.warn(access.warning);
   const started = Date.now();
   const heartbeat = setInterval(() => {
     const s = Math.round((Date.now() - started) / 1000);

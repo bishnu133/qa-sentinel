@@ -417,6 +417,8 @@ export const ConfigSchema = z.object({
         })
         .default({}),
       maxFixAttempts: z.number().int().min(0).max(10).default(3),
+      /** Seconds to wait for a one-word test call before the first agent run, so bad credentials fail in seconds. 0 = skip the check. */
+      accessCheckSeconds: z.number().int().min(0).max(600).default(60),
       timeoutMinutes: z
         .object({
           gapReport: z.number().positive().default(15),
