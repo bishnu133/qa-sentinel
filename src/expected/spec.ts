@@ -184,6 +184,16 @@ export interface SpecResult {
   skipped: boolean;
 }
 
+/** Which of the story's ACs the requirements pass would send to the AI: new or changed ones, or ones with nothing written yet. */
+export function acsNeedingProposal(stored: ExpectedFile | undefined, acsNow: { id: string; text: string }[]): SpecAc[] {
+  const fresh = freshness(stored, acsNow);
+  const filled = (id: string) => {
+    const e = stored?.acs.find((a) => !a.removed && a.hash === acHash(acsNow.find((x) => x.id === id)!.text));
+    return !!e && (e.behaviours.length > 0 || !!e.untestable);
+  };
+  return acsNow.map((a) => ({ ...a, needsProposal: fresh.get(a.id) !== "current" || !filled(a.id) }));
+}
+
 /**
  * Run the requirements pass for a story. `stored` is the expected file as it is now (undefined: none yet).
  * `denyRead` are the folders the agent must not see (the test repo, the service repos).
@@ -192,11 +202,7 @@ export async function runSpecPass(i: { cwd: string; c: Config; engine: AgentEngi
   const acsNow = i.req.acceptanceCriteria.map((a) => ({ id: a.id, text: a.text }));
   if (!acsNow.length) return { changes: [], errors: ["the story has no acceptance criteria"], runs: [], skipped: true };
   const fresh = freshness(i.stored, acsNow);
-  const filled = (id: string) => {
-    const e = i.stored?.acs.find((a) => !a.removed && a.hash === acHash(acsNow.find((x) => x.id === id)!.text));
-    return !!e && (e.behaviours.length > 0 || !!e.untestable);
-  };
-  const acs: SpecAc[] = acsNow.map((a) => ({ ...a, needsProposal: fresh.get(a.id) !== "current" || !filled(a.id) }));
+  const acs = acsNeedingProposal(i.stored, acsNow);
   if (!acs.some((a) => a.needsProposal)) {
     // Nothing new to write: keep the stored file (merge also records ACs that left the story).
     return { ...checked(keepMissing(mergeExpected(i.stored, { version: 1, story: i.story, acs: [] }, acsNow), i.stored, acsNow)), runs: [], skipped: true };

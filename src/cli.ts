@@ -118,7 +118,9 @@ program
   .option("--story-file <path>", "story as a markdown file")
   .option("--commit", "commit the file on the current branch")
   .option("--dry-run", "prepare the inputs without calling the agent")
-  .action(wrap(async (o) => specCommand({ cwd: cwd(), story: o.story, storyFile: o.storyFile, commit: o.commit, dryRun: o.dryRun })));
+  .option("--force", "run even if the same job (same ACs) finished, failed too often or looks to be running; budgets still apply")
+  .option("--once", "skip the AI run if the same job already finished (the default in CI)")
+  .action(wrap(async (o) => specCommand({ cwd: cwd(), story: o.story, storyFile: o.storyFile, commit: o.commit, dryRun: o.dryRun, force: o.force, once: o.once })));
 
 program
   .command("bugs")
@@ -294,6 +296,8 @@ program
   .option("--push", "push the branch and open a GitLab merge request")
   .option("--env <name>", "run the tests against this environment from `environments:` (e.g. dev, sit) before pushing")
   .option("--dry-run", "do everything except call Claude and commit")
+  .option("--force", "run even if the same job (same story, ACs and commit) finished, failed too often or looks to be running; budgets still apply")
+  .option("--once", "skip the run if the same job already finished (the default in CI)")
   .action(wrap(async (o) => generateCommand({ cwd: cwd(), ...needService(o) })));
 
 program

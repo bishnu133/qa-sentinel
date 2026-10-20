@@ -9,7 +9,11 @@ import { addUsage } from "../engines/AgentEngine.js";
 import { git, workingChanges } from "../git.js";
 import { log } from "../log.js";
 import { expectedPath, readExpected, renderExpected, writeExpected } from "../expected/format.js";
-import { expectedCommitMessage, poQuestions, runSpecPass, specDenyRead } from "../expected/spec.js";
+import { acsNeedingProposal, expectedCommitMessage, poQuestions, runSpecPass, specDenyRead } from "../expected/spec.js";
+import { ClaudeAccessError } from "../claude.js";
+import { budgetedEngine, endStateOf, specJobKey } from "../stories/jobs.js";
+import { endJob, startJob } from "../stories/start.js";
+import { acHash } from "../expected/format.js";
 import { expectedDirOf } from "../expected/lock.js";
 
 export interface SpecOptions {
@@ -19,6 +23,10 @@ export interface SpecOptions {
   /** Commit the file on the current branch (as qa-sentinel's commit). */
   commit?: boolean;
   dryRun?: boolean;
+  /** Run even if the same job already finished, failed too often or looks to be running. Budgets still apply. */
+  force?: boolean;
+  /** Skip a job that already finished with the same inputs, also outside CI. */
+  once?: boolean;
 }
 
 /**
@@ -27,6 +35,25 @@ export interface SpecOptions {
  * for; nothing is sent to the AI when every AC already has a current expectation.
  */
 export async function specCommand(o: SpecOptions): Promise<number> {
+  const ctl: SpecCtl = {};
+  try {
+    const code = await specRun(o, ctl);
+    await ctl.done?.();
+    return code;
+  } catch (e) {
+    await ctl.fail?.(e as Error);
+    throw e;
+  }
+}
+
+/** What the wrapper needs to close the story record's job when the run ends. */
+interface SpecCtl {
+  outcome?: string;
+  done?: () => Promise<void>;
+  fail?: (e: Error) => Promise<void>;
+}
+
+async function specRun(o: SpecOptions, ctl: SpecCtl): Promise<number> {
   const cwd = path.resolve(o.cwd);
   const c = loadConfig(cwd);
   if (!o.story && !o.storyFile) throw new Error("Pass --story KEY (from Jira) or --story-file path");
@@ -40,8 +67,19 @@ export async function specCommand(o: SpecOptions): Promise<number> {
   const stored = readExpected(cwd, dir, story);
   log.step(`expected behaviour: ${story} (${req.acceptanceCriteria.length} AC, ${req.source}${stored ? `, ${rel} exists` : ""})`);
   const run = createRunDir(cwd, `spec-${story}`);
-  const r = await runSpecPass({ cwd, c, engine: engineFor(c), req, story, stored, runDir: run.dir, denyRead: specDenyRead(cwd, c), dryRun: o.dryRun });
+  // The AI is only called for new or changed ACs: that is the job, and what it may cost is checked before it starts.
+  let engine = engineFor(c);
+  const needed = acsNeedingProposal(stored, req.acceptanceCriteria.map((a) => ({ id: a.id, text: a.text }))).filter((a) => a.needsProposal);
+  if (needed.length && !o.dryRun) {
+    const start = await startJob({ cwd, c, story, kind: "spec", key: specJobKey(story, needed.map((a) => acHash(a.text))), force: o.force, once: o.once });
+    if (!start.run) return start.exitCode;
+    engine = budgetedEngine(engine, start.handle);
+    ctl.done = () => endJob(start.store, start.handle, { state: endStateOf(ctl.outcome === "ok" ? 0 : 1, ctl.outcome ?? ""), outcome: ctl.outcome ?? "unknown", runId: run.id });
+    ctl.fail = (e) => endJob(start.store, start.handle, { state: e instanceof ClaudeAccessError ? "aborted" : "failed", outcome: "error", error: e.message, runId: run.id });
+  }
+  const r = await runSpecPass({ cwd, c, engine, req, story, stored, runDir: run.dir, denyRead: specDenyRead(cwd, c), dryRun: o.dryRun });
   const usage = formatUsage(addUsage(...r.runs));
+  ctl.outcome = r.errors.length ? "requirements-pass-failed" : "ok";
   if (r.errors.length) {
     log.fail(`requirements pass failed: ${r.errors.slice(0, 5).join("; ")}`);
     return 1;
