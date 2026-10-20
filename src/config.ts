@@ -218,6 +218,12 @@ export const ConfigSchema = z.object({
           scopeFields: z.array(z.object({ field: z.string(), name: z.string(), prefix: z.string().regex(/^[A-Z]{1,4}$/) })).default([]),
           /** Statuses that mean the story is agreed and testable. Anything else is "unverified". */
           approvedStatuses: z.array(z.string()).default(["Ready for Development", "Ready for Dev", "Selected for Development", "In Progress", "In Development", "In Review", "In QA", "Ready for QA", "Done"]),
+          /**
+           * Issue types that are features with acceptance criteria (e.g. ["Story", "Enhancement"]): only these get
+           * expected behaviour and the every-AC-gets-a-scenario rule. Others (Bug, Task, Spike) are still tested from
+           * their text, without those. Empty (default): every issue type counts as a feature.
+           */
+          featureIssueTypes: z.array(z.string()).default([]),
         })
         .default({}),
     })

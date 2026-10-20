@@ -8,6 +8,7 @@
 - **AC-first planning:** every AC gets at least one scenario, existing tests that cover it, or a stated reason (`noScenario`, `elsewhere`, manual, …); the plan is rejected otherwise. Scenarios cite the expected behaviours they prove (`behaviourIds`: ready ones only, of the ACs they name), and assert their values, not the code's. `gap-report` plans against the stored expected file too.
 - **Known defects (`test.fail`):** a test QA confirmed as a product defect, with its bug link (`// QA-BUG: <link>` or an `issue` annotation). It runs in regression (passes while the defect is there, goes red when fixed) and shows as a known defect in traceability; it is no longer counted as fixme. Only a person adds the marker: an AI run that writes `test.fail` is rejected (`known-defect-by-agent`). The agent's own discrepancies stay `test.fixme` with a `// QA-AGENT:` note naming the behaviour id.
 - **Result categories and a glossary** ([docs/GLOSSARY.md](docs/GLOSSARY.md)): a failing requirement test is *unclassified – needs triage* by default; *product defect* only once QA marks it; *environment* (network, certificates, gateway errors: no bug card is drafted), *not built* and *not deployed* when the evidence says so. Verification reports label each failure.
+- **`requirements.jira.featureIssueTypes`** (e.g. `[Story, Enhancement]`): only these issue types get expected behaviour and the every-AC rule; a Bug or Task is still tested from its text. Empty (default): every type counts.
 
 ## Unreleased — fixes from the first full v0.8 test run
 

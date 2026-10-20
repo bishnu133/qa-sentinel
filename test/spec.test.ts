@@ -208,3 +208,14 @@ describe("runSpecPass", () => {
     expect(findings.filter((x) => x.level === "violation")).toEqual([]);
   });
 });
+
+describe("featureIssueTypes", () => {
+  it("only listed issue types get expected behaviour; empty list or no type = feature", async () => {
+    const { isFeature } = await import("../src/requirements.js");
+    const mk = (types: string[]) => ConfigSchema.parse({ version: 1, mode: "scratch", project: { name: "p" }, tests: { api: { framework: "playwright", runCommand: "x" } }, ci: { platform: "gitlab" }, requirements: { jira: { featureIssueTypes: types } } });
+    expect(isFeature(mk([]), { issueType: "Bug" })).toBe(true);
+    expect(isFeature(mk(["Story", "Enhancement"]), { issueType: "story" })).toBe(true);
+    expect(isFeature(mk(["Story"]), { issueType: "Bug" })).toBe(false);
+    expect(isFeature(mk(["Story"]), {})).toBe(true);
+  });
+});

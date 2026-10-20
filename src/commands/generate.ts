@@ -11,7 +11,7 @@ import { matchesAny } from "../fsutil.js";
 import { formatUsage } from "../claude.js";
 import { useEnvironment, ARTIFACT_GLOBS, VERSION, agentEnv, bashRulesForTests, cleanAgentAnswer, createRunDir, findService, startManifest, testEnv, writeManifest } from "../run.js";
 import { checkKnownDefectMarkers, checkContent, checkPaths, checkServiceUntouched, findingsMarkdown, generatePolicy, snapshotTree, violations } from "../guardrails.js";
-import { emptySnapshot, requirementItems, resolveRequirements, skippedBranch, storyMarkdown } from "../requirements.js";
+import { isFeature, emptySnapshot, requirementItems, resolveRequirements, skippedBranch, storyMarkdown } from "../requirements.js";
 import { findDiscrepancies, verifyChanges } from "../verification.js";
 import { mrDescription } from "../reporting.js";
 import { generationSummary } from "../reporting/jiraSummary.js";
@@ -193,7 +193,9 @@ export async function generateCommand(o: GenerateOptions): Promise<number> {
   let pendingExpected: { rel: string; text: string } | undefined;
   let expectedForPlan: string | undefined;
   let expectedFile: ExpectedFile | undefined;
-  if (!o.backfill && c.tests.expectations === "write" && req.storyKey && req.acceptanceCriteria.length) {
+  const feature = isFeature(c, req);
+  if (!feature) log.info(`${req.storyKey} is a ${req.issueType}, not a feature type (requirements.jira.featureIssueTypes): no expected behaviour, tests from its text`);
+  if (!o.backfill && feature && c.tests.expectations === "write" && req.storyKey && req.acceptanceCriteria.length) {
     const story = req.storyKey.toUpperCase();
     let stored: ExpectedFile | undefined;
     try {

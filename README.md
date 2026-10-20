@@ -226,6 +226,7 @@ requirements:
     acceptanceCriteriaField: customfield_10045   # optional; else AC are read from the description
     scopeFields: [{ field: customfield_10050, name: Tech scope, prefix: TS }]   # optional: scope kept in Jira fields
     approvedStatuses: [Ready for Dev, In Progress, Done]   # these statuses make AC "approved"
+    featureIssueTypes: [Story]   # only these get expected behaviour (empty = every type)
   template:                          # how your team writes stories (`story-check` shows how a story is read)
     - { role: acceptance-criteria, name: Acceptance criteria, headings: [acceptance criteria, acs] }
     - { role: scope, name: In scope, prefix: IS, headings: [in scope, scope] }

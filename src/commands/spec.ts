@@ -1,6 +1,6 @@
 import path from "node:path";
 import { loadConfig } from "../config.js";
-import { resolveRequirements } from "../requirements.js";
+import { isFeature, resolveRequirements } from "../requirements.js";
 import { createRunDir, VERSION } from "../run.js";
 import { engineFor } from "../engines/ClaudeCodeEngine.js";
 import { formatUsage } from "../claude.js";
@@ -32,6 +32,7 @@ export async function specCommand(o: SpecOptions): Promise<number> {
   if (!o.story && !o.storyFile) throw new Error("Pass --story KEY (from Jira) or --story-file path");
   const req = await resolveRequirements(c, { storyFile: o.storyFile, keyHints: [o.story] });
   const story = (req.storyKey ?? o.story ?? path.basename(o.storyFile ?? "story", ".md")).toUpperCase();
+  if (!isFeature(c, req)) throw new Error(`${story} is a ${req.issueType}, not one of requirements.jira.featureIssueTypes (${c.requirements.jira.featureIssueTypes.join(", ")}): expected behaviour is written for features only`);
   if (!req.acceptanceCriteria.length) throw new Error(`${story} has no acceptance criteria that qa-sentinel can read (see: qa-sentinel story-check --story ${story})`);
   const dir = expectedDirOf(c.tests.expectedDir);
   const rel = expectedPath(dir, story);

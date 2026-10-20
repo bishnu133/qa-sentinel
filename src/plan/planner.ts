@@ -1,3 +1,4 @@
+import { isFeature } from "../requirements.js";
 import type { ExpectedFile } from "../expected/format.js";
 import fs from "node:fs";
 import path from "node:path";
@@ -204,7 +205,7 @@ export async function planChange(i: PlanInput): Promise<PlanOutcome> {
     layers: layers(c).map((l) => l.layer),
     defaultLayer: primaryLayer(c, i.service),
     expected: i.expected,
-    requireAcCoverage: i.context?.kind !== "backfill" && i.req.acceptanceCriteria.length > 0,
+    requireAcCoverage: i.context?.kind !== "backfill" && i.req.acceptanceCriteria.length > 0 && isFeature(c, i.req),
   };
   const read = () => {
     try {

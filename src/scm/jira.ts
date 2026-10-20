@@ -27,6 +27,8 @@ export interface JiraIssue {
   description: string;
   acceptanceCriteria?: string;
   status: string;
+  /** Issue type name (Story, Bug, Task, …). */
+  issueType?: string;
   url: string;
   updated?: string;
   /** Extra fields asked for (scope fields), as text. */
@@ -34,7 +36,7 @@ export interface JiraIssue {
 }
 
 export async function fetchIssue(ctx: JiraContext, key: string, acField?: string, extraFields: string[] = []): Promise<JiraIssue> {
-  const fields = ["summary", "description", "status", "updated", ...(acField ? [acField] : []), ...extraFields].join(",");
+  const fields = ["summary", "description", "status", "issuetype", "updated", ...(acField ? [acField] : []), ...extraFields].join(",");
   const res = await netFetch(`${ctx.baseUrl}/rest/api/2/issue/${encodeURIComponent(key)}?fields=${fields}`, {
     headers: { Authorization: ctx.authHeader, Accept: "application/json" },
   });
@@ -47,6 +49,7 @@ export async function fetchIssue(ctx: JiraContext, key: string, acField?: string
     description: toText(f.description),
     acceptanceCriteria: acField ? toText(f[acField]) || undefined : undefined,
     status: String(f.status?.name ?? ""),
+    ...(f.issuetype?.name ? { issueType: String(f.issuetype.name) } : {}),
     url: `${ctx.baseUrl}/browse/${j.key ?? key}`,
     updated: f.updated,
     extra: Object.fromEntries(extraFields.map((x) => [x, toText(f[x])]).filter(([, v]) => v)),
