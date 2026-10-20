@@ -28,7 +28,7 @@ Expect: `✗ ANTHROPIC_API_KEY has a space, a quote or a line break around the k
 ```bash
 ANTHROPIC_API_KEY="abc" qa-sentinel spec --story-file ../stories/SHOP-101.md; echo "exit $?"
 ```
-Expect: a message that the key doesn't look like an Anthropic key (`sk-ant-`), exit 3.
+Expect: `✗ ANTHROPIC_API_KEY does not start with sk-ant-…` and exit 3.
 ```bash
 qa-sentinel doctor
 ```
@@ -109,7 +109,7 @@ qa-sentinel spec --story-file ../stories/SHOP-101.md           # runs; writes ex
 grep -c . .qa-sentinel/stories/SHOP-101.json                    # the record now has a job with a cost
 CI=true qa-sentinel spec --story-file ../stories/SHOP-101.md; echo "exit $?"
 ```
-Expect: the first run works as in phase 1. In `CI=true` mode nothing needs doing (the file is current) and exit is 0. To see the job-key skip, delete `expected/SHOP-101.md`, then run the `CI=true` command again: expect "already ran for these ACs … skipped", exit 0, no AI call; `--force` runs it again. Open the record: `jobs` has the key, `attempts`, `costUsd`; `ledger` has the spend.
+Expect: the first run works as in phase 1. In `CI=true` mode nothing needs doing (the file is current) and exit is 0. To see the job-key skip, delete `expected/SHOP-101.md`, then run the `CI=true` command again: expect a line saying the work was already done (or nothing to do), exit 0, and no AI call (tell me the exact wording you see); `--force` runs it again. Open the record: `jobs` has the key, `attempts`, `costUsd`; `ledger` has the spend.
 
 ## 8. AI: one stopped run doesn't block you (optional)
 
