@@ -68,6 +68,8 @@ SHOP-101's catch: the story says 3 orders per slot, the code allows 5. Expect:
   `test(expected): expected behaviour for SHOP-101`.
 - In the run folder (`qa-tests/.qa-sentinel/runs/<latest>/test-plan.validated.json`): scenarios cite `behaviourIds`,
   and every AC has a scenario or a reason.
+- Each new test carries `@b:B…` tags next to `@ac:`; qa-sentinel rejects the run if a test doesn't contain the
+  expected values of the behaviours it names.
 - The AC-3 test asserts **3** (the story), not 5 (the code). It fails, so it is written as `test.fixme` with a
   `// QA-AGENT: SHOP-101/B…: …` note, and the MR notes list it as a discrepancy.
 - Failures in the verification summary are labelled, e.g. `❓ unclassified – needs triage` (see docs/GLOSSARY.md).
