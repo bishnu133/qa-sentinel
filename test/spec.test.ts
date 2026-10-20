@@ -219,3 +219,13 @@ describe("featureIssueTypes", () => {
     expect(isFeature(mk(["Story"]), {})).toBe(true);
   });
 });
+
+describe("code-blind permissions", () => {
+  it("denies reading the test and service repos (Read rules also cover Grep and Glob)", async () => {
+    const { claudePermissions } = await import("../src/guardrails.js");
+    const p = claudePermissions({ write: { allowed: ["proposal.json"], blocked: [] }, bash: [], readOnlyDirs: [], readDeny: ["/work/qa-tests", "/work/orders-service"] });
+    const deny = JSON.stringify(p);
+    expect(deny).toContain("Read(//work/qa-tests/**)");
+    expect(deny).toContain("Read(//work/orders-service/**)");
+  });
+});
