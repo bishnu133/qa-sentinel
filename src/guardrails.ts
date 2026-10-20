@@ -238,7 +238,7 @@ export function findingsMarkdown(f: Finding[]): string {
  * Claude Code permission settings for a run. Defence in depth only: the post-run checks above are what
  * actually decide whether a change is accepted.
  */
-export function claudePermissions(o: { write: WritePolicy | undefined; bash: string[]; readOnlyDirs: string[] }) {
+export function claudePermissions(o: { write: WritePolicy | undefined; bash: string[]; readOnlyDirs: string[]; readDeny?: string[] }) {
   const allow = ["Read", "Grep", "Glob", "Agent"];
   if (o.write) for (const g of o.write.allowed) allow.push(`Edit(${g.replace(/^\.\//, "")})`);
   for (const b of o.bash) allow.push(`Bash(${b})`);
@@ -260,6 +260,8 @@ export function claudePermissions(o: { write: WritePolicy | undefined; bash: str
     "WebSearch",
     ...(o.write?.blocked ?? []).map((g) => `Edit(${g})`),
     ...o.readOnlyDirs.map((d) => `Edit(/${path.resolve(d)}/**)`),
+    // Read rules also govern Grep and Glob.
+    ...(o.readDeny ?? []).map((d) => `Read(/${path.resolve(d)}/**)`),
   ];
   return { allow, deny };
 }

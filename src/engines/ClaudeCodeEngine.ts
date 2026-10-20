@@ -12,7 +12,7 @@ export class ClaudeCodeEngine implements AgentEngine {
   }
 
   async run(t: AgentTask): Promise<AgentResult> {
-    const perms = claudePermissions({ write: t.write, bash: t.bash, readOnlyDirs: t.readOnlyDirs });
+    const perms = claudePermissions({ write: t.write, bash: t.bash, readOnlyDirs: t.readOnlyDirs, readDeny: t.readDeny });
     const tools = ["Read", "Grep", "Glob", "Agent", ...(t.write ? ["Edit", "Write"] : []), ...(t.bash.length ? ["Bash"] : [])];
     const r = await runClaude({
       cwd: t.cwd,

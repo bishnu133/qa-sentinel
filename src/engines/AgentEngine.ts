@@ -6,11 +6,13 @@ import type { WritePolicy } from "../guardrails.js";
  * (Agent SDK, another model provider) only has to implement this interface.
  */
 export interface AgentTask {
-  kind: "plan" | "repair-plan" | "author" | "learn" | "review" | "story-review" | "tag" | "lessons";
+  kind: "plan" | "repair-plan" | "author" | "learn" | "review" | "story-review" | "tag" | "lessons" | "spec";
   cwd: string;
   prompt: string;
   /** Directories the agent may read but never change (service repos). */
   readOnlyDirs: string[];
+  /** Absolute directories the agent may NOT read (e.g. service code and tests for the code-blind requirements pass). */
+  readDeny?: string[];
   /** Paths the agent may change; undefined = read-only task. */
   write?: WritePolicy;
   /** Exact shell command patterns the agent may run (e.g. "npx playwright test --project=api *"). */

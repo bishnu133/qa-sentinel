@@ -47,6 +47,8 @@ export const BehaviourSchema = z
     state: BehaviourState.default("ready"),
     question: z.string().optional(),
     source: BehaviourSource.default("ac"),
+    /** The words in the story (or team rules, or agreed API spec) this behaviour and its values come from. */
+    basis: z.string().optional(),
     note: z.string().optional(),
   })
   .strict()
@@ -177,7 +179,7 @@ const VIEW_MARK = "<!-- GENERATED from the data block above by qa-sentinel. Edit
 /** The data block's own instructions, at its top, so whoever opens the file sees them first. */
 const DATA_HELP = [
   "# Expected behaviour for {story}: the data qa-sentinel's tests assert. QA edits it here, in this block.",
-  "# Edit: statement, expect (the values), state, question, source, services, untestable.",
+  "# Edit: statement, expect (the values), state, question, source, services, untestable. basis = the story's words it comes from.",
   "# Don't edit: id, hash and text (qa-sentinel copies hash and text from the story; to change an AC, change the story in Jira).",
   "# state: ready = tests assert it · needs-review = the AC changed or was removed, check it, then set ready · unspecified = the story doesn't say, ask the PO (question), not tested until answered.",
   "# PO answered outside Jira? Fill in expect, set state: ready, delete question, and add",

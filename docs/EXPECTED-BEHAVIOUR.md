@@ -49,7 +49,8 @@ changes in Jira; the Jira report asks the PO to update the story so the two agre
 **When the story changes,** qa-sentinel compares each AC's text with the `hash` stored for it. Formatting, numbering,
 case, spacing and closing punctuation don't count; words and numbers do. Only an AC whose text really changed is
 re-proposed (as a reviewed change in the next test merge request); the others stay exactly as they are, including
-your edits. An AC removed from the story is kept and marked, never silently deleted.
+your edits. An AC that is no longer in the story is never deleted or retired by qa-sentinel (it may be a parsing
+gap): its expectations stay, still tested, and the run lists it so a QA engineer can set `removed: true` on it.
 
 ## The lock
 

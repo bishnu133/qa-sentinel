@@ -9,6 +9,7 @@ import { ClaudeAccessError } from "./claude.js";
 import { Command, Option } from "commander";
 import { addDataLedgerCommand, addMobileCommand, addWebCommand, initCommand, upgradeCommand } from "./commands/init.js";
 import { healedCommand } from "./commands/healed.js";
+import { specCommand } from "./commands/spec.js";
 import { reviewStoryCommand } from "./commands/reviewStoryCmd.js";
 import { bugsCommand } from "./commands/bugs.js";
 import { tagCommand } from "./commands/tag.js";
@@ -109,6 +110,15 @@ program
   .option("-o, --out <file>", "markdown output", "qa-story-review.md")
   .option("--dry-run", "prepare the inputs without calling the agent")
   .action(wrap(async (o) => reviewStoryCommand({ cwd: cwd(), story: o.story, storyFile: o.storyFile, post: o.post, out: o.out, dryRun: o.dryRun })));
+
+program
+  .command("spec")
+  .description("write or update expected/<STORY>.md: what each AC means in testable terms, from the story alone (code-blind)")
+  .option("--story <key>", "Jira story key")
+  .option("--story-file <path>", "story as a markdown file")
+  .option("--commit", "commit the file on the current branch")
+  .option("--dry-run", "prepare the inputs without calling the agent")
+  .action(wrap(async (o) => specCommand({ cwd: cwd(), story: o.story, storyFile: o.storyFile, commit: o.commit, dryRun: o.dryRun })));
 
 program
   .command("bugs")
