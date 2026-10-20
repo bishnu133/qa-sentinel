@@ -1,3 +1,4 @@
+import fs from "node:fs";
 import path from "node:path";
 import { loadConfig } from "../config.js";
 import { isFeature, resolveRequirements } from "../requirements.js";
@@ -48,7 +49,12 @@ export async function specCommand(o: SpecOptions): Promise<number> {
   if (!r.file) return 0;
   r.changes.forEach((x) => log.warn(`  ${x}`));
   if (stored && renderExpected(stored) === renderExpected(r.file)) {
-    log.ok(`${rel} is up to date${r.skipped ? " (no AI run needed)" : ""}`);
+    // Same data: refresh the readable view if someone edited the data block (or the view) by hand.
+    const onDisk = fs.readFileSync(path.join(cwd, rel), "utf8");
+    if (onDisk !== renderExpected(r.file)) {
+      writeExpected(cwd, dir, r.file);
+      log.ok(`${rel}: data unchanged; readable view refreshed from the data block${r.skipped ? " (no AI run)" : ""}. Commit it.`);
+    } else log.ok(`${rel} is up to date${r.skipped ? " (no AI run needed)" : ""}`);
     return 0;
   }
   writeExpected(cwd, dir, r.file);

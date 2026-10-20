@@ -195,6 +195,13 @@ describe("expectation lock: expected files", () => {
     expect(rules(exp(expected(5), "---\nnot: [valid\n---\n"))).toEqual(["violation:expected-file-invalid"]);
   });
 
+  it("a data-block edit that leaves the view stale is not a view edit (the value change itself is still locked)", () => {
+    const front = STORED.match(/^---\n[\s\S]*?\n---\n/)![0];
+    const staleView = STORED.replace(front, front.replace("maxOrdersPerSlot: 3", "maxOrdersPerSlot: 4"));
+    const f = run({ "expected/SHOP-101.md": [STORED, staleView] });
+    expect(f.map((x) => `${x.level}:${x.rule}:${/readable view/.test(x.message) ? "view" : "value"}`).sort()).toEqual(["violation:expectation-changed:value", "warning:expectation-changed:view"]);
+  });
+
   it("finds expected files however the folder is written, with the story key upper-cased", () => {
     expect(storyOfExpectedPath("./expected/", "expected/shop-101.md")).toBe("SHOP-101");
     expect(storyOfExpectedPath("expected", "expected/README.md")).toBeUndefined();

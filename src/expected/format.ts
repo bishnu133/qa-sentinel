@@ -217,6 +217,12 @@ function renderView(f: ExpectedFile): string {
 }
 
 /** True when the readable view was edited by hand (it no longer matches the data): those edits do nothing. */
+/** The readable view (everything after the data block), normalised. */
+export function viewOf(text: string): string {
+  const m = text.match(FRONT);
+  return (m ? text.slice(m[0].length) : "").replace(/\r\n/g, "\n").trim();
+}
+
 export function viewEditedByHand(text: string): boolean {
   const m = text.match(FRONT);
   if (!m) return false;

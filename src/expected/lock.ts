@@ -1,7 +1,7 @@
 import { indexSource, type IndexedTest } from "../analysis/testIndex.js";
 import type { Finding } from "../guardrails.js";
 import type { FileChange } from "../git.js";
-import { type CurrentAc, type ExpectedFile, ExpectedFileError, currentHash, expectedPath, freshness, parseExpected, viewEditedByHand } from "./format.js";
+import { type CurrentAc, type ExpectedFile, ExpectedFileError, currentHash, expectedPath, freshness, parseExpected, viewEditedByHand, viewOf } from "./format.js";
 
 /**
  * Expectation lock: what the business asked for may not drift toward what the code does.
@@ -211,7 +211,11 @@ export function checkExpectationLockDetailed(o: LockInput): LockFinding[] {
         continue;
       }
       if (after.state === "ok" && viewEditedByHand(after.text)) {
-        push({ level: "violation", rule: "expectation-changed", file, what: `${file}: the readable view below the data block doesn't match the data (it was edited directly). Tests use the data block only.`, advice: "Regenerate the view from the data." });
+        // Someone edited the view itself (it changed), or a new file came with a view that isn't its data. A view that
+        // only went stale because the data block was edited (the right way) is not an edit of the view.
+        if (before.state !== "ok" || viewOf(before.text) !== viewOf(after.text))
+          push({ level: "violation", rule: "expectation-changed", file, what: `${file}: the readable view below the data block doesn't match the data (it was edited directly). Tests use the data block only.`, advice: "Edit the data block instead, then refresh the view: qa-sentinel spec --story <KEY> (no AI run)." });
+        else push({ level: "warning", rule: "expectation-changed", file, what: `${file}: the data block changed; the readable view below it is now out of date.`, advice: "Refresh it with: qa-sentinel spec --story <KEY> (no AI run)." });
       }
       if (before.state !== "ok") continue; // a new file: everything in it is new, and QA reviews it in the MR
       if (after.state !== "ok") {
