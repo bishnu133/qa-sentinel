@@ -39,4 +39,6 @@ The device and app come from the environment (`QA_APPIUM_URL`, `QA_MOBILE_PLATFO
 ## Never
 - Selectors in specs, index-based XPath, `driver.pause` as a wait, device names or app paths in code, credentials in code.
 - Weakening or deleting an assertion to make a test pass; say so in the summary instead.
+- Asserting what the product shows instead of the expected behaviour's value (`expected/<STORY>.md`). A mismatch
+  is a defect to report, not a test to adjust.
 - Changing `wdio.conf.ts` or `src/mobile/evidence.ts`; ask in the summary instead.

@@ -114,6 +114,8 @@ export const ScenarioSchema = z
     /** Preconditions. Plain strings are accepted and read as API steps in order. */
     setup: z.array(z.union([z.string().min(1), SetupStepSchema])).default([]),
     assertions: z.array(z.string()).min(1, "a scenario must name at least one assertion"),
+    /** The expected behaviours (expected/<STORY>.md: B1, B2, …) this scenario proves. Only `ready` ones. */
+    behaviourIds: z.array(z.string().regex(/^B\d+$/, "behaviour ids are B1, B2, …")).default([]),
   })
   .strict();
 
@@ -175,6 +177,8 @@ export const RequirementStatusSchema = z
     /** Scope items only: the ACs that already express this item. Empty = the story's ACs don't cover it. */
     coveredByAcs: z.array(z.string()).default([]),
     note: opt(z.string()),
+    /** Why this requirement gets no automated scenario in this plan (e.g. "already proved by orders/slots.spec.ts"). */
+    noScenario: opt(z.string()),
     evidence: z.array(EvidenceSchema).default([]),
   })
   .strict();

@@ -49,3 +49,5 @@ Until then, mirror the closest existing spec in `{{apiDir}}` exactly: imports, c
 ## Never
 - Sleeps or fixed waits, secrets in code, production URLs, disabling TLS checks.
 - Removing or loosening assertions without saying so in the summary.
+- Asserting the value the code returns instead of the expected behaviour's value (`expected/<STORY>.md`). A mismatch
+  is a defect to report, not a test to adjust.

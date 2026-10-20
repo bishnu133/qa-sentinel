@@ -127,7 +127,7 @@ export function renderGapReport(i: RenderInput): string {
     out.push("**Missing or outdated scenarios**");
     for (const { d, s } of scenarios) {
       const flow = s.setup.length || s.layer === "web" || s.layer === "mobile" ? workflowLine(s) : "";
-      out.push(`- ${s.layer === "web" ? "🖥️ " : s.layer === "mobile" ? "📱 " : ""}${s.title}${s.requirementIds.length ? ` (${s.requirementIds.join(", ")})` : ""} – ${d.decision}${flow ? `\n  - flow: ${flow}` : ""}`);
+      out.push(`- ${s.layer === "web" ? "🖥️ " : s.layer === "mobile" ? "📱 " : ""}${s.title}${s.requirementIds.length ? ` (${[...s.requirementIds, ...(s.behaviourIds ?? [])].join(", ")})` : ""} – ${d.decision}${flow ? `\n  - flow: ${flow}` : ""}`);
     }
     out.push("");
   }

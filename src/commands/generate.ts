@@ -192,6 +192,7 @@ export async function generateCommand(o: GenerateOptions): Promise<number> {
   const expDir = expectedDirOf(c.tests.expectedDir);
   let pendingExpected: { rel: string; text: string } | undefined;
   let expectedForPlan: string | undefined;
+  let expectedFile: ExpectedFile | undefined;
   if (!o.backfill && c.tests.expectations === "write" && req.storyKey && req.acceptanceCriteria.length) {
     const story = req.storyKey.toUpperCase();
     let stored: ExpectedFile | undefined;
@@ -209,6 +210,7 @@ export async function generateCommand(o: GenerateOptions): Promise<number> {
       const text = renderExpected(file);
       fs.writeFileSync(path.join(run.dir, "expected.md"), text);
       expectedForPlan = `${run.rel}/expected.md`;
+      expectedFile = file;
       if (!stored || renderExpected(stored) !== text) pendingExpected = { rel: expectedPath(expDir, story), text };
       spec.changes.forEach((x) => log.dim(`  ${x}`));
     }
@@ -236,6 +238,7 @@ export async function generateCommand(o: GenerateOptions): Promise<number> {
       ...(o.backfill ? { backfill: o.backfill } : {}),
     },
     parts,
+    expected: expectedFile,
   });
   runs.push(...planned.runs);
   manifest.plan = { status: planned.status, risk: planned.risked?.overall, corrections: planned.validation?.corrections.length ?? 0 };

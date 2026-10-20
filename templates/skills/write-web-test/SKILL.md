@@ -39,4 +39,6 @@ The site's base URL comes from `process.env.{{webBaseUrlEnv}}`; API calls for te
 ## Never
 - Locators in specs, positional selectors, sleeps, production URLs, credentials in code.
 - Weakening or deleting an assertion to make a test pass; say so in the summary instead.
+- Asserting what the product shows instead of the expected behaviour's value (`expected/<STORY>.md`). A mismatch
+  is a defect to report, not a test to adjust.
 - Setting `QA_HEALING`: qa-sentinel verifies your tests with healing off, so a locator must work on its own.

@@ -1,3 +1,5 @@
+import { type ExpectedFile, expectedPath, readExpected } from "../expected/format.js";
+import { expectedDirOf } from "../expected/lock.js";
 import { readManualCards } from "../manualTests.js";
 import { requirementItems } from "../requirements.js";
 import fs from "node:fs";
@@ -100,7 +102,17 @@ export async function gapReportCommand(o: GapReportOptions): Promise<{ report: s
   const repos = parts ? parts.map((p) => ({ name: p.service.name, repo: p.repo })) : [{ name: service.name, repo }];
   const before = repos.map((r) => ({ ...r, snap: snapshotTree(r.repo) }));
   const engine = engineFor(c);
-  const outcome = await planChange({ cwd, c, service, repo, cs, relevant, req, run, engine, dryRun: o.dryRun, context: { kind: "gap-report" }, parts });
+  // The story's stored expected behaviour (written before development, reviewed by QA), when it has one.
+  let expected: ExpectedFile | undefined;
+  if (req.storyKey) {
+    try {
+      expected = readExpected(cwd, expectedDirOf(c.tests.expectedDir), req.storyKey.toUpperCase());
+    } catch (e) {
+      log.warn(`${(e as Error).message}; planning without it`);
+    }
+  }
+  const expectedRel = expected ? expectedPath(expectedDirOf(c.tests.expectedDir), expected.story) : undefined;
+  const outcome = await planChange({ cwd, c, service, repo, cs, relevant, req, run, engine, dryRun: o.dryRun, context: { kind: "gap-report", ...(expectedRel ? { expectedBehaviour: expectedRel } : {}) }, parts, expected });
   const usage = addUsage(...outcome.runs);
   const denials = outcome.runs.flatMap((r) => r.denials ?? []);
   manifest.agent = { status: outcome.runs.at(-1)?.status ?? "not-run", ...usage, deniedToolCalls: denials.length };

@@ -1,3 +1,4 @@
+import type { ExpectedFile } from "../expected/format.js";
 import fs from "node:fs";
 import path from "node:path";
 import type { Config, ServiceConfig } from "../config.js";
@@ -39,6 +40,8 @@ export interface PlanInput {
   dryRun?: boolean;
   /** Extra context for the agents, written into context.json (e.g. kind, allowed write paths). */
   context?: Record<string, unknown>;
+  /** The story's expected behaviour (expected/<STORY>.md), when it has one. */
+  expected?: ExpectedFile;
   /** Story mode: every service part of the story (service/repo/cs above are the combined view). */
   parts?: StoryPart[];
 }
@@ -180,6 +183,7 @@ export async function planChange(i: PlanInput): Promise<PlanOutcome> {
     prompt: [
       "Use the qa-plan skill.",
       `Run context: ${run.rel}/context.json, diff: ${run.rel}/change.diff, story: ${run.rel}/story.md, computed contract diff: ${run.rel}/contract-diff.md.`,
+      ...(i.expected && typeof i.context?.expectedBehaviour === "string" ? [`Expected behaviour (written from the story alone and reviewed by QA; the oracle for values): ${i.context.expectedBehaviour}. Plan scenarios for its ready behaviours and cite them in behaviourIds.`] : []),
       ...(knowledge ? [`Team domain rules: ${knowledge}. They rank after the story and the API contract as an oracle; cite them as evidence source "domain-rule".`] : []),
       `Write the plan as JSON to ${planRel}. That is the only file you may write. Then answer "done".`,
     ].join("\n"),
@@ -199,6 +203,8 @@ export async function planChange(i: PlanInput): Promise<PlanOutcome> {
     serviceRepos: i.parts?.length ? Object.fromEntries(i.parts.map((p) => [p.service.name, p.repo])) : undefined,
     layers: layers(c).map((l) => l.layer),
     defaultLayer: primaryLayer(c, i.service),
+    expected: i.expected,
+    requireAcCoverage: i.context?.kind !== "backfill" && i.req.acceptanceCriteria.length > 0,
   };
   const read = () => {
     try {
