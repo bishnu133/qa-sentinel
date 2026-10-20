@@ -105,11 +105,12 @@ Open `expected/SHOP-101.md`. In the data block at the top (between the `---` lin
 git commit -am "QA: cap is 4 (agreed with PO)"
 qa-sentinel verify --policy --base main
 ```
-Look only at the table printed first (Level | Rule | File | Detail). Expect two warnings, no violation:
+Look only at the table printed first (Level | Rule | File | Detail). Expect no violation and this warning:
 - `expectation-override` … `QA override by <your name>: SHOP-101 AC-…/B…: values maxOrdersPerSlot 3 → maxOrdersPerSlot 4. Accepted.`
-- `expectation-changed` … `the data block changed; the readable view below it is now out of date.` (The table under
-  the data block still says 3. `qa-sentinel spec --story-file ../stories/SHOP-101.md` refreshes it without an AI run;
-  not needed for this test.)
+
+If you have not refreshed the readable table, you also get a second warning saying the data block changed and the
+view below it is out of date. `qa-sentinel spec --story-file ../stories/SHOP-101.md` refreshes it without an AI run
+(commit the result); it is not needed for this test.
 Below it, verify also runs the changed tests. Without the sandbox environment running they fail; ignore that part
 here.
 
@@ -140,7 +141,8 @@ product didn't disagree in your run; send me the run folder and skip this step.)
 ```bash
 qa-sentinel trace --story-file ../stories/SHOP-101.md
 ```
-In the "Traceability for SHOP-101" table, the AC-3 row says `⏸️ pending-only` and lists the test in the last column.
+In the "Traceability for SHOP-101" table, the AC-3 row says `⚠️ discrepancy` (one passing test, plus the `test.fixme`
+tests in the last column). `⏸️ pending-only` appears only when an AC has no passing test at all.
 
 **8b. You confirm it's a product defect.** In that file, change `test.fixme(` to `test.fail(` on that test, and add
 this line just above it (under the QA-AGENT note): `// QA-BUG: https://example.atlassian.net/browse/SHOP-140`.
