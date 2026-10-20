@@ -8,7 +8,7 @@ import { type FileChange, showFile, workingChanges } from "./git.js";
 
 export interface Finding {
   level: "violation" | "warning";
-  rule: "blocked-path" | "outside-allowed" | "service-repo-modified" | "url-host" | "secret" | "assertion-removed" | "test-deleted" | "traceability" | "test-data" | "fixed-wait" | "expectation-changed" | "expectation-removed" | "expected-file-invalid" | "ac-test-disabled" | "expectation-override";
+  rule: "blocked-path" | "outside-allowed" | "service-repo-modified" | "url-host" | "secret" | "assertion-removed" | "test-deleted" | "traceability" | "test-data" | "fixed-wait" | "expectation-changed" | "expectation-removed" | "expected-file-invalid" | "ac-test-disabled" | "expectation-override" | "known-defect-by-agent";
   file: string;
   message: string;
 }
@@ -264,4 +264,27 @@ export function claudePermissions(o: { write: WritePolicy | undefined; bash: str
     ...(o.readDeny ?? []).map((d) => `Read(/${path.resolve(d)}/**)`),
   ];
   return { allow, deny };
+}
+
+/** `test.fail(` / `it.fail(`: a test expected to fail (Playwright). Only a person marks one, after triage. */
+export const KNOWN_DEFECT = /\b(?:test|it)\.fail\s*\(\s*["'`]/;
+
+/**
+ * An AI run may not mark a test as a known defect (`test.fail`): that says "QA confirmed a product defect, here is
+ * the bug", which only a person can say. The agent writes `test.fixme` with a `// QA-AGENT:` note instead.
+ */
+export function checkKnownDefectMarkers(changes: FileChange[], repo: string, ref: string): Finding[] {
+  const out: Finding[] = [];
+  for (const ch of changes) {
+    if (ch.status === "D" || !TEST_FILE.test(ch.path)) continue;
+    const n = addedLines(repo, ref, ch.path).filter((l) => KNOWN_DEFECT.test(l)).length;
+    if (n)
+      out.push({
+        level: "violation",
+        rule: "known-defect-by-agent",
+        file: ch.path,
+        message: `${n} test(s) marked as a known defect (test.fail). Only a QA engineer does that, after triage, with the bug link; write test.fixme with a "// QA-AGENT:" note instead`,
+      });
+  }
+  return out;
 }

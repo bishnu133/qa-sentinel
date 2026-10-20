@@ -77,6 +77,22 @@ commits is rejected; a change made by a person is accepted and listed as a *QA o
 Make expectation changes in your own commit; don't amend or reword qa-sentinel's commits. An expected file that
 can't be read is an error whoever wrote it.
 
+## When the product does something else
+
+1. **The AI writes the test to the expectation** and, when it fails because of the product, marks it `test.fixme` with
+   a note: `// QA-AGENT: SHOP-101/B2: expected 409, got 201`. The merge request lists it as a discrepancy and (with
+   `bugs.mode` on) drafts a bug card. Nothing is hidden behind "all tests passed".
+2. **QA triages it** in the merge request:
+   - *Product defect* (confirmed): change `test.fixme` to `test.fail` and put the bug link above it:
+     `// QA-BUG: https://jira.example.com/browse/SHOP-140` (or a Playwright `issue` annotation). The test now runs
+     every time and passes while the defect is there. When the product is fixed it goes red: take the marker off.
+   - *The expectation was wrong*: correct the behaviour in `expected/<STORY>.md` and the test, in your own commit.
+3. Reports show `test.fail` tests as **known defects** with their bug link (pending, not passing); a known defect
+   without a link is called out.
+
+An AI run may never write `test.fail` (the run is rejected): it says "QA confirmed this defect", which only a person can
+say. `test.fail` is Playwright's; with other runners, keep `fixme`/`skip` and the note.
+
 ## Limits (know what the lock can't see)
 
 The lock reads code; it doesn't run it. It is a strong net, not a proof, and three things stay with people:

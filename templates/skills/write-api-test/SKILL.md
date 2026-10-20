@@ -31,7 +31,9 @@ These conventions ship with the qa-sentinel Playwright scaffold. Change them her
   to traceability. qa-sentinel reads tags statically: write them as literal text, a string constant (`const tags = "…"`),
   or a one-line helper (`const tags = (ac: string) => \`… @ac:${ac}\``) in the same file, nothing more dynamic. Use the endpoint exactly as in test-map.yaml
   (`METHOD_/path/{param}`).
-- **Known product bug / AC mismatch:** `test.fixme(...)` with a comment `// QA-AGENT: <mismatch>`.
+- **Known product bug / AC mismatch:** `test.fixme(...)` with a comment `// QA-AGENT: <mismatch>` (name the behaviour id
+  when there is one: `// QA-AGENT: SHOP-101/B2: expected 409, got 201`). Never `test.fail`: only QA marks a confirmed
+  defect, with the bug link.
 - **Example:** `{{apiDir}}/example/health.spec.ts`.
 {{/if}}
 {{#unless isScratch}}

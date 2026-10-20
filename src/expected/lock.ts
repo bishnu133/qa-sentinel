@@ -145,7 +145,7 @@ function indexWithEach(file: string, src: string): IndexedTest[] {
       const title = m[2];
       const tags = { stories: tagsIn(title, "story"), acs: tagsIn(title, "ac").map((a) => a.toUpperCase()) };
       const describe = base.filter((t) => t.line < i + 1).at(-1)?.describe;
-      extra.push({ id: `${file}:${i + 1}`, file, line: i + 1, endLine: k + 1, title: title.replace(/\s*@\S+/g, "").trim(), describe, status: /\.(skip)\b/.test(lines[i]) ? "skip" : /\.(fixme|fail)\b/.test(lines[i]) ? "fixme" : "active", services: [], endpoints: [], pages: [], tags: [], assertions: 0, statusOnly: false, ...tags });
+      extra.push({ id: `${file}:${i + 1}`, file, line: i + 1, endLine: k + 1, title: title.replace(/\s*@\S+/g, "").trim(), describe, status: /\.(skip)\b/.test(lines[i]) ? "skip" : /\.fixme\b/.test(lines[i]) ? "fixme" : /\.fail\b/.test(lines[i]) ? "known-defect" : "active", services: [], endpoints: [], pages: [], tags: [], assertions: 0, statusOnly: false, ...tags });
       i = k;
       break;
     }

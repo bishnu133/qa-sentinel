@@ -10,7 +10,7 @@ import { runSpecPass } from "../expected/spec.js";
 import { matchesAny } from "../fsutil.js";
 import { formatUsage } from "../claude.js";
 import { useEnvironment, ARTIFACT_GLOBS, VERSION, agentEnv, bashRulesForTests, cleanAgentAnswer, createRunDir, findService, startManifest, testEnv, writeManifest } from "../run.js";
-import { checkContent, checkPaths, checkServiceUntouched, findingsMarkdown, generatePolicy, snapshotTree, violations } from "../guardrails.js";
+import { checkKnownDefectMarkers, checkContent, checkPaths, checkServiceUntouched, findingsMarkdown, generatePolicy, snapshotTree, violations } from "../guardrails.js";
 import { emptySnapshot, requirementItems, resolveRequirements, skippedBranch, storyMarkdown } from "../requirements.js";
 import { findDiscrepancies, verifyChanges } from "../verification.js";
 import { mrDescription } from "../reporting.js";
@@ -336,6 +336,7 @@ export async function generateCommand(o: GenerateOptions): Promise<number> {
       assertionRemoval: c.guardrails.assertionRemoval,
     }),
     ...before.flatMap((b) => checkServiceUntouched(b.repo, b.name, b.snap)),
+    ...checkKnownDefectMarkers(changes, cwd, startSha),
     // Expected values follow the story, never the code: an AI run may not change them unless the AC changed.
     ...checkExpectationLock({
       expectedDir: c.tests.expectedDir,
