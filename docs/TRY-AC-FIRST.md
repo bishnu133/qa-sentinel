@@ -5,6 +5,11 @@ A hands-on check of what phase 1 adds, on the ShopLite sandbox. Steps 1–3 need
 
 ## 0. Get the branch
 
+Set once, in every terminal you use for this guide (your qa-sentinel folder):
+```bash
+export QAS=~/Documents/qa-sentinel
+```
+
 ```bash
 git fetch origin && git checkout phase1-ac-first
 npm ci && npm run build
@@ -16,9 +21,9 @@ npm test                      # all green
 Use a new, empty folder (not one from an earlier sandbox run):
 ```bash
 mkdir -p ~/qa-try && cd ~/qa-try
-node <path-to-qa-sentinel>/sandbox/shoplite/local.mjs setup --level maintenance
+node $QAS/sandbox/shoplite/local.mjs setup --level maintenance
 cd shoplite-local/qa-tests
-alias qa-sentinel="node <path-to-qa-sentinel>/dist/cli.js"   # the sandbox doesn't install it as a package
+alias qa-sentinel="node $QAS/dist/cli.js"   # the sandbox doesn't install it as a package
 ```
 
 ## 2. The requirements pass, dry run (no AI)
@@ -32,7 +37,7 @@ Expect: `expected behaviour: SHOP-101 (4 AC …)` and the list of files the AI w
 ## 3. The plan rules (no AI)
 
 ```bash
-cd <path-to-qa-sentinel> && npx vitest run test/spec.test.ts test/acFirstPlan.test.ts test/knownDefect.test.ts test/taxonomy.test.ts
+cd $QAS && npx vitest run test/spec.test.ts test/acFirstPlan.test.ts test/knownDefect.test.ts test/taxonomy.test.ts
 ```
 
 ## 4. Write the expected behaviour (AI, small)
@@ -65,7 +70,7 @@ Before step 6:
 ## 6. Generate tests from it (AI, the full run)
 
 ```bash
-cd ~/qa-try && node <path-to-qa-sentinel>/sandbox/shoplite/local.mjs run SHOP-101 --generate
+cd ~/qa-try && node $QAS/sandbox/shoplite/local.mjs run SHOP-101 --generate
 ```
 SHOP-101's catch: the story says 3 orders per slot, the code allows 5. Expect:
 - Since you committed `expected/SHOP-101.md` in step 5, the requirements pass says it is up to date (no AI run).
