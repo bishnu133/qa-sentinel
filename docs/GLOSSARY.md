@@ -31,7 +31,7 @@ The words qa-sentinel uses in reports, merge requests and Jira, so QA, developer
 | --- | --- | --- |
 | ❓ **unclassified – needs triage** | It fails and nobody has said why yet. **The default.** | A person |
 | 🐞 **product defect** | QA confirmed the product is wrong (known defect, bug link). | QA |
-| 🌐 **environment** | The environment failed (network, certificates, gateway 502/503/504). No bug card is drafted. | qa-sentinel (from the error) |
+| 🌐 **environment** | The test couldn't reach the environment (connection refused, name not found, TLS certificate errors). A 5xx answer is the product's answer, not this. No bug card is drafted. | qa-sentinel (from the error) |
 | 🚧 **not built** | No code in the story's services does it (the plan says `not-found`; shown on bug cards as suspected). | QA confirms |
 | ✅ **known defect now passes** | A `test.fail` test passed: the bug looks fixed. Remove `test.fail` and the `QA-BUG` line. | qa-sentinel (from the result), QA removes the marker |
 | ⏳ **not deployed** | The change isn't running where the test ran (service `version` endpoint). | qa-sentinel (from the deployment check) |

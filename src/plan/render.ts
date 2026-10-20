@@ -63,7 +63,7 @@ export function implementationMarkdown(plan: TestPlan, items: { id: string; text
     const r = byId.get(it.id);
     const where = r ? [r.where, r.note].filter(Boolean).join(" – ") : "";
     const a = r?.automation;
-    const testing = !a || a.how === "automated" ? "automated" : `${TESTING[a.how]}${a.hook ? `: ${a.hook}` : ""}${a.reason ? ` (${a.reason})` : ""}`;
+    const testing = r?.noScenario ? `no new test: ${r.noScenario}` : !a || a.how === "automated" ? "automated" : `${TESTING[a.how]}${a.hook ? `: ${a.hook}` : ""}${a.reason ? ` (${a.reason})` : ""}`;
     return `| ${it.id}${it.source ? ` _(${it.source})_` : ""} | ${esc(it.text.length > 110 ? `${it.text.slice(0, 109)}…` : it.text)} | ${r ? BUILT[r.status] : "–"} | ${esc(where)} | ${esc(testing)} |`;
   });
   const uncovered = items.filter((it) => it.source && byId.get(it.id)?.coveredByAcs.length === 0);

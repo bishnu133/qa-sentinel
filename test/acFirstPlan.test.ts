@@ -37,7 +37,7 @@ const plan = (scenarios: Record<string, unknown>[], status: Record<string, unkno
     { id: "AC-3", status: "not-found" },
   ].map((r) => ({ ...r, ...(status.find((x) => x.id === r.id) ?? {}) })),
 });
-const ctx = { acIds: ["AC-1", "AC-2", "AC-3"], requirementsMissing: false, testRepo: repo, serviceRepo: repo, expected, requireAcCoverage: true };
+const ctx = { acIds: ["AC-1", "AC-2", "AC-3"], requirementsMissing: false, testRepo: repo, serviceRepo: repo, expected, requireAcCoverage: true, storyMode: true };
 const sc = (requirementIds: string[], behaviourIds: string[]) => ({ title: "t", requirementIds, behaviourIds, assertions: ["a"] });
 
 describe("AC-first planning", () => {
@@ -69,5 +69,27 @@ describe("AC-first planning", () => {
     expect(validatePlan(plan([sc(["AC-1"], [])]), noExp).errors.join()).toMatch(/AC-2 has no scenario: plan one/);
     expect(validatePlan(plan([sc(["AC-1"], ["B1"])]), noExp).errors.join()).toMatch(/no expected-behaviour file/);
     expect(validatePlan(plan([sc(["AC-1"], [])]), { ...noExp, requireAcCoverage: false }).errors).toEqual([]);
+  });
+
+  it("one service's change: ACs it doesn't touch get a warning, not an error", () => {
+    const v = validatePlan(plan([sc(["AC-1"], ["B1", "B2"])]), { ...ctx, storyMode: false });
+    expect(v.errors).toEqual([]);
+    expect(v.warnings.join()).toMatch(/AC-3 has no scenario, and this change doesn't build it/);
+  });
+
+  it("scenarios under skip don't count, and reuse needs an existing test tagged with the AC", () => {
+    const p = plan([sc(["AC-1"], ["B1", "B2"]), sc(["AC-3"], ["B4"])]) as any;
+    p.decisions[0].decision = "skip";
+    p.changes[0].observable = false;
+    p.changes[0].type = "internal";
+    expect(validatePlan(p, ctx).errors.join()).toMatch(/AC-1 has no scenario/);
+    fs.mkdirSync(`${repo}/tests`, { recursive: true });
+    fs.writeFileSync(`${repo}/tests/a.spec.ts`, 'test("x @ac:AC-2", () => {});');
+    fs.writeFileSync(`${repo}/tests/b.spec.ts`, 'test("y @ac:AC-1,AC-3", () => {});');
+    const r = plan([sc(["AC-3"], ["B4"])]) as any;
+    Object.assign(r.decisions[0], { decision: "reuse", coverage: "covered", existingTests: ["tests/a.spec.ts"], proposedScenarios: [] });
+    expect(validatePlan(r, ctx).errors.join()).toMatch(/AC-1 has no scenario/);
+    r.decisions[0].existingTests = ["tests/b.spec.ts"];
+    expect(validatePlan(r, ctx).errors.join()).not.toMatch(/AC-1 has no scenario/);
   });
 });

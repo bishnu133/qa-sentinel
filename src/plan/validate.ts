@@ -23,6 +23,11 @@ export interface PlanContext {
   expected?: ExpectedFile;
   /** AC-first: every AC needs a scenario, existing coverage, or a stated reason for having none. */
   requireAcCoverage?: boolean;
+  /**
+   * Story mode (all of the story's changes in one run): every AC is held to that. One service's change: only the ACs it
+   * builds or touches are; the rest get a warning (another change may build them).
+   */
+  storyMode?: boolean;
 }
 
 export interface PlanValidation {
@@ -220,6 +225,8 @@ function checkAcCoverage(plan: TestPlan, ctx: PlanContext, errors: string[], war
   const live = (exp?.acs ?? []).filter((a) => !a.removed);
   const owner = new Map(live.flatMap((a) => a.behaviours.map((b) => [b.id, { ac: a, b }] as const)));
   const scenarios = plan.decisions.flatMap((d) => d.proposedScenarios.map((s, k) => ({ d, s, at: `decision ${d.changeId} scenario ${k + 1}` })));
+  // Only scenarios that get written count as coverage (a scenario under skip or reuse is never implemented).
+  const written = scenarios.filter(({ d }) => ["create", "update", "review"].includes(d.decision));
   const cited = new Set<string>();
   for (const { s, at } of scenarios) {
     for (const id of s.behaviourIds) {
@@ -233,13 +240,23 @@ function checkAcCoverage(plan: TestPlan, ctx: PlanContext, errors: string[], war
   }
   if (!ctx.requireAcCoverage || ctx.requirementsMissing) return;
   const status = new Map(plan.requirementStatus.map((r) => [r.id, r]));
+  // Existing tests count only when one of them is tagged with the AC.
+  const taggedWith = (file: string, ac: string) => {
+    try {
+      return new RegExp(`@ac:[^\\s'"\`]*\\b${ac}\\b`, "i").test(fs.readFileSync(path.resolve(ctx.testRepo, file), "utf8"));
+    } catch {
+      return false;
+    }
+  };
   const reused = (ac: string) =>
-    plan.decisions.some((d) => ["reuse", "review"].includes(d.decision) && d.coverage === "covered" && plan.changes.find((c) => c.id === d.changeId)?.requirementIds.includes(ac));
+    plan.decisions.some((d) => ["reuse", "review"].includes(d.decision) && d.coverage === "covered" && plan.changes.find((c) => c.id === d.changeId)?.requirementIds.includes(ac) && d.existingTests.some((f) => taggedWith(f, ac)));
+  const touched = new Set([...plan.changes.flatMap((c) => c.requirementIds), ...plan.requirementStatus.filter((r) => ["implemented", "partial", "conflict"].includes(r.status)).map((r) => r.id)]);
+  const exempt: string[] = [];
   for (const ac of ctx.acIds) {
     const e = live.find((a) => a.id === ac);
     const ready = (e?.behaviours ?? []).filter((b) => b.state === "ready");
     const r = status.get(ac);
-    const mine = scenarios.filter(({ s }) => s.requirementIds.includes(ac));
+    const mine = written.filter(({ s }) => s.requirementIds.includes(ac));
     if (mine.length) {
       const missed = ready.filter((b) => !cited.has(b.id)).map((b) => b.id);
       if (missed.length) warnings.push(`${ac}: expected behaviour ${missed.join(", ")} has no scenario citing it`);
@@ -249,11 +266,19 @@ function checkAcCoverage(plan: TestPlan, ctx: PlanContext, errors: string[], war
     if (r?.automation && r.automation.how !== "automated") continue;
     if (r && ["elsewhere", "not-applicable"].includes(r.status)) continue;
     if (r?.noScenario) continue;
-    if (e && (e.untestable || !ready.length)) continue; // nothing ready to test yet (questions open for the PO)
+    if (e && (e.untestable || !ready.length)) {
+      exempt.push(`${ac} (${e.untestable ? `untestable: ${e.untestable}` : "waiting for the PO's answers"})`);
+      continue;
+    }
+    if (!ctx.storyMode && !touched.has(ac)) {
+      warnings.push(`${ac} has no scenario, and this change doesn't build it (another change of the story may): tested once the change that builds it is planned`);
+      continue;
+    }
     errors.push(
       `${ac} has no scenario${ready.length ? ` for its expected behaviour (${ready.map((b) => b.id).join(", ")})` : ""}: plan one (cite it in requirementIds${ready.length ? " and behaviourIds" : ""}), or give requirementStatus ${ac} a "noScenario" reason (e.g. existing tests that already prove it)`,
     );
   }
+  if (exempt.length) warnings.push(`No tests yet for ${exempt.join("; ")}`);
 }
 
 /** Decisions that require writing tests. */

@@ -6,6 +6,7 @@ import { checkExpectationLock, expectedDirOf } from "../expected/lock.js";
 import { acTrailer } from "../expected/commits.js";
 import { type ExpectedFile, expectedPath, readExpected, renderExpected } from "../expected/format.js";
 import { expectedCommitMessage, poQuestions, runSpecPass, specDenyRead } from "../expected/spec.js";
+import { checkExpectedValues } from "../expected/assertions.js";
 import { matchesAny } from "../fsutil.js";
 import { formatUsage } from "../claude.js";
 import { useEnvironment, ARTIFACT_GLOBS, VERSION, agentEnv, bashRulesForTests, cleanAgentAnswer, createRunDir, findService, startManifest, testEnv, writeManifest } from "../run.js";
@@ -196,7 +197,10 @@ export async function generateCommand(o: GenerateOptions): Promise<number> {
   let expectedNotes: { rel: string; changes: string[]; questions: string[] } | undefined;
   const feature = isFeature(c, req);
   if (!feature) log.info(`${req.storyKey} is a ${req.issueType}, not a feature type (requirements.jira.featureIssueTypes): no expected behaviour, tests from its text`);
-  if (!o.backfill && feature && c.tests.expectations === "write" && req.storyKey && req.acceptanceCriteria.length) {
+  // A story the developer wrote themselves (the MR description) can't be the oracle for the developer's code.
+  const devWritten = req.source === "gitlab-mr";
+  if (devWritten && feature && c.tests.expectations === "write" && req.acceptanceCriteria.length) log.warn("the ACs come from the merge request description (written by the developer), not Jira or a story file: no expected behaviour is written from them");
+  if (!o.backfill && feature && !devWritten && c.tests.expectations === "write" && req.storyKey && req.acceptanceCriteria.length) {
     const story = req.storyKey.toUpperCase();
     const rel = expectedPath(expDir, story);
     let stored: ExpectedFile | undefined;
@@ -210,9 +214,14 @@ export async function generateCommand(o: GenerateOptions): Promise<number> {
     }
     if (!unreadable) {
       log.step(`expected behaviour for ${story}: requirements pass (code-blind)`);
-      const spec = await runSpecPass({ cwd, c, engine, req, story, stored, runDir: run.dir, denyRead: specDenyRead(cwd, c), dryRun: o.dryRun });
+      const spec = await runSpecPass({ cwd, c, engine, req, story, stored, runDir: run.dir, denyRead: specDenyRead(cwd, c, [repo, ...(parts ?? []).map((p) => p.repo)]), dryRun: o.dryRun });
       runs.push(...spec.runs);
-      if (spec.errors.length) log.warn(`requirements pass: ${spec.errors.slice(0, 3).join("; ")}; continuing with the stored expectations`);
+      if (spec.errors.length) {
+        // Without expectations for its new or changed ACs, the tests would be written from the code: stop instead.
+        log.fail(`requirements pass failed: ${spec.errors.slice(0, 5).join("; ")}`);
+        log.info(`Fix the story (or write ${rel} by hand) and run again; or set tests.expectations: off to generate without expected behaviour.`);
+        return finish("expectations-failed", 1);
+      }
       const file = spec.file ?? stored;
       if (file) {
         const text = renderExpected(file);
@@ -223,6 +232,18 @@ export async function generateCommand(o: GenerateOptions): Promise<number> {
         spec.changes.forEach((x) => log.warn(`  ${x}`));
         expectedNotes = { rel, changes: spec.changes, questions: poQuestions(file) };
       }
+    }
+  } else if (!o.backfill && req.storyKey) {
+    // No requirements pass this run: a stored, reviewed file still guides the plan (the lock uses it either way).
+    try {
+      const stored = readExpected(cwd, expDir, req.storyKey.toUpperCase());
+      if (stored) {
+        fs.writeFileSync(path.join(run.dir, "expected.md"), renderExpected(stored));
+        expectedForPlan = `${run.rel}/expected.md`;
+        expectedFile = stored;
+      }
+    } catch (e) {
+      log.warn(`${(e as Error).message}; planning without it`);
     }
   }
 
@@ -292,6 +313,7 @@ export async function generateCommand(o: GenerateOptions): Promise<number> {
 
   // Phase 2: author only what the validated plan says, with scoped writes.
   git(cwd, ["checkout", "-q", "-B", branch]);
+  const startShaBefore = startSha;
   // The expected behaviour goes in as its own commit, before the author runs: the lock then protects it from the
   // author too, and QA reviews it on its own in the merge request.
   if (pendingExpected) {
@@ -349,6 +371,8 @@ export async function generateCommand(o: GenerateOptions): Promise<number> {
     }),
     ...before.flatMap((b) => checkServiceUntouched(b.repo, b.name, b.snap)),
     ...checkKnownDefectMarkers(changes, cwd, startSha),
+    // The tests assert the expected values (named by @b: tags), not the code's.
+    ...(expectedFile ? checkExpectedValues({ repo: cwd, ref: startSha, changes, expected: expectedFile, plannedBehaviours: [...new Set(todo.flatMap((d) => d.proposedScenarios.flatMap((s) => s.behaviourIds)))] }) : []),
     // Expected values follow the story, never the code: an AI run may not change them unless the AC changed.
     ...checkExpectationLock({
       expectedDir: c.tests.expectedDir,
@@ -362,7 +386,7 @@ export async function generateCommand(o: GenerateOptions): Promise<number> {
   manifest.guardrails = { violations: bad.length, warnings: findings.length - bad.length };
   fs.writeFileSync(path.join(run.dir, "guardrails.json"), JSON.stringify(findings, null, 2));
   if (bad.length) {
-    log.fail(`run rejected: ${bad.length} guardrail violation(s). Nothing was committed.`);
+    log.fail(`run rejected: ${bad.length} guardrail violation(s). No tests were committed${pendingExpected ? ` (the expected-behaviour commit stays on ${branch}; reset it with: git reset --hard ${startShaBefore})` : ""}.`);
     log.info(findingsMarkdown(bad));
     log.info(`The changes are left uncommitted on ${branch} for inspection.`);
     return finish("guardrail-violation", 1);

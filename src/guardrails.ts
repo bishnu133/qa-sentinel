@@ -8,7 +8,7 @@ import { type FileChange, showFile, workingChanges } from "./git.js";
 
 export interface Finding {
   level: "violation" | "warning";
-  rule: "blocked-path" | "outside-allowed" | "service-repo-modified" | "url-host" | "secret" | "assertion-removed" | "test-deleted" | "traceability" | "test-data" | "fixed-wait" | "expectation-changed" | "expectation-removed" | "expected-file-invalid" | "ac-test-disabled" | "expectation-override" | "known-defect-by-agent";
+  rule: "blocked-path" | "outside-allowed" | "service-repo-modified" | "url-host" | "secret" | "assertion-removed" | "test-deleted" | "traceability" | "test-data" | "fixed-wait" | "expectation-changed" | "expectation-removed" | "expected-file-invalid" | "ac-test-disabled" | "expectation-override" | "known-defect-by-agent" | "expected-value-missing";
   file: string;
   message: string;
 }
@@ -267,17 +267,19 @@ export function claudePermissions(o: { write: WritePolicy | undefined; bash: str
 }
 
 /** `test.fail(...)` in any form (declaration, `test.fail()` / `test.fail(cond)` inside a test, `test.describe.fail`): expected to fail. Only a person marks one, after triage. */
-export const KNOWN_DEFECT = /\b(?:test|it)(?:\.describe)?\.fail\s*\(/;
+export const KNOWN_DEFECT = /(?<![\w$.])(?!(?:assert|expect|chai|should|Promise|promise)\b)[A-Za-z_$][\w$]*(?:\.describe)?\.fail(?:\.only)?\s*\(/;
+const CODE_FILE = /\.[cm]?[jt]sx?$/;
 
 /**
  * An AI run may not mark a test as a known defect (`test.fail`): that says "QA confirmed a product defect, here is
  * the bug", which only a person can say. The agent writes `test.fixme` with a `// QA-AGENT:` note instead.
  */
-export function checkKnownDefectMarkers(changes: FileChange[], repo: string, ref: string): Finding[] {
+export function checkKnownDefectMarkers(changes: FileChange[], repo: string, ref: string, added: (file: string) => string[] = (f) => addedLines(repo, ref, f)): Finding[] {
   const out: Finding[] = [];
   for (const ch of changes) {
-    if (ch.status === "D" || !TEST_FILE.test(ch.path)) continue;
-    const n = addedLines(repo, ref, ch.path).filter((l) => KNOWN_DEFECT.test(l)).length;
+    // Any code file: a test.fail() in a shared fixture or hook marks every test that uses it.
+    if (ch.status === "D" || !CODE_FILE.test(ch.path)) continue;
+    const n = added(ch.path).filter((l) => KNOWN_DEFECT.test(l)).length;
     if (n)
       out.push({
         level: "violation",

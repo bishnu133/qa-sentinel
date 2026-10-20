@@ -24,7 +24,8 @@ These conventions ship with the qa-sentinel Playwright scaffold. Change them her
   While you write tests, your own runs happen with toggles as they are in the environment: a `@toggle` test may fail there only because the feature is off. Don't change the test for that; say so in your notes (qa-sentinel's verification sets the toggles).
 - **Tags (required on every new or changed test, fixme tests included):** in the title, e.g.
   `test('rejects the 4th order in a slot @service:orders-service @endpoint:POST_/orders @story:SHOP-123 @ac:AC-3', …)`.
-  `@ac:` lists the acceptance criteria the test proves (comma-separated, `@ac:AC-1,AC-2`), using the ids from the story.
+  `@b:` lists the expected behaviours the test proves (`@b:B1,B2`, ids from `expected/<STORY>.md`) when the story has
+  that file. `@ac:` lists the acceptance criteria the test proves (comma-separated, `@ac:AC-1,AC-2`), using the ids from the story.
   Use `@ac:none` for a test that deliberately goes beyond the ACs (e.g. contract-only behaviour). Only tag ACs the
   test really proves: an unrelated setup call doesn't count (an independent reviewer checks this).
   qa-sentinel builds the requirement → test matrix in the MR from these tags, so a test without them is invisible

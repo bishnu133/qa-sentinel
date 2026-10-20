@@ -29,6 +29,8 @@ The device and app come from the environment (`QA_APPIUM_URL`, `QA_MOBILE_PLATFO
   While you write tests, your own runs happen with toggles as they are in the environment: a `@toggle` test may fail there only because the feature is off. Don't change the test for that; say so in your notes (qa-sentinel's verification sets the toggles).
 - **Tags in the title (required):** `@service:<app> @screen:orders/new @story:SHOP-123 @ac:AC-2`. Use the same value as the screen object's `screen`. `@ac:none` for tests beyond the ACs.
 - Waits: `await el.waitForDisplayed()` and `expect(el).toHaveText(…)` (they retry). No `driver.pause()` for waiting.
+- With an expected-behaviour file (`expected/<STORY>.md`): tag `@b:B1` (the behaviours the test proves) and assert
+  their values.
 - Product disagrees with the requirement (discrepancy): `it.skip(...)` with `// QA-AGENT: <mismatch>` above it (with
   the behaviour id, e.g. `SHOP-101/B2: expected …, got …`), written to the requirement. Never mark a test as expected
   to fail: only QA does that, with the bug link.

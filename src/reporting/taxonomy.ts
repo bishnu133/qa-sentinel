@@ -13,14 +13,16 @@ export const CATEGORY_LABEL: Record<ResultCategory, string> = {
   "not-deployed": "⏳ not deployed",
 };
 
-/** Messages that say the environment, not the product, failed. Kept narrow: anything else stays unclassified. */
+/**
+ * Errors from the test's own connection, not the product's answer: a socket-level code next to the call that failed
+ * ("connect ECONNREFUSED", "getaddrinfo ENOTFOUND"), the browser's network errors, TLS certificate errors. Response
+ * statuses (502, 503) and texts on the page are the product's answer: they stay unclassified.
+ */
 const ENVIRONMENT = [
-  /\bE(?:CONNREFUSED|CONNRESET|NOTFOUND|AI_AGAIN|TIMEDOUT|HOSTUNREACH|NETUNREACH)\b/,
-  /socket hang up/i,
-  /net::ERR_(?:CONNECTION|NAME_NOT_RESOLVED|INTERNET|ADDRESS|TIMED_OUT|CERT)/,
-  /\b(?:UNABLE_TO_VERIFY_LEAF_SIGNATURE|SELF_SIGNED_CERT_IN_CHAIN|DEPTH_ZERO_SELF_SIGNED_CERT|CERT_HAS_EXPIRED)\b|self[- ]signed certificate/i,
-  /\bInvalid URL\b/,
-  /\b(?:502 Bad Gateway|503 Service Unavailable|504 Gateway Time-?out)\b/i,
+  /\b(?:connect|getaddrinfo|read|write|socket)\s+E(?:CONNREFUSED|CONNRESET|NOTFOUND|AI_AGAIN|TIMEDOUT|HOSTUNREACH|NETUNREACH)\b/,
+  /\bsocket hang up\b/i,
+  /\bnet::ERR_(?:CONNECTION|NAME_NOT_RESOLVED|INTERNET|ADDRESS|TIMED_OUT|CERT)/,
+  /\b(?:UNABLE_TO_VERIFY_LEAF_SIGNATURE|SELF_SIGNED_CERT_IN_CHAIN|DEPTH_ZERO_SELF_SIGNED_CERT|CERT_HAS_EXPIRED)\b/,
 ];
 
 /** Playwright's message when a test.fail test passes. */

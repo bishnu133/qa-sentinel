@@ -1,6 +1,6 @@
 import { git, changesBetween, showFile, type FileChange } from "../git.js";
 import type { Config } from "../config.js";
-import type { Finding } from "../guardrails.js";
+import { type Finding, checkKnownDefectMarkers } from "../guardrails.js";
 import { matchesAny } from "../fsutil.js";
 import { ARTIFACT_GLOBS } from "../run.js";
 import { requirementItems, resolveRequirements } from "../requirements.js";
@@ -77,6 +77,18 @@ export async function currentAcsFor(c: Config, stories: string[]): Promise<Map<s
   return out;
 }
 
+/** Lines in `after` that aren't in `before` (as a multiset). */
+function addedBetween(before: string | undefined, after: string | undefined): string[] {
+  if (after === undefined) return [];
+  const old = new Map<string, number>();
+  for (const l of (before ?? "").split("\n")) old.set(l, (old.get(l) ?? 0) + 1);
+  return after.split("\n").filter((l) => {
+    const n = old.get(l) ?? 0;
+    if (n > 0) old.set(l, n - 1);
+    return n === 0;
+  });
+}
+
 /** AC hashes qa-sentinel recorded in its commits (latest wins), for stories Jira can't be asked about. */
 function trailerAcs(commits: BranchCommit[]): Map<string, CurrentAc[]> {
   const out = new Map<string, CurrentAc[]>();
@@ -99,9 +111,21 @@ export async function lockByAuthor(repo: string, c: Config, base: string): Promi
   const fromJira = await currentAcsFor(c, storiesTouched(repo, c.tests.expectedDir, base, net));
   const currentAcs = new Map([...trailerAcs(commits), ...fromJira]);
   // What is locked is always decided from the branch base: a person's commit in between can't open it for the AI.
-  const lock = (changes: FileChange[], from: string, to: string) => checkExpectationLockDetailed({ expectedDir: c.tests.expectedDir, changes, before: (f) => showFile(repo, from, f), after: (f) => showFile(repo, to, f), lockedBy: (f) => showFile(repo, base, f), currentAcs });
-  const found = lock(net, base, "HEAD");
-  if (!found.length) return [];
+  // An expected file new on this branch is locked from the qa-sentinel commit that wrote it (generate writes it before
+  // the tests): a later AI commit may not move its values.
+  const created = new Map<string, string>();
+  for (const cm of commits.filter((x) => x.agent)) for (const ch of cm.changes) if (ch.status === "A" && storyOfExpectedPath(c.tests.expectedDir, ch.path) && !created.has(ch.path)) created.set(ch.path, cm.sha);
+  const lockedBy = (f: string) => showFile(repo, base, f) ?? (created.has(f) ? showFile(repo, created.get(f)!, f) : undefined);
+  const lock = (changes: FileChange[], from: string, to: string) => checkExpectationLockDetailed({ expectedDir: c.tests.expectedDir, changes, before: (f) => showFile(repo, from, f), after: (f) => showFile(repo, to, f), lockedBy, currentAcs });
+  const found = [
+    ...lock(net, base, "HEAD"),
+    ...[...created].filter(([f]) => net.some((x) => x.path === f)).flatMap(([f, sha]) => lock([{ path: f, status: showFile(repo, "HEAD", f) === undefined ? "D" : "M" }], sha, "HEAD")),
+  ];
+  // test.fail added by qa-sentinel's own commits (only a person marks a known defect).
+  const defects = commits
+    .filter((x) => x.agent)
+    .flatMap((cm) => checkKnownDefectMarkers(cm.changes, repo, `${cm.sha}^`, (f) => addedBetween(showFile(repo, `${cm.sha}^`, f), showFile(repo, cm.sha, f))).map((x) => ({ ...x, message: `qa-sentinel's commit ${cm.sha.slice(0, 8)}: ${x.message}` })));
+  if (!found.length) return defects;
   const agentFound = new Map<string, string>();
   for (const cm of commits.filter((x) => x.agent)) for (const f of lock(cm.changes, `${cm.sha}^`, cm.sha)) agentFound.set(`${f.rule}|${f.file}|${f.subject}`, cm.sha);
   const people = [...new Set(commits.filter((x) => !x.agent).map((x) => x.author))].join(", ") || "a person";
@@ -112,5 +136,5 @@ export async function lockByAuthor(repo: string, c: Config, base: string): Promi
     else if (sha) out.push({ level: "violation", rule: f.rule, file: f.file, message: `qa-sentinel's commit ${sha.slice(0, 8)}: ${f.message}` });
     else out.push(...overrideFindings([f as LockFinding], people));
   }
-  return out;
+  return [...out, ...defects];
 }

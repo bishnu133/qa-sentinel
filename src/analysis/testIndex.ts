@@ -135,7 +135,7 @@ export function indexSource(file: string, src: string): IndexedTest[] {
     const asserts = body.split("\n").filter((l) => ASSERT.test(l) && ((ASSERT.lastIndex = 0), true));
     const parsed = parseTags(f.raw);
     // test.fail("title", …), test.fail() / test.fail(cond) inside the body, or a test.describe.fail group around it.
-    const defect = f.kind === "fail" || /\btest\.fail\s*\(/.test(lines.slice(f.line, end).join("\n")) || (f as any).failGroup;
+    const defect = f.kind === "fail" || /\b(?:test|it)\.fail(?:\.only)?\s*\(/.test(lines.slice(f.line, end).join("\n")) || (f as any).failGroup;
     return {
       id: `${file}:${f.line}`,
       file,

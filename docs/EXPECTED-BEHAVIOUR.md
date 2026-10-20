@@ -62,8 +62,21 @@ gap): its expectations stay, still tested, and the run lists it so a QA engineer
   its `basis` (the story words it comes from), and every value must appear in that quote. What the story doesn't say
   becomes `unspecified` with a question for the PO; the run prints the questions, and the merge request lists them.
 - Only new or changed ACs are sent to the AI; when every AC is current, nothing runs.
+- If the pass fails (the AI can't give valid expectations after one repair round), `generate` stops: tests would
+  otherwise be written from the code. Fix the story or write the entries by hand.
+- ACs taken from a merge request description (no Jira, no story file) get no expected file: the developer wrote that
+  text, so it can't be the oracle for their own code.
+- The AI works in an empty temp folder; the test repo, the service checkouts, the folders around them and your home
+  folder are closed to it. An agreed spec read from a service's own checkout needs a pinned `contract.ref`.
 - `tests.expectations: off` turns this off. With `requirements.jira.featureIssueTypes` set, only those issue types
   get an expected file (a Bug or Task is tested from its text).
+
+## Tests name their behaviours
+
+Each test written for a story with an expected file carries `@b:B1` (the behaviours it proves) next to `@ac:AC-1`.
+Before anything is committed, qa-sentinel checks that every number and text those behaviours expect appears in the
+test file. A test that asserts something else (usually what the code does) rejects the run. A planned behaviour that
+no test names, or a test with no `@b:` tag, is a warning in the merge request.
 
 ## The lock
 

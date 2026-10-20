@@ -29,6 +29,8 @@ The site's base URL comes from `process.env.{{webBaseUrlEnv}}`; API calls for te
   While you write tests, your own runs happen with toggles as they are in the environment: a `@toggle` test may fail there only because the feature is off. Don't change the test for that; say so in your notes (qa-sentinel's verification sets the toggles).
 - **Tags in the title (required):** `@service:<front end> @page:/orders/:id @story:SHOP-123 @ac:AC-2`. Use the route as in the page object (`:param` style). `@ac:none` for tests beyond the ACs.
 - Waits: rely on Playwright's auto-waiting and web-first assertions (`await expect(locator).toHaveText(…)`). No `waitForTimeout`, no sleeps.
+- With an expected-behaviour file (`expected/<STORY>.md`): tag `@b:B1` (the behaviours the test proves) and assert
+  their values.
 - Product disagrees with the requirement (discrepancy): `test.fixme(...)` with `// QA-AGENT: <mismatch>` above it (with the behaviour id, e.g.
   `SHOP-101/B2`), written to the requirement. Never `test.fail`: only QA marks a confirmed defect, with the bug link.
 {{#if a11y}}

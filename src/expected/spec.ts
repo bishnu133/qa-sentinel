@@ -79,10 +79,17 @@ function valuesToCheck(expect: Record<string, unknown>): string[] {
   return out;
 }
 
+/** Numbers written in a text, as numbers: "1,000" → 1000, "10.50" → 10.5. */
+const numbersIn = (hay: string) => [...hay.matchAll(/-?\d{1,3}(?:,\d{3})+(?:\.\d+)?|-?\d+(?:\.\d+)?/g)].map((m) => Number(m[0].replace(/,/g, "")));
+
+const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+/** Is this value written in the text? Numbers compare as numbers; texts as whole words (closing punctuation ignored). */
 const inText = (needle: string, hay: string) => {
-  const n = plain(needle);
-  if (/^-?\d+(?:\.\d+)?$/.test(n)) return new RegExp(`(^|[^0-9.])${n.replace(".", "\\.")}(?![0-9])`).test(hay);
-  return hay.includes(n);
+  const n = plain(needle).replace(/[.!?;:,]+$/, "");
+  if (/^-?\d+(?:\.\d+)?$/.test(n)) return numbersIn(hay).includes(Number(n));
+  if (!n) return false;
+  return new RegExp(`(^|[^\\p{L}\\p{N}])${escapeRe(n)}(?![\\p{L}\\p{N}])`, "u").test(hay);
 };
 
 export interface SpecAc {
@@ -121,11 +128,13 @@ export function validateProposal(raw: unknown, i: { acs: SpecAc[]; sources: stri
         if (vals.length) errors.push(`${where}: an unspecified behaviour has no values yet (found ${vals.map((v) => JSON.stringify(v)).join(", ")}); leave "expect" empty, or only true/false outcomes`);
         return;
       }
-      if (!b.basis) {
-        errors.push(`${where}: "basis" is missing: quote the words from story.md, knowledge.md or the agreed spec it comes from`);
+      if (!b.basis || plain(b.basis).split(" ").filter(Boolean).length < 3) {
+        errors.push(`${where}: "basis" is missing or too short: quote at least a few words from story.md, knowledge.md or the agreed spec it comes from`);
         return;
       }
       if (!hay.includes(plain(b.basis))) errors.push(`${where}: basis "${b.basis.slice(0, 80)}" isn't in story.md, knowledge.md or the agreed spec; copy the words exactly`);
+      // Numbers in the statement come from the basis too ("returns 409" can't hide an invented status code there).
+      for (const v of numbersIn(plain(b.statement))) if (!numbersIn(plain(b.basis)).includes(v)) errors.push(`${where}: the statement says ${v}, which isn't in its basis; quote the words that give it, or leave it out`);
       for (const v of valuesToCheck(b.expect)) {
         if (!inText(v, plain(b.basis))) errors.push(`${where}: value ${JSON.stringify(v)} isn't in its basis. Quote words that contain it exactly as written (3 needs "3", not "three"), or, if the requirements don't give it, set "state": "unspecified", ask in "question", and leave the value out`);
       }
@@ -190,7 +199,7 @@ export async function runSpecPass(i: { cwd: string; c: Config; engine: AgentEngi
   const acs: SpecAc[] = acsNow.map((a) => ({ ...a, needsProposal: fresh.get(a.id) !== "current" || !filled(a.id) }));
   if (!acs.some((a) => a.needsProposal)) {
     // Nothing new to write: keep the stored file (merge also records ACs that left the story).
-    return { ...keepMissing(mergeExpected(i.stored, { version: 1, story: i.story, acs: [] }, acsNow), i.stored), errors: [], runs: [], skipped: true };
+    return { ...checked(keepMissing(mergeExpected(i.stored, { version: 1, story: i.story, acs: [] }, acsNow), i.stored, acsNow)), runs: [], skipped: true };
   }
 
   // A fresh folder with only the requirements in it.
@@ -207,7 +216,13 @@ export async function runSpecPass(i: { cwd: string; c: Config; engine: AgentEngi
   sources.push(i.req.rawText);
   const kb = collectKnowledge(i.cwd, i.c);
   if (kb) put("knowledge.md", kb.markdown, true);
+  const codeRepos = specDenyRead(i.cwd, i.c, i.denyRead).map((d) => path.resolve(d));
   for (const s of i.c.workspace.services) {
+    // A spec read from a service's own checkout without a pinned ref may be generated from the code: not a requirement.
+    if (s.contract?.repo && !s.contract.ref && codeRepos.some((d) => path.resolve(i.cwd, s.contract!.repo!).startsWith(d))) {
+      log.warn(`requirements pass: ${s.name}'s agreed spec is read from a code checkout without a ref; left out (set contract.ref to the agreed version)`);
+      continue;
+    }
     if (!s.contract || !new RegExp(`\\b${s.name.replace(/[-]/g, "[- ]?")}\\b`, "i").test(i.req.rawText)) continue;
     const { contract } = await loadContract(i.c, s.contract, { cwd: i.cwd, storyKey: i.story, env: process.env }).catch(() => ({ contract: undefined }));
     if (contract) put(`agreed-spec-${s.name}${/^\s*[{[]/.test(contract.text) ? ".json" : ".yaml"}`, contract.text, true);
@@ -273,7 +288,7 @@ export async function runSpecPass(i: { cwd: string; c: Config; engine: AgentEngi
   }
   if (!v.proposal) return { changes: [], errors: v.errors, runs, skipped: false };
   const proposal = proposalToFile(i.story, i.req.title, acs, v.proposal, i.stored);
-  return { ...keepMissing(mergeExpected(i.stored, proposal, acsNow), i.stored), errors: [], runs, skipped: false };
+  return { ...checked(keepMissing(mergeExpected(i.stored, proposal, acsNow), i.stored, acsNow)), runs, skipped: false };
 }
 
 /**
@@ -281,12 +296,14 @@ export async function runSpecPass(i: { cwd: string; c: Config; engine: AgentEngi
  * locked (see lock.ts) and qa-sentinel never retires it: its stored entry stays exactly as it was. A person retires
  * it (removed: true) in the merge request when the story really dropped it.
  */
-function keepMissing(m: { file: ExpectedFile; changes: string[] }, stored?: ExpectedFile): { file: ExpectedFile; changes: string[] } {
+function keepMissing(m: { file: ExpectedFile; changes: string[] }, stored: ExpectedFile | undefined, now: { id: string }[]): { file: ExpectedFile; changes: string[] } {
   if (!stored) return m;
   const gone = new Set<string>();
   const acs = m.file.acs.map((a) => {
     const was = stored.acs.find((x) => x.id === a.id && x.hash === a.hash);
-    if (!a.removed || !was || was.removed) return a;
+    // Only an id that is absent from the story: an id still there with other text is a changed AC (renumbered or
+    // reworded), which the lock opens, so marking the old entry removed is right.
+    if (!a.removed || !was || was.removed || now.some((x) => x.id === a.id)) return a;
     gone.add(a.id);
     return was;
   });
@@ -296,9 +313,23 @@ function keepMissing(m: { file: ExpectedFile; changes: string[] }, stored?: Expe
   return { file: { ...m.file, acs }, changes };
 }
 
-/** Folders the code-blind pass may not read: the test repository and every service repository. */
-export function specDenyRead(cwd: string, c: Config): string[] {
-  return [cwd, ...c.workspace.services.map((s) => path.resolve(cwd, s.path))];
+/** The merged file must still be a valid file: never hand on (or commit) one that can't be read back. */
+function checked(m: { file: ExpectedFile; changes: string[] }): { file?: ExpectedFile; changes: string[]; errors: string[] } {
+  const p = ExpectedFileSchema.safeParse(m.file);
+  return p.success ? { file: p.data, changes: m.changes, errors: [] } : { changes: m.changes, errors: p.error.issues.map((x) => `merged file is invalid: ${x.path.join(".")}: ${x.message}`) };
+}
+
+/**
+ * Folders the code-blind pass may not read: the test repository, every service checkout (configured, and the ones
+ * this run uses), and the folders around them (sibling clones), plus the home folder. The pass works in the
+ * system temp folder, which is never denied.
+ */
+export function specDenyRead(cwd: string, c: Config, extra: string[] = []): string[] {
+  const tmp = path.resolve(os.tmpdir());
+  const repos = [cwd, ...c.workspace.services.map((s) => path.resolve(cwd, s.path)), ...extra].map((d) => path.resolve(d));
+  const around = [...repos.map((d) => path.dirname(d)), os.homedir()].map((d) => path.resolve(d));
+  const covers = (d: string) => tmp === d || tmp.startsWith(d.endsWith(path.sep) ? d : d + path.sep);
+  return [...new Set([...repos, ...around])].filter((d) => d !== path.parse(d).root && !covers(d));
 }
 
 /** The commit message for qa-sentinel's expected-behaviour commit (with the AC hashes it was written for). */

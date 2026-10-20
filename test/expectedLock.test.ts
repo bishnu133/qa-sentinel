@@ -252,4 +252,31 @@ describe("expectation lock on a branch: by author", () => {
     sh(repo, ["commit", "-qam", AGENT(acTrailer("SHOP-101", [{ id: "AC-1", text: newText }, { id: "AC-2", text: AC2 }]))], "ci");
     expect(await lockByAuthor(repo, cfg, base)).toEqual([]);
   });
+
+  it("locks an expected file that is new on the branch from the qa-sentinel commit that wrote it", async () => {
+    const repo = fs.mkdtempSync(path.join(os.tmpdir(), "qas-lock-"));
+    sh(repo, ["init", "-q", "-b", "main"]);
+    fs.writeFileSync(path.join(repo, "README.md"), "x");
+    sh(repo, ["add", "-A"]);
+    sh(repo, ["commit", "-qm", "base"]);
+    const base = sh(repo, ["rev-parse", "HEAD"]);
+    fs.mkdirSync(path.join(repo, "expected"));
+    fs.writeFileSync(path.join(repo, "expected/SHOP-101.md"), STORED);
+    sh(repo, ["add", "-A"]);
+    sh(repo, ["commit", "-qm", AGENT(acTrailer("SHOP-101", [{ id: "AC-1", text: AC1 }, { id: "AC-2", text: AC2 }]))], "ci");
+    expect(await lockByAuthor(repo, cfg, base)).toEqual([]);
+    fs.writeFileSync(path.join(repo, "expected/SHOP-101.md"), renderExpected(expected(5)));
+    sh(repo, ["commit", "-qam", AGENT()], "ci");
+    const f = await lockByAuthor(repo, cfg, base);
+    expect(f.map((x) => `${x.level}:${x.rule}`)).toContain("violation:expectation-changed");
+  });
+
+  it("rejects test.fail added by qa-sentinel's commit, in any code file", async () => {
+    const { repo, base } = repoWithBase();
+    fs.writeFileSync(path.join(repo, "tests/fixtures.ts"), "export const hook = () => { test.fail(); };\n");
+    sh(repo, ["add", "-A"]);
+    sh(repo, ["commit", "-qm", AGENT()], "ci");
+    const f = await lockByAuthor(repo, cfg, base);
+    expect(f.map((x) => `${x.level}:${x.rule}:${x.file}`)).toEqual(["violation:known-defect-by-agent:tests/fixtures.ts"]);
+  });
 });

@@ -206,6 +206,7 @@ export async function planChange(i: PlanInput): Promise<PlanOutcome> {
     defaultLayer: primaryLayer(c, i.service),
     expected: i.expected,
     requireAcCoverage: i.context?.kind !== "backfill" && i.req.acceptanceCriteria.length > 0 && isFeature(c, i.req),
+    storyMode: (i.parts?.length ?? 0) > 0,
   };
   const read = () => {
     try {

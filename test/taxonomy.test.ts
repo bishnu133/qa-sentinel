@@ -12,13 +12,16 @@ describe("result categories", () => {
   it("recognises the environment, deployment and not-built cases", () => {
     expect(classifyFailure({ message: "apiRequestContext.post: connect ECONNREFUSED 127.0.0.1:8080" })).toBe("environment");
     expect(classifyFailure({ message: "page.goto: net::ERR_NAME_NOT_RESOLVED" })).toBe("environment");
-    expect(classifyFailure({ message: "Error: self-signed certificate in certificate chain" })).toBe("environment");
-    expect(classifyFailure({ message: "Expected 200, got 503 Service Unavailable" })).toBe("environment");
+    expect(classifyFailure({ message: "Error: apiRequestContext.get: SELF_SIGNED_CERT_IN_CHAIN" })).toBe("environment");
+    // The product's answer is never the environment: statuses and texts stay unclassified.
+    expect(classifyFailure({ message: "Expected: 200 Received: 503 Service Unavailable" })).toBe("unclassified");
+    expect(classifyFailure({ message: 'expect(locator).toHaveText("Saved") Received: "Invalid URL"' })).toBe("unclassified");
+    expect(classifyFailure({ message: 'Expected: "ok" Received: "lookup failed: ENOTFOUND"' })).toBe("unclassified");
     expect(classifyFailure({ message: "x", waitingForDeployment: true })).toBe("not-deployed");
     expect(classifyFailure({ message: "x", notBuilt: true })).toBe("not-built");
   });
   it("labels failures in the verification report", () => {
-    const md = verificationMarkdown({ status: "FAILED", checks: [], cases: [{ name: "a", status: "failed", message: "Expected: 409 Received: 201" }, { name: "b", status: "failed", message: "ECONNRESET" }], counts: { total: 2, passed: 0, failed: 2, skipped: 0 } });
+    const md = verificationMarkdown({ status: "FAILED", checks: [], cases: [{ name: "a", status: "failed", message: "Expected: 409 Received: 201" }, { name: "b", status: "failed", message: "apiRequestContext.post: read ECONNRESET" }], counts: { total: 2, passed: 0, failed: 2, skipped: 0 } });
     expect(md).toMatch(/unclassified – needs triage: `a`/);
     expect(md).toMatch(/environment: `b`/);
   });

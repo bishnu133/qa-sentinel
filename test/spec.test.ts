@@ -92,6 +92,22 @@ describe("validateProposal: what agents really write", () => {
   });
 });
 
+describe("validateProposal: value matching", () => {
+  const one = (b: Record<string, unknown>, story: string) =>
+    validateProposal({ acs: [{ id: "AC-1", behaviours: [{ kind: "main", statement: "x", state: "ready", ...b }] }] }, { acs: [{ id: "AC-1", text: "t", needsProposal: true }], sources: story }).errors;
+  it("matches numbers as numbers and texts as whole words", () => {
+    expect(one({ expect: { max: 1000 }, basis: "up to 1,000 items per order" }, "Up to 1,000 items per order.")).toEqual([]);
+    expect(one({ expect: { fee: 10.5 }, basis: "a fee of 10.50 is charged" }, "A fee of 10.50 is charged.")).toEqual([]);
+    expect(one({ expect: { message: "Slot is full." }, basis: 'shows "Slot is full"' }, 'The page shows "Slot is full"')).toEqual([]);
+    expect(one({ expect: { message: "a" }, basis: "Show a message to the user" }, "Show a message to the user").join()).toEqual("");
+    expect(one({ expect: { code: "ORD" }, basis: "returns ORDER_LIMIT to the caller" }, "returns ORDER_LIMIT to the caller").join()).toMatch(/value "ORD" isn't in its basis/);
+  });
+  it("rejects a blank or one-word basis, and numbers in the statement that the basis doesn't give", () => {
+    expect(one({ expect: { accepted: false }, basis: "   " }, "x").join()).toMatch(/basis" is missing or too short/);
+    expect(one({ statement: "returns 409 when full", expect: { accepted: false }, basis: "a full slot takes no more orders" }, "A full slot takes no more orders.").join()).toMatch(/the statement says 409/);
+  });
+});
+
 describe("proposalToFile", () => {
   it("keeps stored ids, numbers new behaviours after them, and drops numbers from unspecified", () => {
     const stored: ExpectedFile = {
@@ -244,5 +260,22 @@ describe("code-blind permissions", () => {
     const deny = JSON.stringify(p);
     expect(deny).toContain("Read(//work/qa-tests/**)");
     expect(deny).toContain("Read(//work/orders-service/**)");
+  });
+});
+
+describe("runSpecPass: renumbered ACs", () => {
+  it("deleting AC-2 and renumbering AC-3 gives a valid file (no AC listed twice)", async () => {
+    const c = ConfigSchema.parse({ version: 1, mode: "scratch", project: { name: "p" }, tests: { api: { framework: "playwright", runCommand: "x" } }, ci: { platform: "gitlab" } });
+    const T = ["A slot takes at most 3 orders.", "Orders are capped per customer.", "Each order has at most 10 items."];
+    const story = (ts: string[]) => `# SHOP-101\n\n## Acceptance criteria\n${ts.map((t, k) => `- AC-${k + 1}: ${t}`).join("\n")}`;
+    const mk = (ts: string[]) => ({ storyKey: "SHOP-101", source: "file", acceptanceCriteria: ts.map((t, k) => ({ id: `AC-${k + 1}`, text: t })), scopeItems: [], outOfScope: [], context: [], servicesNamed: [], approvalStatus: "unverified", rawText: story(ts), capturedAt: "x" }) as unknown as RequirementSnapshot;
+    const b = (n: number, basis: string) => ({ kind: "main", statement: "s", expect: { max: n }, basis, state: "ready" });
+    const engine = (out: unknown): AgentEngine => ({ name: "f", available: () => ({ ok: true }), run: async (t) => (fs.writeFileSync(path.join(t.cwd, "proposal.json"), JSON.stringify(out)), { ok: true, status: "ok", result: "done" }) });
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "qas-renum-"));
+    const first = await runSpecPass({ cwd: root, c, engine: engine({ acs: [{ id: "AC-1", behaviours: [b(3, "at most 3 orders")] }, { id: "AC-2", untestable: "no number", behaviours: [] }, { id: "AC-3", behaviours: [b(10, "at most 10 items")] }] }), req: mk(T), story: "SHOP-101", runDir: root, denyRead: [] });
+    expect(first.errors).toEqual([]);
+    const r = await runSpecPass({ cwd: root, c, engine: engine({ acs: [{ id: "AC-2", behaviours: [b(10, "at most 10 items")] }] }), req: mk([T[0], T[2]]), story: "SHOP-101", stored: first.file, runDir: root, denyRead: [] });
+    expect(r.errors).toEqual([]);
+    expect(r.file!.acs.filter((a) => !a.removed).map((a) => [a.id, a.text])).toEqual([["AC-1", T[0]], ["AC-2", T[2]]]);
   });
 });
