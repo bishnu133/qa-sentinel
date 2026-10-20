@@ -19,6 +19,7 @@ import {
   upsertIssueComment,
 } from "../scm/jira.js";
 import { log } from "../log.js";
+import { classifyFailure } from "../reporting/taxonomy.js";
 
 /**
  * Bug cards from evidence, written so a developer (or their coding agent) can act on them directly:
@@ -57,7 +58,9 @@ export function bugsFromResults(c: Config, story: string, items: { id: string; t
     const failing = index
       .filter((t) => t.stories.includes(story) && t.acs.includes(it.id.toUpperCase()) && t.status === "active")
       .map((t) => ({ t, r: matchResult(results, t) }))
-      .filter((x) => x.r?.status === "failed");
+      .filter((x) => x.r?.status === "failed")
+      // The environment failing (network, certificates, gateway errors) says nothing about the product: no bug card.
+      .filter((x) => classifyFailure({ message: x.r?.error }) !== "environment");
     if (!failing.length) continue;
     const { t, r } = failing[0];
     out.push({

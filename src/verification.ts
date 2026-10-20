@@ -1,3 +1,4 @@
+import { CATEGORY, classifyFailure } from "./reporting/taxonomy.js";
 import { hasPackage } from "./fsutil.js";
 import { constSubstituter, indexSource } from "./analysis/testIndex.js";
 import { groupByToggles, withToggles } from "./toggles.js";
@@ -364,7 +365,7 @@ export function verificationMarkdown(r: VerificationReport): string {
     "| --- | --- | --- |",
     ...rows,
     ...(r.counts.total ? ["", `Tests: ${r.counts.passed} passed · ${r.counts.failed} failed · ${r.counts.skipped} skipped (of ${r.counts.total}).`] : []),
-    ...(failed.length ? ["", "Failed:", ...failed.map((f) => `- \`${f.name}\` – ${f.message ?? ""}`)] : []),
+    ...(failed.length ? ["", "Failed:", ...failed.map((f) => `- ${CATEGORY[classifyFailure({ message: f.message, waitingForDeployment: r.status === "WAITING_FOR_DEPLOYMENT" })].label}: \`${f.name}\` – ${f.message ?? ""}`)] : []),
     ...(r.flaky?.length ? ["", `⚠️ Flaky (failed once, passed on the automatic retry; make them deterministic before merging): ${r.flaky.map((f) => `\`${f}\``).join(", ")}`] : []),
   ].join("\n");
 }
