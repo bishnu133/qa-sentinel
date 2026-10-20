@@ -75,3 +75,17 @@ on. `verify --policy` on an agent merge request checks the branch's net change: 
 commits is rejected; a change made by a person is accepted and listed as a *QA override*, so reviewers see it.
 Make expectation changes in your own commit; don't amend or reword qa-sentinel's commits. An expected file that
 can't be read is an error whoever wrote it.
+
+## Limits (know what the lock can't see)
+
+The lock reads code; it doesn't run it. It is a strong net, not a proof, and three things stay with people:
+
+- **Shared helpers in other files** (support modules, page objects): a changed value or assertion there is a
+  *warning*, because qa-sentinel can't tell which requirement tests use it. Reviewers look at those warnings.
+- **An AC missing from the story's current list stays locked** (it may be a parsing gap rather than a removal). To
+  retire its expectations, a person removes or edits them.
+- **The `QA-Sentinel-ACs:` line** in qa-sentinel's commits is trusted for stories that don't come from Jira. Anyone
+  who can push to the branch can write it; with Jira as the source, `verify --policy` asks Jira instead.
+
+The independent test review (a second AI that checks each new test against the ACs) and QA's review of the merge
+request remain the other two layers.

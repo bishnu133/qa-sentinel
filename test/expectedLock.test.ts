@@ -106,6 +106,47 @@ describe("expectation lock: requirement tests", () => {
   });
 });
 
+describe("expectation lock: round-2 attacks", () => {
+  const inline = `test.describe("caps @story:SHOP-101", () => {\n  test("cap @ac:AC-1", async () => expect(n).toBe(3));\n});\n`;
+  const each = `test.each([[1, 3]])("cap @story:SHOP-101 @ac:AC-1", async (a, b) => {\n  expect(b).toBeTruthy();\n});\n`;
+  it("checks code on the test's own line (inline assertions, test.each rows)", () => {
+    expect(rules(run({ "a.spec.ts": [inline, inline.replace("toBe(3)", "toBe(5)")] }))).toEqual(["violation:expectation-changed"]);
+    expect(rules(run({ "a.spec.ts": [each, each.replace("[[1, 3]]", "[[1, 5]]")] }))).toEqual(["violation:expectation-changed"]);
+  });
+
+  it("catches checks switched off by comments, loops, describe.skip, beforeEach skips, and mocked responses", () => {
+    const wrap = (pre: string, post: string) => edit("    expect(res.status()).toBe(409);", `${pre}\n    expect(res.status()).toBe(409);\n${post}`);
+    expect(rules(run(wrap("    /*", "    */")))).toContain("violation:expectation-changed");
+    expect(rules(run(wrap("    for (const _ of []) {", "    }")))).toContain("violation:expectation-changed");
+    expect(rules(run(edit('test.describe("POST', 'test.describe.skip("POST')))).toContain("violation:expectation-changed");
+    expect(rules(run(edit('const SLOT = "s1";', 'const SLOT = "s1";\ntest.beforeEach(() => test.skip());')))).toContain("violation:expectation-changed");
+    expect(rules(run(edit("    const res =", "    await page.route('**/orders', (r) => r.fulfill({ status: 409 }));\n    const res =")))).toContain("violation:expectation-changed");
+  });
+
+  it("covers top-level helper functions in the spec, and warns on values changed in shared test code", () => {
+    const helper = spec(3).replace('const SLOT = "s1";', 'const SLOT = "s1";\nfunction full(n: number) {\n  return n >= 3;\n}').replace("    expect(res.status()).toBe(409);", "    expect(full(4)).toBe(true);");
+    expect(rules(run({ "tests/orders.spec.ts": [helper, helper.replace("n >= 3", "n >= 5")] }))).toEqual(["violation:expectation-changed"]);
+    expect(rules(run({ "tests/support/limits.ts": ["export const MAX = 3;\n", "export const MAX = 5;\n"] }))).toEqual(["warning:expectation-changed"]);
+  });
+
+  it("keeps an AC missing from the current list locked (it may be a parsing gap), and catches swapped ids and placeholder text", () => {
+    const onlyAc1 = new Map([["SHOP-101", [{ id: "AC-1", text: AC1 }]]]);
+    expect(rules(run({ "expected/SHOP-101.md": [STORED, STORED.replace("expect: {}", "expect: { slotShown: false }")] }, onlyAc1))).toContain("violation:expectation-changed");
+    const swapped = expected();
+    [swapped.acs[0].id, swapped.acs[1].id] = [swapped.acs[1].id, swapped.acs[0].id];
+    expect(rules(run({ "expected/SHOP-101.md": [STORED, renderExpected(swapped)] }))).toContain("violation:expectation-changed");
+    const placeholder = expected();
+    placeholder.acs[1].behaviours = [];
+    const lied = expected();
+    lied.acs[1].text = "The email doesn't need the slot.";
+    expect(rules(run({ "expected/SHOP-101.md": [renderExpected(placeholder), renderExpected(lied)] }))).toContain("violation:expectation-changed");
+  });
+
+  it("accepts story keys with underscores", () => {
+    expect(storyOfExpectedPath("expected", "expected/MY_PROJ-1.md")).toBe("MY_PROJ-1");
+  });
+});
+
 describe("expectation lock: expected files", () => {
   const exp = (after: ExpectedFile | string | undefined, before: string = STORED, acs: typeof current | undefined = current) =>
     run({ "expected/SHOP-101.md": [before, typeof after === "string" || after === undefined ? after : renderExpected(after)] }, acs);

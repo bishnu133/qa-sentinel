@@ -34,6 +34,8 @@ export interface LockInput {
   after: (file: string) => string | undefined;
   /** The story's current ACs, per upper-case story key, when known. Without them no AC is unlocked. */
   currentAcs?: Map<string, CurrentAc[]>;
+  /** Which stored expectations decide what is locked (default: `before`). verify passes the branch base. */
+  lockedBy?: (file: string) => string | undefined;
 }
 
 /** A lock finding: `what` happened (shown to everyone), `advice` for the AI case only. */
@@ -49,8 +51,10 @@ export interface LockFinding extends Finding {
 const TEST_FILE = /\.(spec|test)\.(ts|tsx|js|mjs|cjs)$/;
 const ASSERTION_LINE = /\bexpect(?:\.soft|\.poll)?\s*\(|\bassert(?:\.\w+)?\s*\(|\.should\s*\(|\bexpectSchema\s*\(|^\s*\.(?:not\.)?(?:to|resolves|rejects)\w*/;
 /** Added lines that can stop a test's checks from running: an early return, a condition, a try, a skip. */
-const WEAKENING = /^\s*(?:return\b|if\s*\(|try\s*\{|\}\s*catch\b|(?:test|it)\.(?:skip|fixme|fail)\s*\(|(?:test|it)\.info\(\)\.annotations|throw\b)/;
-const DECLARATION = /^\s*(?:export\s+)?(?:const|let|var)\s+([A-Za-z_$][\w$]*)/;
+const WEAKENING = /^\s*(?:return\b|if\s*\(|try\s*\{|\}\s*catch\b|for\s*\(|while\s*\(|\/\*|\/\/.*\b(?:expect|assert)\b|throw\b)|\b(?:test|it|describe)\.(?:skip|fixme|fail|only)\s*\(|\.info\(\)\.annotations|&&\s*(?:test|it)\.|\.route\s*\(|\.fulfill\s*\(|\bmock\w*\s*\(|\bnock\s*\(|\bmsw\b/;
+/** Added anywhere in a file with locked tests: switches off or narrows every test in it. */
+const FILE_WEAKENING = /\b(?:test|it)\.describe\.(?:skip|fixme|only)\b|\bdescribe\.(?:skip|only)\b|\b(?:test|it)\.only\s*\(|\b(?:beforeEach|beforeAll)\s*\(.*\b(?:skip|fixme)\b/;
+const DECLARATION = /^\s*(?:export\s+)?(?:(?:const|let|var)\s+([A-Za-z_$][\w$]*)|(?:async\s+)?function\s*\*?\s*([A-Za-z_$][\w$]*))/;
 const squash = (l: string) => l.replace(/\s+/g, " ").trim();
 /** The line with its literals blanked: two lines with the same shape differ only in values. */
 const shape = (l: string) => squash(l).replace(/(["'`])(?:\\.|(?!\1)[^\\])*\1/g, "S").replace(/-?\b\d+(?:\.\d+)?\b/g, "N");
@@ -63,7 +67,7 @@ export const expectedDirOf = (dir: string) => dir.replace(/\\/g, "/").replace(/^
 export function storyOfExpectedPath(dir: string, file: string): string | undefined {
   const d = expectedDirOf(dir);
   const p = file.replace(/\\/g, "/").replace(/^\.\/+/, "");
-  const m = p.startsWith(`${d}/`) ? p.slice(d.length + 1).match(/^([A-Za-z][A-Za-z0-9]*-\d+)\.md$/) : null;
+  const m = p.startsWith(`${d}/`) ? p.slice(d.length + 1).match(/^([A-Za-z][A-Za-z0-9_]*-\d+)\.md$/) : null;
   return m ? m[1].toUpperCase() : undefined;
 }
 
@@ -71,7 +75,9 @@ export function storyOfExpectedPath(dir: string, file: string): string | undefin
 export function unlockedAcs(stored: ExpectedFile | undefined, current: CurrentAc[] | undefined): Set<string> {
   if (!current || !stored) return new Set();
   const out = new Set<string>();
-  for (const [id, f] of freshness(stored, current)) if (f === "changed" || f === "removed") out.add(id);
+  // Only "changed" (the same id now has other text). An AC missing from the list may be a parsing gap, not a
+  // removal: its expectations stay locked (a person can retire them).
+  for (const [id, f] of freshness(stored, current)) if (f === "changed") out.add(id);
   return out;
 }
 
@@ -174,12 +180,13 @@ export function checkExpectationLockDetailed(o: LockInput): LockFinding[] {
   const out: LockFinding[] = [];
   const dir = expectedDirOf(o.expectedDir);
   const push = (f: Omit<LockFinding, "message" | "subject">) => {
-    const subject = f.what.match(/^"([^"]*)"/)?.[1] ?? f.what.match(/^[A-Za-z][A-Za-z0-9]*-\d+ ([^\s:.]+)/)?.[1] ?? f.what.match(/: ([A-Za-z_$][\w$]*) is used by/)?.[1] ?? f.what;
+    const subject = f.what.match(/^"([^"]*)"/)?.[1] ?? f.what.match(/^[A-Za-z][A-Za-z0-9_]*-\d+ ([^\s:.]+)/)?.[1] ?? f.what.match(/: ([A-Za-z_$][\w$]*) is used by/)?.[1] ?? f.what;
     out.push({ ...f, subject, message: f.advice ? `${f.what} ${f.advice}` : f.what });
   };
   const storedCache = new Map<string, Parsed>();
   const storedOf = (story: string) => {
-    if (!storedCache.has(story)) storedCache.set(story, parseState(o.before(expectedPath(dir, story)) ?? o.before(expectedPath(dir, story.toLowerCase())), story));
+    const read = o.lockedBy ?? o.before;
+    if (!storedCache.has(story)) storedCache.set(story, parseState(read(expectedPath(dir, story)) ?? read(expectedPath(dir, story.toLowerCase())), story));
     return storedCache.get(story)!;
   };
   const openOf = (story: string) => {
@@ -212,7 +219,8 @@ export function checkExpectationLockDetailed(o: LockInput): LockFinding[] {
         continue;
       }
       if (after.file.story.toUpperCase() !== before.file.story.toUpperCase()) push({ level: "violation", rule: "expectation-changed", file, what: `${file}: story changed from ${before.file.story} to ${after.file.story}` });
-      const open = unlockedAcs(before.file, o.currentAcs?.get(expStory));
+      const lockState = storedOf(expStory);
+      const open = unlockedAcs(lockState.state === "ok" ? lockState.file : before.file, o.currentAcs?.get(expStory));
       const current = o.currentAcs?.get(expStory);
       const currentHashes = new Map((current ?? []).map((c) => [c.id, currentHash(c)]));
       const afterOwner = new Map(after.file.acs.flatMap((a) => a.behaviours.map((b) => [b.id, a] as const)));
@@ -241,7 +249,13 @@ export function checkExpectationLockDetailed(o: LockInput): LockFinding[] {
             push({ level: "violation", rule: "expectation-changed", file, what: `${expStory} ${ac.id}/${b.id}: ${values}.`, advice: `Blocked: ${UNIT}, so the approved value stays. If it is wrong, a QA engineer edits the data block in this merge request; if the product does something else, that is a defect to raise.` });
           }
         }
-        if (now && !placeholder) {
+        if (now && now.id !== ac.id && !(current && current.find((c) => c.id === now.id && currentHash(c) === ac.hash))) {
+          push({ level: "violation", rule: "expectation-changed", file, what: `${expStory} ${ac.id}: its entry now says ${now.id}, but the story didn't renumber it.`, advice: `Blocked: ${UNIT}.` });
+        }
+        if (now && placeholder) {
+          // An empty entry may be filled (that's the requirements pass doing its job), but its AC text stays the story's.
+          if (now.text !== ac.text) push({ level: "violation", rule: "expectation-changed", file, what: `${expStory} ${ac.id}: its AC text was changed in the file.`, advice: `Blocked: the text is a copy of the story; change the story in Jira.` });
+        } else if (now) {
           const added = now.behaviours.filter((b) => !ac.behaviours.some((x) => x.id === b.id));
           if (added.length) push({ level: "violation", rule: "expectation-changed", file, what: `${expStory} ${ac.id}: new behaviour(s) ${added.map((b) => b.id).join(", ")} added to an approved AC.`, advice: `Blocked: ${UNIT}; a QA engineer adds cases to it.` });
           const strip = (a: typeof ac) => entryKey({ ...a, behaviours: [] });
@@ -251,6 +265,21 @@ export function checkExpectationLockDetailed(o: LockInput): LockFinding[] {
       continue;
     }
 
+    // ---- shared helpers (support code, page objects): a changed assertion or exported value may move a
+    // requirement test's expectation without touching the test. Which tests use it isn't known here: warn.
+    if (/\.(?:[cm]?[jt]sx?)$/.test(ch.path) && !TEST_FILE.test(ch.path) && ch.status === "M") {
+      const b = o.before(ch.from ?? ch.path);
+      const a = o.after(ch.path);
+      if (b !== undefined && a !== undefined) {
+        const d = lineDiff(b, a);
+        for (const r of d.removed) {
+          if (!ASSERTION_LINE.test(r.text) && !/^\s*export\s+(?:const|let|var)\b/.test(r.text)) continue;
+          const twin = d.added.find((x) => shape(x.text) === shape(r.text) && squash(x.text) !== squash(r.text));
+          if (twin) push({ level: "warning", rule: "expectation-changed", file: ch.path, what: `\`${squash(r.text)}\` → \`${squash(twin.text)}\` in shared test code: check the requirement tests that use it.` });
+        }
+      }
+      continue;
+    }
     // ---- tests tagged with ACs (and the files' top-level constants they use)
     if (!TEST_FILE.test(ch.path) || ch.status === "A" || ch.status === "?") continue;
     const beforeText = o.before(ch.from ?? ch.path);
@@ -292,7 +321,7 @@ export function checkExpectationLockDetailed(o: LockInput): LockFinding[] {
             const line = beforeText.split(/\r?\n/)[k - 1];
             if (enclosing(tb, k)) return undefined;
             const d = line.match(DECLARATION);
-            if (d) return d[1];
+            if (d) return d[1] ?? d[2];
           }
           return undefined;
         })();
@@ -306,8 +335,18 @@ export function checkExpectationLockDetailed(o: LockInput): LockFinding[] {
         }
         continue;
       }
-      if (r.n === t.line) continue; // the test's own title line: renames and tags are handled by pairing
       const { acs, soft } = lockOf(t);
+      if (r.n === t.line) {
+        // The test's own line: renames and tags are handled by pairing, but code on it (an inline assertion, a
+        // test.each row) is checked like any other line, with the title text taken out.
+        const now0 = pairs.get(t);
+        const untitled = (l: string) => l.replace(/(["'`])(?:\\.|(?!\1)[^\\])*\1/, "TITLE");
+        const nowLine = now0 ? afterText.split(/\r?\n/)[now0.line - 1] ?? "" : "";
+        if (acs.length && now0 && squash(untitled(nowLine)) !== squash(untitled(r.text)) && !/^\s*(?:test|it)(?:\.\w+)?\s*\(\s*(["'`]).*\1\s*,\s*(?:async\s*)?\([^)]*\)\s*=>\s*\{\s*$/.test(nowLine)) {
+          push({ level: level(soft), rule: "expectation-changed", file: ch.path, what: `"${t.title}" (${acs.join(", ")}): \`${squash(r.text)}\` → \`${squash(nowLine)}\`.${softNote(soft)}`, advice: soft ? undefined : `Blocked: ${UNIT}.` });
+        }
+        continue;
+      }
       if (!acs.length) continue;
       const now = pairs.get(t);
       const inNow = now ? added.filter((a) => a.n >= now.line && a.n <= now.endLine && !usedAdded.has(a.n)) : [];
@@ -326,6 +365,16 @@ export function checkExpectationLockDetailed(o: LockInput): LockFinding[] {
           what: twin ? `"${t.title}" (${acs.join(", ")}): \`${squash(r.text)}\` → \`${squash(twin.text)}\`.${softNote(soft)}` : `"${t.title}" (${acs.join(", ")}): assertion \`${squash(r.text)}\` was removed or rewritten.${softNote(soft)}`,
           advice: soft ? undefined : `Blocked: ${UNIT}. If the product does something else, that is a defect to report, not a test to change.`,
         });
+      }
+    }
+    // Added anywhere in a file that holds locked tests: switches off or narrows all of them.
+    const lockedHere = tb.filter((t) => lockOf(t).acs.length);
+    if (lockedHere.length) {
+      for (const a of added) {
+        if (!FILE_WEAKENING.test(a.text)) continue;
+        usedAdded.add(a.n);
+        const soft = lockedHere.every((t) => lockOf(t).soft);
+        push({ level: level(soft), rule: "expectation-changed", file: ch.path, what: `"${lockedHere[0].title}" and the file's other requirement tests: added \`${squash(a.text)}\`, which switches off or narrows them.${softNote(soft)}`, advice: soft ? undefined : `Blocked: ${UNIT}.` });
       }
     }
     // Added lines that can keep a locked test's checks from running.

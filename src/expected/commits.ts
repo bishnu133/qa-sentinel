@@ -98,7 +98,8 @@ export async function lockByAuthor(repo: string, c: Config, base: string): Promi
   const net = changesBetween(repo, base, "HEAD").filter((x) => !matchesAny(x.path, ARTIFACT_GLOBS));
   const fromJira = await currentAcsFor(c, storiesTouched(repo, c.tests.expectedDir, base, net));
   const currentAcs = new Map([...trailerAcs(commits), ...fromJira]);
-  const lock = (changes: FileChange[], from: string, to: string) => checkExpectationLockDetailed({ expectedDir: c.tests.expectedDir, changes, before: (f) => showFile(repo, from, f), after: (f) => showFile(repo, to, f), currentAcs });
+  // What is locked is always decided from the branch base: a person's commit in between can't open it for the AI.
+  const lock = (changes: FileChange[], from: string, to: string) => checkExpectationLockDetailed({ expectedDir: c.tests.expectedDir, changes, before: (f) => showFile(repo, from, f), after: (f) => showFile(repo, to, f), lockedBy: (f) => showFile(repo, base, f), currentAcs });
   const found = lock(net, base, "HEAD");
   if (!found.length) return [];
   const agentFound = new Map<string, string>();
