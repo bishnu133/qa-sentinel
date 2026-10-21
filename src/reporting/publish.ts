@@ -1,6 +1,7 @@
 import type { Config } from "../config.js";
 import { gitlabContext, type gitlabMrFromEnv, upsertMrNote } from "../scm/gitlab.js";
-import { capForJira, jiraContext, markdownToJiraWiki, upsertIssueComment } from "../scm/jira.js";
+import { capForJira, jiraContext, markdownToJiraWiki } from "../scm/jira.js";
+import { postToStory } from "./statusComment.js";
 import { log } from "../log.js";
 
 /**
@@ -32,7 +33,7 @@ export async function publish(
           const artifact = env.CI_JOB_URL ? `${env.CI_JOB_URL}/artifacts/file/qa-gap-report.md` : undefined;
           const source = c.reporting.jira.format === "summary" && i.jiraSummary ? i.jiraSummary : i.report;
           const body = capForJira(markdownToJiraWiki(source), c.reporting.jira.maxChars, artifact);
-          const r = await upsertIssueComment(ctx, i.storyKey, i.service, body, c.reporting.jira.visibility);
+          const r = await postToStory(c, ctx, i.storyKey, { name: `gap-report:${i.service}`, wiki: body, legacyKind: i.service });
           log.ok(`Jira ${i.storyKey}: comment ${r.action} (${r.url})`);
           done.push("jira");
         }

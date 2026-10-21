@@ -166,6 +166,15 @@ Expect "merge request is a draft; the gap report waits" and exit code 0. Without
 
 Refresh behaviour (needs a real MR with a GitLab token and AI access): mark the MR ready and let the pipeline post the report. Push a docs-only change: expect "nothing changed since the report for …" and the MR comment untouched. Push a code change: the same comment is updated and starts with "Updated for commit …".
 
+## 13. One QA status comment (writes a comment on a Jira story)
+
+Use a test story you own; this adds one comment to it. Needs Jira access with comment permission and `reporting.jira.baseUrl`/`requirements.jira.baseUrl` set.
+```bash
+qa-sentinel feature YOUR-KEY --post        # adds the "QA status" comment with a feature section
+qa-sentinel feature YOUR-KEY --post        # run again: the same comment is edited, no second comment
+```
+Expect one comment titled "QA status · YOUR-KEY", with "Updated … UTC" under the section. If you also run `gap-report --post` for the story (a dev MR), its section is added to the same comment.
+
 ## What to send back
 
 - Output of steps 2, 3, 5 and 6 (copy the terminal text).

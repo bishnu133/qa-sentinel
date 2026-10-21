@@ -8,7 +8,8 @@ import { createRunDir, findService, testEnv, useEnvironment } from "../run.js";
 import { verificationMarkdown, verifyChanges, type VerificationReport } from "../verification.js";
 import { applyDeploymentGate, deploymentStates, needsFromCommits } from "../deployment.js";
 import { call, createOrUpdateMergeRequest, getAll, gitlabContext, pushUrl, type GitLabContext } from "../scm/gitlab.js";
-import { jiraContext, markdownToJiraWiki, upsertIssueComment } from "../scm/jira.js";
+import { jiraContext, markdownToJiraWiki } from "../scm/jira.js";
+import { postToStory } from "../reporting/statusComment.js";
 import { log } from "../log.js";
 
 export interface PostDeployOptions {
@@ -121,7 +122,7 @@ export async function postDeployCommand(o: PostDeployOptions): Promise<number> {
     md.push(body, "");
     if (o.post && (x.status === "passed" || x.status === "failed" || x.status === "waiting")) {
       const jira = jiraContext(c.requirements.jira.baseUrl);
-      if (jira) await upsertIssueComment(jira, x.story, "post-deploy", markdownToJiraWiki(body), c.reporting.jira.visibility, "qa-sentinel:post-deploy").catch((e) => log.warn(`  Jira ${x.story}: ${(e as Error).message}`));
+      if (jira) await postToStory(c, jira, x.story, { name: "post-deploy", wiki: markdownToJiraWiki(body), legacyKind: "post-deploy", legacyMarker: "qa-sentinel:post-deploy" }).catch((e) => log.warn(`  Jira ${x.story}: ${(e as Error).message}`));
     }
     log[x.status === "passed" ? "ok" : x.status === "failed" ? "fail" : "warn"](`${x.story}: ${head}`);
   }

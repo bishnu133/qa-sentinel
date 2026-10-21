@@ -442,6 +442,8 @@ export const ConfigSchema = z.object({
         .object({
           /** summary: plain-language status per acceptance criterion (default); full: the whole technical report. */
           format: z.enum(["summary", "full"]).default("summary"),
+          /** single (default): one QA status comment per story, with a section per check; separate: one comment per kind (the old layout). */
+          layout: z.enum(["single", "separate"]).default("single"),
           /** Restrict the Jira comment, e.g. { type: "role", value: "Developers" }. */
           visibility: z.object({ type: z.enum(["role", "group"]), value: z.string() }).optional(),
           /** Jira caps comments at 32,767 characters; longer reports are cut and linked to the CI artifact. */

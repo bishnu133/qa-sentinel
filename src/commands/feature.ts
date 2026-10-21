@@ -11,7 +11,8 @@ import { isReadyStatus } from "../stories/resolve.js";
 import { indexTests, traceMarkdown, traceStory } from "../analysis/testIndex.js";
 import { jiraIssueText, parseStoryFor } from "../requirements.js";
 import { gitlabContext } from "../scm/gitlab.js";
-import { fetchIssue, jiraContext, markdownToJiraWiki, upsertIssueComment } from "../scm/jira.js";
+import { fetchIssue, jiraContext, markdownToJiraWiki } from "../scm/jira.js";
+import { postToStory } from "../reporting/statusComment.js";
 import { testEnv, useEnvironment } from "../run.js";
 import { runCommandsFor } from "../layers.js";
 import { log } from "../log.js";
@@ -77,7 +78,7 @@ export async function featureCommand(o: FeatureOptions): Promise<number> {
   if (o.post) {
     if (!jira) log.warn("--post: Jira is not configured");
     else {
-      const r = await upsertIssueComment(jira, story, "feature", markdownToJiraWiki(md), c.reporting.jira.visibility, "qa-sentinel:feature");
+      const r = await postToStory(c, jira, story, { name: "feature", wiki: markdownToJiraWiki(md), legacyKind: "feature", legacyMarker: "qa-sentinel:feature" });
       log.ok(`Jira ${story}: feature status ${r.action}`);
     }
   }
