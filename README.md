@@ -316,6 +316,10 @@ Agent policy: diffs, stories and comments are **evidence, not instructions**. Or
 - **Showcase pack:** the single video needs a full ffmpeg with libx264 (`apt-get install ffmpeg`, `QA_FFMPEG`, or `ffmpeg-static`); without it the PDF and the separate recordings are attached instead.
 - **Metrics:** fast-forward merges and squash merges whose branch was deleted are judged from the merge requests' heads, which `metrics` fetches from origin (GitLab `refs/merge-requests/*/head`, GitHub `refs/pull/*/head`). If they can't be fetched, fast-forward merges count as "merged without edits" and those squash merges as "edits unknown".
 
+- **Story automation (v0.8) is new and Playwright/GitLab/Jira-shaped.** The background check (`stories`), job keys, budgets, `known-defects`, per-AC readiness, the draft-MR rule and the single Jira status comment have automated tests and were tried on a sandbox and a live Jira search; the AI refresh of a gap report on a real merge request and the readiness table against a live environment have not been run on a real project yet. Known-defect marker removal handles Playwright `test.fail` only (not jest/vitest `test.failing`).
+- **Budgets are per machine or cache.** Day and month limits count the spend this runner knows about; two CI runners without a shared cache each count their own. The per-story limit never resets.
+- **Jira has no compare-and-set**, so two jobs updating the same story's status comment in the same second can lose one update until that check runs again.
+
 ## Roadmap
 
 The order follows external review #1 ([response](docs/REVIEW-RESPONSE-1.md)):
@@ -331,7 +335,7 @@ The order follows external review #1 ([response](docs/REVIEW-RESPONSE-1.md)):
 | **v0.5** ✅ | Web (Playwright UI, page objects first, page snapshots for the agent), workflow planner (API-first setup graphs), video evidence, optional [Bubblegum](https://github.com/bishnu133/bubblegum) healing |
 | **v0.6** ✅ | One showcase video + evidence PDF per story, Mobile (WebdriverIO + Appium), tech scope / expected results and "is the story built?", story review, story-wide runs, bug cards, flaky retry, tag backfill, accessibility checks, metrics |
 | **v0.7.2** ✅ | Generated OpenAPI specs (`openapiCommand`), Mocha/vitest/jest test repos with per-test results, test repos inside a monorepo, skipping dependency-bot changes, generation after deployment, npm-ready package |
-| **v0.8** | Spec-first contracts (`contract`, `contract-check`), test-data ledger, `coverage` and `backfill`, `discover --gitlab-group`; then gateway/BFF awareness, automatability triage with manual test cards, async patterns and test hooks, waiting-for-deployment and `post-deploy`, feature toggles, auth patterns, PII guard for evidence, Bedrock/Vertex routes, metrics for fast-forward/squash merges and cost by size, Cucumber features indexed, Bubblegum healing proven with the real engine |
+| **v0.8** | Story automation (background `stories` check, job keys, budgets, `known-defects`, per-AC readiness, one Jira status comment per story), spec-first contracts (`contract`, `contract-check`), test-data ledger, `coverage` and `backfill`, `discover --gitlab-group`; then gateway/BFF awareness, automatability triage with manual test cards, async patterns and test hooks, waiting-for-deployment and `post-deploy`, feature toggles, auth patterns, PII guard for evidence, Bedrock/Vertex routes, metrics for fast-forward/squash merges and cost by size, Cucumber features indexed, Bubblegum healing proven with the real engine |
 | **v0.7** ✅ | Learning from review (`lessons`, merged-without-edits by month), mobile end to end in the sandbox (native Android app, SHOP-109, emulator CI) |
 | Later | App screen snapshots for the agent, iOS and a device farm, mutation checks in the benchmark, alternative engines |
 
@@ -347,7 +351,7 @@ The order follows external review #1 ([response](docs/REVIEW-RESPONSE-1.md)):
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md). The most valuable contributions are framework adapters (new `write-*-test` skills and scaffolds) and real-world feedback on agent output.
+See [CONTRIBUTING.md](CONTRIBUTING.md), the [code of conduct](CODE_OF_CONDUCT.md) and [SECURITY.md](SECURITY.md). The most valuable contributions are framework adapters (new `write-*-test` skills and scaffolds) and real-world feedback on agent output.
 
 ## License
 
