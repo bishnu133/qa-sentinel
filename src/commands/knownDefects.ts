@@ -35,7 +35,7 @@ export async function knownDefectsCommand(o: KnownDefectsOptions): Promise<numbe
   if (o.commit && !o.apply) throw new Error("--commit needs --apply");
   if (o.push && !o.commit) throw new Error("--push needs --commit");
   const file = path.resolve(cwd, o.results ?? "test-results/results.json");
-  if (!fs.existsSync(file)) throw new Error(`No test results at ${path.relative(cwd, file)}: run the suite first (npx playwright test --reporter=json > test-results/results.json), or pass --results <file>`);
+  if (!fs.existsSync(file)) throw new Error(`No test results at ${path.relative(cwd, file)}: run the suite first (PLAYWRIGHT_JSON_OUTPUT_NAME=test-results/results.json npx playwright test --reporter=json; a shell ">" redirect into test-results/ does not work because Playwright empties that folder), or pass --results <file>`);
   const results = readRunResults(file);
   const index = indexTests(cwd, c);
   const all = defectStatuses(index, results);

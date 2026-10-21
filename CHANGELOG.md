@@ -13,6 +13,7 @@
 ### Fixed in review (phase 2)
 
 - `known-defects` did not recognise a fixed bug in real Playwright reports: the JSON report has no error for a `test.fail` test that passes, and JUnit puts "Expected to fail, but passed." in the failure body. Both are read now (checked against Playwright 1.64 output).
+- Guide step 6 and the `known-defects` error message told you to write the JSON report with a shell redirect into `test-results/`, which Playwright empties at the start of a run; they now use `PLAYWRIGHT_JSON_OUTPUT_NAME`.
 - `generate`: tests committed while verification was not VERIFIED (e.g. waiting for deployment) counted as a failed job, so a retry generated them again and three retries blocked the job. Committed tests now end the job as done.
 - Job attempts count failures in a row; a done run resets the count.
 - Trimming the story record drops finished gap-report / review jobs first, so a done spec or generate job is not forgotten (and paid for again).

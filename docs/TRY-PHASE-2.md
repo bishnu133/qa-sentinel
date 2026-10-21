@@ -89,7 +89,9 @@ test.fail("rejects a fourth order @story:SHOP-101 @ac:AC-1", async () => {
 });
 TS
 # A real run: the bug is "fixed" (the test passes), so Playwright reports "Expected to fail, but passed".
-npx playwright test tests/api/demo/defects.spec.ts --reporter=json > test-results/results.json || true
+# (Not "> test-results/results.json": Playwright empties test-results/ when it starts and the file is lost.)
+PLAYWRIGHT_JSON_OUTPUT_NAME=test-results/results.json npx playwright test tests/api/demo/defects.spec.ts --reporter=json || true
+ls test-results/results.json               # must exist
 git add -A tests && git commit -qm "demo defect"
 qa-sentinel known-defects                  # report only
 git diff --stat                            # nothing changed yet
