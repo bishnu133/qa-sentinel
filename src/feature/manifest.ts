@@ -3,7 +3,7 @@ import path from "node:path";
 import type { Config, ServiceConfig } from "../config.js";
 import { git, isGitRepo } from "../git.js";
 import { call, type GitLabContext } from "../scm/gitlab.js";
-import { findRevert } from "../release/git.js";
+import { findCherryPicks, findRevert } from "../release/git.js";
 
 /**
  * Feature manifest: one story, many services. Assembled automatically (nobody hand-writes YAML per feature):
@@ -77,8 +77,20 @@ export function partFromGit(repo: string, s: ServiceConfig, story: string, targe
     }
   };
   // The tip of the story's work: a deployment includes the change exactly when it contains this commit.
-  const merged = onTarget(tip);
+  let merged = onTarget(tip);
   const related = [...new Set([tip, ...commits])];
+  // A hotfix is branched from production and cherry-picked: its branch never merges, but the change is on the target branch.
+  if (!merged && target) {
+    try {
+      const picks = findCherryPicks(repo, tip, target);
+      if (picks.length) {
+        merged = true;
+        related.push(...picks.map((p) => p.commit));
+      }
+    } catch {
+      /* no cherry-pick found */
+    }
+  }
   if (merged && target) {
     try {
       const m = git(repo, ["log", "--ancestry-path", "--merges", "--format=%H", `${tip}..${target}`]).split("\n").filter(Boolean).pop();

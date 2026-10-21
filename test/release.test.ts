@@ -219,3 +219,18 @@ describe("review fixes", () => {
     expect(row.testCommits).toHaveLength(1);
   });
 });
+
+describe("hotfix branch cherry-picked to main", () => {
+  it("counts as merged, and as reverted when the cherry-pick is reverted", async () => {
+    const { r, fix } = repo();
+    g(r, "cherry-pick", "-x", fix);
+    const { partFromGit, featureStatus: fstat } = await import("../src/feature/manifest.js");
+    const svc: any = { name: "orders" };
+    const p1 = partFromGit(r, svc, "SHOP-9", "main")!;
+    expect(p1.merged).toBe(true);
+    expect(fstat([p1])).toBe("merged");
+    g(r, "revert", "--no-edit", "HEAD");
+    const p2 = partFromGit(r, svc, "SHOP-9", "main")!;
+    expect(findRevert(r, [p2.sha!, ...(p2.related ?? [])], "main")).toBeDefined();
+  });
+});
