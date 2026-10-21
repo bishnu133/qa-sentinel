@@ -164,13 +164,13 @@ Two parts need a real GitLab MR and AI access, so skip them unless you have one 
 
 Only if your config has `workspace.services` with a `version` endpoint and a story whose `expected/<KEY>.md` lists `Services` per AC. KEY is the Jira card key of the story, for example SHOP-101.
 ```bash
-qa-sentinel feature SHOP-101 --env uat
+qa-sentinel feature SHOP-101 --env local --story-file ../stories/SHOP-101.md
 ```
-Expect a table "Ready for end-to-end tests, per acceptance criterion". An AC that names only a deployed service shows ✅ even if another service of the same story is still waiting. Without a version endpoint it shows "can't tell", which is correct. The rules are also covered by automated tests.
+(`local` is the environment name from your config; `SHOP-101` is only an example key; `--story-file` gives it the ACs when Jira is not set up.) Expect a table "Ready for end-to-end tests, per acceptance criterion". An AC that names only a deployed service shows ✅ even if another service of the same story is still waiting. Without a version endpoint it shows "can't tell", which is correct. The rules are also covered by automated tests.
 
 ## 14. One QA status comment on a Jira story (adds one comment; optional)
 
-KEY is the Jira card key of a TEST story you own (a card where one extra comment does no harm). Needs your Jira URL in the config and your Jira login in the environment variables, as in step 10.
+KEY is only a placeholder: replace it with the real Jira card key (for example HPBPPH-123) of a TEST story you own (a card where one extra comment does no harm). Needs your Jira URL in the config and your Jira login in the environment variables, as in step 10.
 ```bash
 qa-sentinel feature KEY --post
 qa-sentinel feature KEY --post
