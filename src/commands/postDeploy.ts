@@ -63,7 +63,7 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 export interface StoryOutcome {
   story: string;
-  status: "passed" | "failed" | "waiting" | "no-tests" | "not-merged" | "blocked" | "bdd-only";
+  status: "passed" | "failed" | "waiting" | "no-tests" | "not-merged" | "reverted" | "blocked" | "bdd-only";
   manifest: FeatureManifest;
   report?: VerificationReport;
 }
@@ -102,6 +102,7 @@ export async function postDeployCommand(o: PostDeployOptions): Promise<number> {
     const bddOnly = !tests.length && index.some((t) => t.stories.includes(story) && t.status === "active" && t.bdd);
     if (manifest.status === "waiting-for-deployment") outcomes.push({ story, status: "waiting", manifest });
     else if (manifest.status === "in-development") outcomes.push({ story, status: "not-merged", manifest });
+    else if (manifest.status === "reverted") outcomes.push({ story, status: "reverted", manifest });
     else if (bddOnly) outcomes.push({ story, status: "bdd-only", manifest });
     else if (!tests.length) outcomes.push({ story, status: "no-tests", manifest });
     else {
@@ -117,7 +118,7 @@ export async function postDeployCommand(o: PostDeployOptions): Promise<number> {
 
   const md = ["# After deployment", "", `Environment: **${environment}**`, ""];
   for (const x of outcomes) {
-    const head = { passed: "✅ tests passed", failed: "❌ tests failed", waiting: "⏳ waiting for deployment", "no-tests": "⬜ no tests tagged", "not-merged": "🚧 not merged yet", blocked: "⛔ tests could not run", "bdd-only": "🥒 deployed; its tests are Cucumber scenarios: run them with your BDD job" }[x.status];
+    const head = { passed: "✅ tests passed", failed: "❌ tests failed", waiting: "⏳ waiting for deployment", "no-tests": "⬜ no tests tagged", "not-merged": "🚧 not merged yet", blocked: "⛔ tests could not run", reverted: "↩️ reverted: tests held back", "bdd-only": "🥒 deployed; its tests are Cucumber scenarios: run them with your BDD job" }[x.status];
     const body = [`## ${x.story}: ${head}`, "", featureMarkdown(x.manifest).replace(/^#+ .*\n/, ""), ...(x.report ? ["", verificationMarkdown(x.report)] : [])].join("\n");
     md.push(body, "");
     if (o.post && (x.status === "passed" || x.status === "failed" || x.status === "waiting")) {

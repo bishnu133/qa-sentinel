@@ -112,7 +112,7 @@ async function codeState(c: Config, cwd: string, key: string, gitlab: GitLabCont
   if (!reachable) return "unknown";
   try {
     const m = await assembleFeature({ c, cwd, story: key, gitlab });
-    return m.status === "no-changes-found" ? "none" : m.status === "in-development" ? "unmerged" : "merged";
+    return m.status === "no-changes-found" ? "none" : m.status === "in-development" || m.status === "reverted" ? "unmerged" : "merged";
   } catch {
     return "unknown";
   }

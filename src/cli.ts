@@ -25,6 +25,9 @@ import { generateCommand } from "./commands/generate.js";
 import { traceCommand } from "./commands/trace.js";
 import { showcaseCommand } from "./commands/showcase.js";
 import { featureCommand } from "./commands/feature.js";
+import { hotfixCommand } from "./commands/hotfix.js";
+import { suiteCommand } from "./commands/suite.js";
+import { releaseFeaturesCommand } from "./commands/releaseFeatures.js";
 import { verifyCommand } from "./commands/verify.js";
 import { VERSION } from "./run.js";
 import { log } from "./log.js";
@@ -343,6 +346,36 @@ program
   .option("--post", "post the feature status on the Jira story")
   .option("--json", "print the manifest as JSON")
   .action(wrap(async (story, o) => featureCommand({ cwd: cwd(), story, ...o })));
+
+program
+  .command("suite")
+  .description("no AI: the tests that fit what an environment has deployed (--env) or what a release contains (--tag); features not there yet are left out with the reason")
+  .option("--env <name>", "environment from `environments:`; asks each service which commit it runs")
+  .option("--tag <ref>", "release tag or branch: what that release contains")
+  .option("--run", "run the selected tests")
+  .option("--json", "print JSON")
+  .option("-o, --out <base>", "output file name without extension", "qa-suite")
+  .action(wrap(async (o) => suiteCommand({ cwd: cwd(), ...o })));
+
+program
+  .command("hotfix")
+  .description("no AI: where a hotfix stands: its cherry-pick on the main branch (by -x line or patch id) and whether tests were written from it")
+  .requiredOption("-s, --service <name|path>", "service the hotfix is in")
+  .option("--service-path <dir>", "override where the service repo is checked out")
+  .option("--commit <sha>", "a hotfix commit (repeat the option for more)", (v: string, prev: string[] = []) => [...prev, v])
+  .option("--range <range>", "or a range, e.g. production..hotfix/orders-1")
+  .option("--story <key>", "the story (default: from the commit message)")
+  .option("--post", "put the status in the Jira story's QA status comment")
+  .option("--json", "print JSON")
+  .action(wrap(async (o) => hotfixCommand({ cwd: cwd(), ...o })));
+
+program
+  .command("release-features")
+  .description("no AI: which stories a release contains (story keys in commits between two tags, per service)")
+  .requiredOption("--tag <ref>", "the release tag")
+  .option("--from <ref>", "the previous tag")
+  .option("--json", "print JSON")
+  .action(wrap(async (o) => releaseFeaturesCommand({ cwd: cwd(), ...o })));
 
 program
   .command("showcase")

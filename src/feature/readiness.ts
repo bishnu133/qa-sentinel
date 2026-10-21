@@ -7,7 +7,7 @@ import type { FeatureManifest } from "./manifest.js";
  * deployed in the environment, and (when known) the Jira card is in a ready status. An AC that names no service
  * needs every part of the story. Decided by fixed rules from facts, never by an AI.
  */
-export type AcState = "ready" | "not-merged" | "waiting-for-status" | "waiting-for-deployment" | "undetermined";
+export type AcState = "ready" | "reverted" | "not-merged" | "waiting-for-status" | "waiting-for-deployment" | "undetermined";
 
 export interface AcReadiness {
   ac: string;
@@ -29,6 +29,8 @@ export function acReadiness(m: FeatureManifest, expected: ExpectedFile | undefin
     const note = ignored.length && parts.length ? ` (${ignored.join(", ")} named by the AC, not changed in this story: not waited for)` : "";
     const done = (state: AcState, reason: string): AcReadiness => ({ ac, state, services, reason: reason + note });
     if (!parts.length) return done("undetermined", named.length ? `the story has no change in ${named.join(", ")}, which this AC names (check "Services" for ${ac} in the expected-behaviour file)` : "no service change found for the story");
+    const gone = parts.filter((p) => p.reverted);
+    if (gone.length) return done("reverted", `reverted: ${gone.map((p) => `${p.service} (by ${p.reverted!.slice(0, 8)})`).join(", ")}`);
     const open = parts.filter((p) => !p.merged);
     if (open.length) return done("not-merged", `not merged yet: ${open.map((p) => p.service).join(", ")}`);
     if (jiraReady === false) return done("waiting-for-status", "the Jira card is not in a ready status yet");
@@ -41,7 +43,7 @@ export function acReadiness(m: FeatureManifest, expected: ExpectedFile | undefin
   });
 }
 
-const ICON: Record<AcState, string> = { ready: "✅ ready", "not-merged": "🛠️ not merged", "waiting-for-status": "⏳ waiting for Jira status", "waiting-for-deployment": "⏳ waiting for deployment", undetermined: "❔ can't tell" };
+const ICON: Record<AcState, string> = { ready: "✅ ready", reverted: "↩️ reverted", "not-merged": "🛠️ not merged", "waiting-for-status": "⏳ waiting for Jira status", "waiting-for-deployment": "⏳ waiting for deployment", undetermined: "❔ can't tell" };
 
 export function readinessMarkdown(rows: AcReadiness[]): string[] {
   if (!rows.length) return [];

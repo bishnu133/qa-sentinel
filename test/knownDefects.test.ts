@@ -185,3 +185,20 @@ describe("notes in the comment block", () => {
     expect(e.removed).toEqual(["// QA-BUG: SHOP-9", "// QA-AGENT: confirmed by QA"]);
   });
 });
+
+describe("Jest test.failing and Vitest test.fails", () => {
+  const src = (kind: string) => `// QA-BUG: SHOP-9\n// QA-AGENT: expected 409\ntest.${kind}("fixed bug", async () => {});\n// QA-BUG: SHOP-8\ntest.${kind}("still broken", async () => {});\n`;
+  for (const [kind, dir] of [["failing", "jest-fails"], ["fails", "vitest-fails"]] as const)
+    it(`${kind}: indexed as known defects, the fixed one is found in the real report, and its marker comes off`, () => {
+      const idx = indexSource("tests/a.test.ts", src(kind));
+      expect(idx.map((t) => t.status)).toEqual(["known-defect", "known-defect"]);
+      const results = readRunResults(path.join(__dirname, "fixtures", dir, "results.xml"));
+      const st = defectStatuses(idx, results);
+      expect(st.map((s) => s.state)).toEqual(["fixed", "still-failing"]);
+      const edit = removeMarkers(src(kind), idx[0]);
+      expect(edit.text).toContain('test("fixed bug"');
+      expect(edit.text).not.toContain(`test.${kind}("fixed bug"`);
+      expect(edit.text).toContain(`test.${kind}("still broken"`);
+      expect(edit.removed).toEqual(["// QA-BUG: SHOP-9", "// QA-AGENT: expected 409"]);
+    });
+});

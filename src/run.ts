@@ -77,6 +77,8 @@ export const ARTIFACT_GLOBS = [
   "qa-sentinel-summary.md",
   "qa-gap-report.md",
   "qa-regression.txt",
+  "qa-suite.md",
+  "qa-suite.txt",
   "qa-feature-*",
   "qa-showcase.md",
   "qa-showcase/**",

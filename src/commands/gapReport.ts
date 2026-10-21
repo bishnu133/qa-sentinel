@@ -311,6 +311,8 @@ async function gapReportBody(o: GapReportOptions, wrap: (e: AgentEngine) => Agen
     log.fail(`no valid plan: ${outcome.message ?? outcome.status}`);
   }
   if (previousHead) report = `${updatedLine(cs.head, previousHead)}\n\n${report}`;
+  const hotBranch = [mr.sourceBranch, mr.targetBranch].find((b) => b && matchesAny(b, c.ci.hotfixBranches));
+  if (hotBranch) report = `> 🩹 **Hotfix or release branch** (\`${hotBranch}\` matches ci.hotfixBranches). If this is a hotfix: tests are written once, when the change reaches \`${c.ci.targetBranch}\` by cherry-pick. Until then, run the regression selection below against the hotfix environment. \`qa-sentinel hotfix --service ${service.name} --commit <sha>\` shows where the cherry-pick stands.\n\n${report}`;
   fs.writeFileSync(out, report);
   fs.writeFileSync(path.join(run.dir, "report.md"), report);
   writeManifest(run, manifest);

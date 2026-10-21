@@ -3,6 +3,7 @@ import path from "node:path";
 import type { Config, ServiceConfig } from "../config.js";
 import { git, isGitRepo } from "../git.js";
 import { call, type GitLabContext } from "../scm/gitlab.js";
+import { findCherryPicks, findRevert } from "../release/git.js";
 
 /**
  * Feature manifest: one story, many services. Assembled automatically (nobody hand-writes YAML per feature):
@@ -19,10 +20,14 @@ export interface ServicePart {
   /** The commit that carries the change on the target branch (merge commit) or the branch tip when not merged. */
   sha?: string;
   merged: boolean;
+  /** The commit on the target branch that reverts this change (found in the local clone, when there is one). */
+  reverted?: string;
+  /** Every non-revert commit of the story found in the clone, and the merge commit that brought it to the target branch: what a revert may name. */
+  related?: string[];
   deployed?: { environment: string; sha?: string; includesChange?: boolean; error?: string };
 }
 
-export type FeatureStatus = "no-changes-found" | "in-development" | "waiting-for-deployment" | "ready-for-feature-tests" | "merged";
+export type FeatureStatus = "no-changes-found" | "reverted" | "in-development" | "waiting-for-deployment" | "ready-for-feature-tests" | "merged";
 
 export interface FeatureManifest {
   story: string;
@@ -50,6 +55,7 @@ export function partFromGit(repo: string, s: ServiceConfig, story: string, targe
     .filter(Boolean)
     .map((l) => l.split("\t"))
     .filter(([, msg]) => re.test(msg ?? ""))
+    .filter(([, msg]) => !/^Revert\b/i.test((msg ?? "").trim()))
     .map(([sha]) => sha);
   if (!branches.length && !commits.length) return undefined;
   const target = ["origin/" + targetBranch, targetBranch].find((b) => {
@@ -71,7 +77,29 @@ export function partFromGit(repo: string, s: ServiceConfig, story: string, targe
     }
   };
   // The tip of the story's work: a deployment includes the change exactly when it contains this commit.
-  return { service: s.name, source: "git", branch: branches[0]?.[0], sha: tip, merged: onTarget(tip) };
+  let merged = onTarget(tip);
+  const related = [...new Set([tip, ...commits])];
+  // A hotfix is branched from production and cherry-picked: its branch never merges, but the change is on the target branch.
+  if (!merged && target) {
+    try {
+      const picks = findCherryPicks(repo, tip, target);
+      if (picks.length) {
+        merged = true;
+        related.push(...picks.map((p) => p.commit));
+      }
+    } catch {
+      /* no cherry-pick found */
+    }
+  }
+  if (merged && target) {
+    try {
+      const m = git(repo, ["log", "--ancestry-path", "--merges", "--format=%H", `${tip}..${target}`]).split("\n").filter(Boolean).pop();
+      if (m) related.push(m);
+    } catch {
+      /* no merge commit: a fast-forward or squash */
+    }
+  }
+  return { service: s.name, source: "git", branch: branches[0]?.[0], sha: tip, merged, related };
 }
 
 /** GitLab: merge requests whose title, description or source branch carry the story key. */
@@ -144,6 +172,7 @@ export async function checkDeployment(part: ServicePart, s: ServiceConfig, envir
 
 export function featureStatus(parts: ServicePart[], environment?: string): FeatureStatus {
   if (!parts.length) return "no-changes-found";
+  if (parts.some((p) => p.reverted)) return "reverted";
   if (parts.some((p) => !p.merged)) return "in-development";
   if (!environment) return "merged";
   return parts.every((p) => p.deployed?.includesChange) ? "ready-for-feature-tests" : "waiting-for-deployment";
@@ -156,6 +185,8 @@ export async function assembleFeature(i: {
   gitlab?: GitLabContext;
   environment?: string;
   baseUrl?: string;
+  /** Also ask the environment about changes that are not on the main branch yet (a hotfix is deployed before it is cherry-picked). */
+  checkUnmerged?: boolean;
 }): Promise<FeatureManifest> {
   const notes: string[] = [];
   const parts: ServicePart[] = [];
@@ -169,7 +200,24 @@ export async function assembleFeature(i: {
       notes.push(`${s.name}: could not look for ${i.story}: ${(e as Error).message}`);
     }
     if (!part) continue;
-    if (i.environment && i.baseUrl && part.merged) part.deployed = await checkDeployment(part, s, i.environment, i.baseUrl, fs.existsSync(repo) ? repo : undefined, i.gitlab);
+    if (part.merged && part.sha && fs.existsSync(repo) && isGitRepo(repo)) {
+      const target = ["origin/" + i.c.ci.targetBranch, i.c.ci.targetBranch].find((b) => {
+        try {
+          git(repo, ["rev-parse", "--verify", "-q", b]);
+          return true;
+        } catch {
+          return false;
+        }
+      });
+      if (target) {
+        try {
+          part.reverted = findRevert(repo, [part.sha, ...(part.related ?? [])], target);
+        } catch (e) {
+          notes.push(`${s.name}: could not check whether ${i.story} was reverted: ${(e as Error).message.split("\n")[0]}`);
+        }
+      }
+    }
+    if (i.environment && i.baseUrl && (part.merged || i.checkUnmerged) && !part.reverted) part.deployed = await checkDeployment(part, s, i.environment, i.baseUrl, fs.existsSync(repo) ? repo : undefined, i.gitlab);
     parts.push(part);
   }
   return { story: i.story, environment: i.environment, parts, status: featureStatus(parts, i.environment), notes };
@@ -177,6 +225,7 @@ export async function assembleFeature(i: {
 
 const STATUS_TEXT: Record<FeatureStatus, string> = {
   "no-changes-found": "⬜ No service changes found for this story",
+  reverted: "↩️ A change of this story was reverted: its tests are held back (never deleted) until it lands again",
   "in-development": "🛠️ In development: not every service change is merged",
   merged: "🔀 All service changes merged (no environment checked)",
   "waiting-for-deployment": "⏳ Merged, waiting for every service to be deployed",
@@ -193,8 +242,8 @@ export function featureMarkdown(m: FeatureManifest, extra: string[] = []): strin
     lines.push("", `| Service | Change | Merged | ${m.environment ? `Deployed on ${m.environment}` : "Deployed"} |`, "| --- | --- | --- | --- |");
     for (const p of m.parts) {
       const change = p.mr ? `[!${p.mr.iid}](${p.mr.url}) ${p.mr.title}` : `${p.branch ?? "commits"} @ \`${(p.sha ?? "").slice(0, 8)}\``;
-      const dep = !m.environment ? "–" : !p.merged ? "–" : p.deployed?.error ? `❔ ${p.deployed.error}` : p.deployed?.includesChange ? `✅ \`${p.deployed.sha?.slice(0, 8)}\`` : p.deployed?.includesChange === undefined ? `❔ running \`${p.deployed?.sha?.slice(0, 8)}\` (can't tell if it includes the change)` : `⏳ running \`${p.deployed?.sha?.slice(0, 8)}\``;
-      lines.push(`| ${p.service} | ${change} | ${p.merged ? "✅" : "🛠️ not yet"} | ${dep} |`);
+      const dep = !m.environment ? "–" : p.reverted ? "–" : !p.merged ? "–" : p.deployed?.error ? `❔ ${p.deployed.error}` : p.deployed?.includesChange ? `✅ \`${p.deployed.sha?.slice(0, 8)}\`` : p.deployed?.includesChange === undefined ? `❔ running \`${p.deployed?.sha?.slice(0, 8)}\` (can't tell if it includes the change)` : `⏳ running \`${p.deployed?.sha?.slice(0, 8)}\``;
+      lines.push(`| ${p.service} | ${change} | ${p.reverted ? `↩️ reverted by \`${p.reverted.slice(0, 8)}\`` : p.merged ? "✅" : "🛠️ not yet"} | ${dep} |`);
     }
   }
   lines.push(...extra);

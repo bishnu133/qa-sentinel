@@ -475,6 +475,8 @@ export const ConfigSchema = z.object({
       .optional()
       .describe("GitLab project path or id of the test repo, e.g. group/qa-tests"),
     targetBranch: z.string().default("main"),
+    /** Branches that carry hotfixes to production (patterns). A change merged here gets no test generation: tests are written once, when the change reaches the target branch by cherry-pick. */
+    hotfixBranches: z.array(z.string()).default(["hotfix/*", "release/*"]),
   }),
   agent: z
     .object({

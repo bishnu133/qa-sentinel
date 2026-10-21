@@ -55,7 +55,7 @@ Before the first AI call qa-sentinel makes one tiny call (`agent.accessCheckSeco
 
 ## Known defects fixed: `qa-sentinel known-defects` (no AI)
 
-A known defect is `test.fail` + `// QA-BUG: <link>`. When the bug is fixed, Playwright reports it as failed with "Expected to fail, but passed". After a run:
+A known defect is `test.fail` (Playwright), `test.failing` (Jest) or `test.fails` (Vitest) + `// QA-BUG: <link>`. When the bug is fixed, Playwright reports it as failed with "Expected to fail, but passed". After a run:
 ```bash
 qa-sentinel known-defects                    # report: fixed / still failing / inconclusive / not run
 qa-sentinel known-defects --apply            # edit the files: test.fail -> test, remove the QA-BUG and QA-AGENT note lines above it
@@ -98,3 +98,13 @@ While an MR is a draft, `gap-report --post` puts a short "waiting" note in the r
 ## One QA status comment per story (phase 4)
 
 On the Jira story qa-sentinel keeps **one** comment, "QA status · KEY", with a section per check: `feature` (readiness per AC), `gap-report:<service>`, `story-review`, `bugs`, `post-deploy`. A command replaces only its own section and shows when it last ran; sections are always in the same order. Jira has no compare-and-set, so if two jobs update different sections in the same second one update can be lost; the next run of that check restores it. The comment is kept under Jira's size limit by shortening the biggest section (the full report is the CI artifact). `reporting.jira.layout: separate` goes back to one comment per kind. The showcase comment is separate because it @mentions people. Old comments from earlier versions are not deleted.
+
+
+## Hotfixes, releases and environments (phase 5)
+
+- **Hotfix flow.** The hotfix is branched from production and cherry-picked to main. The hotfix MR gets the gap report as usual, with a note that the regression selection is what to run against the hotfix environment. `generate` does not write tests on branches matching `ci.hotfixBranches`: tests are written once, when the change reaches main. `qa-sentinel hotfix --service s --commit <sha>` shows whether the cherry-pick exists (matched by its `-x` line or by patch id, so a plain cherry-pick works too) and whether tests were written.
+- **Release contents.** `release-features --tag v3.4 --from v3.3` lists stories by the keys in commit messages. Needs the service repos checked out with the tags fetched.
+- **Environment-aware suite.** `suite --env uat` asks each service which commit it runs and leaves out tests of features not deployed there; `suite --tag v3.4` uses what the tag contains. Stories with no change found, or where the environment cannot tell, are treated as established and run (the table says so). Tests without `@story` always run.
+- **Reverts.** A change reverted on main (a "This reverts commit" message) is shown as `reverted`; its tests are held back by `suite`, never deleted.
+- Hotfix branches in `generate`: the service pipeline passes its branch as `QA_SERVICE_BRANCH` (the shipped GitLab template does; for Jenkins pass it yourself). Without it nothing is skipped. The gap-report note also appears for merge requests whose source branch matches `ci.hotfixBranches`.
+- Limits: `generate --story` can still write tests for a reverted part. `suite --run` passes `file:line` to the runner (Playwright, Vitest); runners that take only files run the whole file, and Cucumber scenarios are listed but not run. In a shallow clone, release/tag questions are answered "unknown" (those tests run). Matching reads the latest 500 commits of the main branch; `release-features` depends on story keys being in commit messages; squash-merged cherry-picks are matched only by their `-x` line or an identical diff.

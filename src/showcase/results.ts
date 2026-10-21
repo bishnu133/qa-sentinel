@@ -12,6 +12,9 @@ export interface Evidence {
   contentType?: string;
 }
 
+/** What a runner says when a test marked as expected to fail passed: Playwright test.fail, Jest test.failing, Vitest test.fails. */
+export const UNEXPECTED_PASS = /Expected to fail, but passed|Failing test passed even though it was supposed to fail|Expect test to fail/i;
+
 export interface RunResult {
   file?: string; // as reported (often relative to the test dir)
   line?: number;
@@ -69,7 +72,7 @@ function fromJUnit(xml: string, baseDir: string): RunResult[] {
     // The failure's message ("Expected to fail, but passed." for a test.fail test that now passes), when the report has one.
     const message = status === "failed" ? body.match(/<(?:failure|error)\b[^>]*?\smessage="([^"]*)"/)?.[1] : undefined;
     // Playwright's JUnit puts the location in message="…" and "Expected to fail, but passed." in the failure's body.
-    const unexpectedPass = status === "failed" && /Expected to fail, but passed/i.test(body);
+    const unexpectedPass = status === "failed" && UNEXPECTED_PASS.test(body.replace(/&#10;|&#xA;/gi, " "));
     const error = message?.replace(/&#10;|&#xA;/gi, " ").replace(/&quot;/g, '"').replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&").replace(/\u001b\[[0-9;]*m/g, "").slice(0, 300);
     out.push({ file: attr("file") ?? (cls && /\.([cm]?[jt]sx?|py|java|kt|cs|rb|go|php|feature)$/.test(cls.trim()) ? cls : undefined), title: (attr("name") ?? "").replace(/&quot;/g, '"').replace(/&amp;/g, "&"), status, evidence, ...(unexpectedPass ? { error: "Expected to fail, but passed.", unexpectedPass } : error ? { error } : {}) });
   }
