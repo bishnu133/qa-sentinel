@@ -183,6 +183,12 @@ async function generateRun(o: GenerateOptions, ctl: JobControl): Promise<number>
     log.ok(`${bot} is in ci.skipBranches; nothing to generate`);
     return 0;
   }
+  // A hotfix branch: no generation here. The change reaches the target branch by cherry-pick, and tests are written once, there.
+  const pipelineBranch = process.env.CI_COMMIT_BRANCH ?? process.env.CI_MERGE_REQUEST_TARGET_BRANCH_NAME;
+  if (!parts && !o.backfill && pipelineBranch && matchesAny(pipelineBranch, c.ci.hotfixBranches)) {
+    log.ok(`${pipelineBranch} is a hotfix branch (ci.hotfixBranches): no test generation here; tests are written when the change reaches ${c.ci.targetBranch}`);
+    return 0;
+  }
   if (o.backfill) {
     log.step(`backfill: ${o.backfill.length} endpoint(s) of ${service.name}, the API contract is the oracle`);
   } else if (req.source === "none") {

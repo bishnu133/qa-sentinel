@@ -1,5 +1,5 @@
 import type { IndexedTest } from "./testIndex.js";
-import { type RunResult, matchResult } from "../showcase/results.js";
+import { type RunResult, UNEXPECTED_PASS, matchResult } from "../showcase/results.js";
 
 /**
  * Known defects (`test.fail` + a bug link) are tests that pass while the bug exists. When the bug is fixed the test
@@ -16,7 +16,6 @@ export interface DefectStatus {
   detail?: string;
 }
 
-const FAIL_PASSED = /Expected to fail, but passed/i;
 
 /** Where each known defect stands in a test run. */
 export function defectStatuses(index: IndexedTest[], results: RunResult[]): DefectStatus[] {
@@ -27,7 +26,7 @@ export function defectStatuses(index: IndexedTest[], results: RunResult[]): Defe
       if (!r || r.status === "skipped") return { test, state: "not-run" as const, detail: r ? "skipped in this run" : "not in this run's results" };
       // Passed here means "failed as expected" (Playwright's own judgement for test.fail).
       if (r.status === "passed") return { test, state: "still-failing" as const };
-      if (r.unexpectedPass || (r.error && FAIL_PASSED.test(r.error))) return { test, state: "fixed" as const };
+      if (r.unexpectedPass || (r.error && UNEXPECTED_PASS.test(r.error))) return { test, state: "fixed" as const };
       return { test, state: "inconclusive" as const, detail: r.error ?? "failed without a message" };
     });
 }
@@ -41,7 +40,7 @@ export interface MarkerEdit {
   removed?: string[];
 }
 
-const DECLARATION = /\b(test|it)\.fail(\s*\()/;
+const DECLARATION = /\b(test|it)\.(?:fail|failing|fails)(\s*\()/;
 const NOTE = /^\s*\/\/\s*(QA-BUG|QA-AGENT)\s*:/;
 
 /**

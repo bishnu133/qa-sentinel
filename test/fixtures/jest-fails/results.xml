@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites name="jest tests" tests="2" failures="1" errors="0" time="0.461">
+  <testsuite name="undefined" errors="0" failures="1" skipped="0" timestamp="2026-10-21T12:24:11" time="0.268" tests="2">
+    <testcase classname=" fixed bug" name=" fixed bug" time="0.002">
+      <failure>Error: Failing test passed even though it was supposed to fail. Remove `.failing` to remove error.
+    </testcase>
+    <testcase classname=" still broken" name=" still broken" time="0.002">
+    </testcase>
+  </testsuite>
+</testsuites>

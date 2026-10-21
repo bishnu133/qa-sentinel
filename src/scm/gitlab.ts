@@ -174,6 +174,7 @@ export function gitlabMrFromEnv(env: NodeJS.ProcessEnv = process.env) {
     project,
     mrIid,
     base: env.CI_MERGE_REQUEST_DIFF_BASE_SHA ?? env.CI_MERGE_REQUEST_TARGET_BRANCH_NAME,
+    targetBranch: env.CI_MERGE_REQUEST_TARGET_BRANCH_NAME ?? env.gitlabTargetBranch,
     title: env.CI_MERGE_REQUEST_TITLE ?? env.gitlabMergeRequestTitle,
     description: env.CI_MERGE_REQUEST_DESCRIPTION ?? env.gitlabMergeRequestDescription,
     sourceBranch: env.CI_MERGE_REQUEST_SOURCE_BRANCH_NAME ?? env.gitlabSourceBranch,

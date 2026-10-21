@@ -47,7 +47,7 @@ export interface IndexedTest {
 }
 
 const SPEC = /\.(spec|test)\.[cm]?[jt]sx?$/;
-const DECL = /\b(test|it)(?:\.(only|skip|fixme|fail|slow))?\s*\(\s*(["'`])((?:\\.|(?!\3)[^\\])*)\3/;
+const DECL = /\b(test|it)(?:\.(only|skip|fixme|fail|failing|fails|slow))?\s*\(\s*(["'`])((?:\\.|(?!\3)[^\\])*)\3/;
 const DESCRIBE = /\b(?:test\.)?describe(?:\.\w+)?\s*\(\s*(["'`])((?:\\.|(?!\1)[^\\])*)\1/;
 const CONST = /\bconst\s+([A-Za-z_$][\w$]*)\s*=\s*(["'`])((?:\\.|(?!\2)[^\\$])*)\2\s*;?/g;
 const ASSERT = /\b(expect|expectSchema|assert)\s*[.(]/g;
@@ -135,7 +135,7 @@ export function indexSource(file: string, src: string): IndexedTest[] {
     const asserts = body.split("\n").filter((l) => ASSERT.test(l) && ((ASSERT.lastIndex = 0), true));
     const parsed = parseTags(f.raw);
     // test.fail("title", …), test.fail() / test.fail(cond) inside the body, or a test.describe.fail group around it.
-    const defect = f.kind === "fail" || /\b(?:test|it)\.fail(?:\.only)?\s*\(/.test(lines.slice(f.line, end).join("\n")) || (f as any).failGroup;
+    const defect = f.kind === "fail" || f.kind === "failing" || f.kind === "fails" || /\b(?:test|it)\.(?:fail|failing|fails)(?:\.only)?\s*\(/.test(lines.slice(f.line, end).join("\n")) || (f as any).failGroup;
     return {
       id: `${file}:${f.line}`,
       file,

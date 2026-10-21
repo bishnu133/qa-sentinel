@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased — hotfixes, release tags, environment-aware runs (phase 5)
+
+- **`qa-sentinel hotfix`** (no AI): where a hotfix stands. Matches each hotfix commit to its cherry-pick on the main branch (a `cherry-pick -x` line, or the same change by patch id) and says whether tests were written from it. `--post` puts it in the Jira QA status comment (section `hotfix:<service>`).
+- **Hotfix branches** (`ci.hotfixBranches`, default `hotfix/*`, `release/*`): the gap report still runs on the hotfix MR and says the regression selection is what to run; `generate` does not write tests there. Tests are written once, when the change reaches main.
+- **`qa-sentinel release-features --tag v3.4 [--from v3.3]`** (no AI): the stories a release contains, from commit messages per service.
+- **`qa-sentinel suite --env uat | --tag v3.4 [--run]`** (no AI): the tests that fit what an environment has deployed or a release contains. Tests of features that are not there yet are left out with the reason; tests without a `@story` tag always run. Nothing is deleted.
+- **Reverted changes** are noticed: a feature whose change was reverted on the main branch has status `reverted`; its ACs are `reverted` and its tests are held back by `suite`.
+- **Known-defect markers for Jest and Vitest**: `known-defects` also handles Jest `test.failing` and Vitest `test.fails` (with `// QA-BUG:`), recognising the real "now passes" reports of both.
+
 ## Unreleased — one QA status comment per story (phase 4)
 
 - **One comment on the Jira story** (`reporting.jira.layout: single`, the default). Feature readiness, each service's gap report, the story review, proposed bugs and post-deploy results are sections of one "QA status" comment. A command replaces only its own section; the comment is edited in place, with the time each section was last updated. The old layout (one comment per kind) stays available as `layout: separate`.
