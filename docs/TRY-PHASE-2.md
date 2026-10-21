@@ -164,6 +164,8 @@ CI_MERGE_REQUEST_IID=1 CI_PROJECT_ID=1 CI_MERGE_REQUEST_TITLE="Draft: test" qa-s
 ```
 Expect "merge request is a draft; the gap report waits" and exit code 0. Without a GitLab token it uses the title; with one it asks GitLab.
 
+Refresh behaviour (needs a real MR with a GitLab token and AI access): mark the MR ready and let the pipeline post the report. Push a docs-only change: expect "nothing changed since the report for …" and the MR comment untouched. Push a code change: the same comment is updated and starts with "Updated for commit …".
+
 ## What to send back
 
 - Output of steps 2, 3, 5 and 6 (copy the terminal text).

@@ -71,6 +71,12 @@ const enc = (p: string | number) => encodeURIComponent(String(p));
 
 export const MARKER = "<!-- qa-sentinel:gap-report -->";
 
+/** The body of the qa-sentinel gap-report note on an MR, if there is one. */
+export async function getMrNoteBody(ctx: GitLabContext, project: string | number, mrIid: string | number): Promise<string | undefined> {
+  const notes = await getAll(ctx, `/projects/${enc(project)}/merge_requests/${enc(mrIid)}/notes?sort=asc`);
+  return notes.find((n) => typeof n.body === "string" && n.body.includes(MARKER))?.body;
+}
+
 /** Create or update the single qa-sentinel note on an MR (searches all pages of notes). */
 export async function upsertMrNote(ctx: GitLabContext, project: string | number, mrIid: string | number, body: string) {
   const base = `/projects/${enc(project)}/merge_requests/${enc(mrIid)}/notes`;

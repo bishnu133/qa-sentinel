@@ -25,6 +25,7 @@
 
 - **Readiness per acceptance criterion** in `qa-sentinel feature <STORY>`: an AC is ready for its end-to-end tests when every service it names (`Services` in `expected/<STORY>.md`; none named = every service the story changed) is merged and deployed in `--env`, and the Jira card is in a ready status. The report shows a table with the reason for each AC. `--run` now runs only the tests whose ACs are all ready (a test with no `@ac` tag waits for all of them); `--force` runs everything.
 - **Gap report once, when the MR is ready for review:** with `automation.gapReport.when: ready` (the default) a dev MR that is still a draft gets no gap report (exit 0, a short note instead). `--even-if-draft` or `when: always` restores the old behaviour. Story-wide reports (`--story`) are not affected.
+- **One comment, refreshed only when something changed:** the MR comment carries a hidden fingerprint of the test-relevant diff and the story's ACs. A later push with the same fingerprint (rebase, merge from main, docs/config only) makes no AI run and no edit; a changed one updates the same comment and adds an "Updated for commit …" line on top. `--refresh` forces a new report.
 - Already in place and unchanged: `generate --story` writes one test branch and MR for the whole story across services.
 
 

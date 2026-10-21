@@ -11,7 +11,8 @@ import { formatUsage } from "../claude.js";
 import { ARTIFACT_GLOBS, createRunDir, findService, startManifest, writeManifest } from "../run.js";
 import { checkServiceUntouched, diffSnapshots, findingsMarkdown, snapshotTree, type Finding } from "../guardrails.js";
 import { requirementsLine, resolveRequirements, skippedBranch, storyMarkdown } from "../requirements.js";
-import { gitlabContext, gitlabMrFromEnv, mrIsDraft } from "../scm/gitlab.js";
+import { getMrNoteBody, gitlabContext, gitlabMrFromEnv, mrIsDraft } from "../scm/gitlab.js";
+import { gapFingerprint, parseStamp, stampOf, updatedLine } from "../plan/fingerprint.js";
 import { assembleFeature } from "../feature/manifest.js";
 import { publish } from "../reporting/publish.js";
 import { engineFor } from "../engines/ClaudeCodeEngine.js";
@@ -19,6 +20,7 @@ import type { AgentEngine } from "../engines/AgentEngine.js";
 import { withSpend } from "../stories/start.js";
 import { addUsage } from "../engines/AgentEngine.js";
 import { oracleOf, planChange } from "../plan/planner.js";
+import { acHash } from "../expected/format.js";
 import { renderGapReport } from "../plan/render.js";
 import { gapSummary } from "../reporting/jiraSummary.js";
 import { indexTests, readTestMap, traceMarkdown, traceStory } from "../analysis/testIndex.js";
@@ -43,6 +45,8 @@ export interface GapReportOptions {
   storyFile?: string;
   /** Make the report even if the merge request is still a draft (automation.gapReport.when: ready skips drafts). */
   evenIfDraft?: boolean;
+  /** Make a new report even if nothing the report depends on changed since the one on the MR. */
+  refresh?: boolean;
   /** Story mode: analyse everything this story changed, across all its service repos. */
   story?: string;
   out?: string;
@@ -113,6 +117,20 @@ async function gapReportRun(o: GapReportOptions, wrap: (e: AgentEngine) => Agent
     mr: { title: mr.title, description: mr.description, url: mr.url, sourceBranch: mr.sourceBranch },
     keyHints: o.story ? [o.story] : [mr.sourceBranch, ...commitMessages(repo, cs.base, cs.head)],
   });
+  // One comment per MR, refreshed only when the code that matters (or the ACs) changed since the report on it.
+  const fp = gapFingerprint(cs.diff, relevant, req.acceptanceCriteria.map((a) => acHash(a.text)));
+  let previousHead: string | undefined;
+  if (o.post && !o.story && !o.dryRun && !o.refresh && c.reporting.targets.includes("gitlab-mr") && mr.project && mr.mrIid) {
+    const gl = gitlabContext(c.ci.gitlabUrl);
+    const last = gl ? parseStamp(await getMrNoteBody(gl, mr.project, mr.mrIid).catch(() => undefined)) : undefined;
+    if (last?.fp === fp) {
+      const report = `### QA impact · unchanged\n**Verdict:** nothing the gap report depends on changed since the report for ${last.head.slice(0, 8)} (the diff of the relevant files and the acceptance criteria are the same). The comment on the merge request still stands; --refresh makes a new one.\n`;
+      fs.writeFileSync(path.resolve(cwd, o.out ?? "qa-gap-report.md"), report);
+      log.ok(`nothing changed since the report for ${last.head.slice(0, 8)}; no new gap report`);
+      return { report, skipped: true, exitCode: 0 };
+    }
+    previousHead = last?.head;
+  }
   const run = createRunDir(cwd, `gap-${service.name}`);
   fs.writeFileSync(path.join(run.dir, "change.diff"), cs.diff);
   fs.writeFileSync(path.join(run.dir, "story.md"), storyMarkdown(req));
@@ -257,12 +275,13 @@ async function gapReportRun(o: GapReportOptions, wrap: (e: AgentEngine) => Agent
     exitCode = 1;
     log.fail(`no valid plan: ${outcome.message ?? outcome.status}`);
   }
+  if (previousHead) report = `${updatedLine(cs.head, previousHead)}\n\n${report}`;
   fs.writeFileSync(out, report);
   fs.writeFileSync(path.join(run.dir, "report.md"), report);
   writeManifest(run, manifest);
   log.ok(`report written to ${path.relative(cwd, out)}${u ? ` (${u})` : ""}`);
 
-  if (o.post) await publish(c, { report, jiraSummary, service: service.name, storyKey: req.storyKey, mr });
+  if (o.post) await publish(c, { report, jiraSummary, service: service.name, storyKey: req.storyKey, mr, ...(o.story || exitCode !== 0 ? {} : { stamp: stampOf(fp, cs.head) }) });
   // Story mode with every part merged: requirements nothing builds (or builds differently) become (suspected) bugs.
   if (o.post && parts && parts.every((p) => p.merged) && c.bugs.mode !== "off" && req.storyKey && outcome.plan) {
     const jira = jiraContext(c.requirements.jira.baseUrl);
