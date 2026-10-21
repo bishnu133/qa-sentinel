@@ -150,27 +150,38 @@ qa-sentinel stories --story YOUR-BUG-KEY
 ```
 Expect: `doctor` says OK or warns about a status, issue type or link name Jira does not have (with the names it does have); `story-check` ends with "Which feature this card belongs to" and says how the bug reaches its story, or why it does not; `stories` lists the story, not the bug. If a bug is not attached, the sentence says why.
 
-## 12. Phase 3 checks (no AI; read-only)
+## 12. Draft merge request: the gap report waits (no AI, no GitLab needed)
 
-Per-AC readiness (needs a story with an `expected/<KEY>.md` whose ACs list `Services`, and `workspace.services[].version` set):
+KEY below means nothing here; this step only fakes the variables a GitLab pipeline sets.
 ```bash
-qa-sentinel feature YOUR-KEY --env uat
+CI_MERGE_REQUEST_IID=1 CI_PROJECT_ID=1 CI_MERGE_REQUEST_TITLE="Draft: test" qa-sentinel gap-report -s orders; echo "exit $?"
 ```
-Expect a table "Ready for end-to-end tests, per acceptance criterion". An AC that lists only a deployed service shows ✅ even if another service of the story is still waiting.
+Expect: "merge request is a draft; the gap report waits until it is ready for review", then `exit 0`. Run it again with the title `"Add orders"` instead of `"Draft: test"`: it should NOT say draft (it then goes on and stops because the service `orders` is not set up, which is fine for this check).
 
-Draft gap report (in an MR pipeline, or simulate):
+Two parts need a real GitLab MR and AI access, so skip them unless you have one handy: (a) a pushed docs-only change to a ready MR should say "nothing changed since the report for …" and leave the MR comment alone; (b) a pushed code change should update the same comment, starting with "Updated for commit …".
+
+## 13. Per-AC readiness (needs services with a version endpoint; optional)
+
+Only if your config has `workspace.services` with a `version` endpoint and a story whose `expected/<KEY>.md` lists `Services` per AC. KEY is the Jira card key of the story, for example SHOP-101.
 ```bash
-CI_MERGE_REQUEST_IID=1 CI_PROJECT_ID=1 CI_MERGE_REQUEST_TITLE="Draft: test" qa-sentinel gap-report -s <service>
+qa-sentinel feature SHOP-101 --env local --story-file ../stories/SHOP-101.md
 ```
-Expect "merge request is a draft; the gap report waits" and exit code 0. Without a GitLab token it uses the title; with one it asks GitLab.
+(`local` is the environment name from your config; `SHOP-101` is only an example key; `--story-file` gives it the ACs when Jira is not set up.) Expect a table "Ready for end-to-end tests, per acceptance criterion". An AC that names only a deployed service shows ✅ even if another service of the same story is still waiting. Without a version endpoint it shows "can't tell", which is correct. The rules are also covered by automated tests.
 
-Refresh behaviour (needs a real MR with a GitLab token and AI access): mark the MR ready and let the pipeline post the report. Push a docs-only change: expect "nothing changed since the report for …" and the MR comment untouched. Push a code change: the same comment is updated and starts with "Updated for commit …".
+## 14. One QA status comment on a Jira story (adds one comment; optional)
+
+KEY is only a placeholder: replace it with the real Jira card key (for example HPBPPH-123) of a TEST story you own (a card where one extra comment does no harm). Needs your Jira URL in the config and your Jira login in the environment variables, as in step 10.
+```bash
+qa-sentinel feature KEY --post
+qa-sentinel feature KEY --post
+```
+Run it twice. Expect: one comment titled "QA status · KEY" on the card, and after the second run still only one (edited, not added), with "Updated … UTC" under the section. Skip this if you do not want any write to Jira.
 
 ## What to send back
 
 - Output of steps 2, 3, 5 and 6 (copy the terminal text).
 - Step 7/8 results if you ran them, and the contents of `.qa-sentinel/stories/SHOP-101.json`.
-- Step 10 and 11 output or error (remove any URLs or names you do not want to share).
+- Step 10 and 11 output or error (steps 12 to 14 too, if you ran them) (remove any URLs or names you do not want to share).
 - Anything that surprised you.
 
 ## When to switch to Opus

@@ -238,6 +238,31 @@ async function jiraCall(ctx: JiraContext, method: string, route: string, body?: 
   }
 }
 
+/** The first comment on a story whose body contains `marker` (searches every page of comments). */
+export async function findIssueComment(ctx: JiraContext, key: string, marker: string): Promise<{ id: string; body: string } | undefined> {
+  const base = `/rest/api/2/issue/${encodeURIComponent(key)}/comment`;
+  for (let startAt = 0; ; ) {
+    const page = await jiraCall(ctx, "GET", `${base}?startAt=${startAt}&maxResults=100`);
+    const comments: any[] = page.comments ?? [];
+    const hit = comments.find((cm) => typeof cm.body === "string" && cm.body.includes(marker));
+    if (hit) return { id: String(hit.id), body: hit.body };
+    startAt += comments.length;
+    if (!comments.length || startAt >= (page.total ?? 0)) return undefined;
+  }
+}
+
+/** Write a comment: replace `existingId`, or add a new one. */
+export async function writeIssueComment(ctx: JiraContext, key: string, existingId: string | undefined, body: string, visibility?: { type: "role" | "group"; value: string }): Promise<{ action: "created" | "updated"; id: string; url: string }> {
+  const base = `/rest/api/2/issue/${encodeURIComponent(key)}/comment`;
+  const payload = { body, ...(visibility ? { visibility } : {}) };
+  if (existingId) {
+    await jiraCall(ctx, "PUT", `${base}/${existingId}`, payload);
+    return { action: "updated", id: existingId, url: `${ctx.baseUrl}/browse/${key}?focusedCommentId=${existingId}` };
+  }
+  const created = await jiraCall(ctx, "POST", base, payload);
+  return { action: "created", id: String(created.id), url: `${ctx.baseUrl}/browse/${key}?focusedCommentId=${created.id}` };
+}
+
 /** Create or update qa-sentinel's comment for one service on a story (searches every page of comments). */
 export async function upsertIssueComment(
   ctx: JiraContext,
@@ -247,25 +272,9 @@ export async function upsertIssueComment(
   visibility?: { type: "role" | "group"; value: string },
   markerText: string = jiraMarker(service),
 ): Promise<{ action: "created" | "updated"; id: string; url: string }> {
-  const marker = markerText;
-  const base = `/rest/api/2/issue/${encodeURIComponent(key)}/comment`;
-  let existing: any;
-  for (let startAt = 0; !existing; ) {
-    const page = await jiraCall(ctx, "GET", `${base}?startAt=${startAt}&maxResults=100`);
-    const comments: any[] = page.comments ?? [];
-    existing = comments.find((cm) => typeof cm.body === "string" && cm.body.includes(marker));
-    startAt += comments.length;
-    if (!comments.length || startAt >= (page.total ?? 0)) break;
-  }
+  const existing = await findIssueComment(ctx, key, markerText);
   // The marker is plain text (wiki markup has no hidden comments); keep it small and grey at the end.
-  const body = `${wikiBody}\n\n{color:#97a0af}${marker}{color}`;
-  const payload = { body, ...(visibility ? { visibility } : {}) };
-  if (existing) {
-    await jiraCall(ctx, "PUT", `${base}/${existing.id}`, payload);
-    return { action: "updated", id: String(existing.id), url: `${ctx.baseUrl}/browse/${key}?focusedCommentId=${existing.id}` };
-  }
-  const created = await jiraCall(ctx, "POST", base, payload);
-  return { action: "created", id: String(created.id), url: `${ctx.baseUrl}/browse/${key}?focusedCommentId=${created.id}` };
+  return writeIssueComment(ctx, key, existing?.id, `${wikiBody}\n\n{color:#97a0af}${markerText}{color}`, visibility);
 }
 
 // ---------------------------------------------------------------------------------------------

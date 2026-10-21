@@ -11,7 +11,8 @@ import { withSpend } from "../stories/start.js";
 import { formatUsage } from "../claude.js";
 import { addUsage } from "../engines/AgentEngine.js";
 import { reviewStory, storyReviewMarkdown } from "../review/storyReview.js";
-import { jiraContext, markdownToJiraWiki, upsertIssueComment } from "../scm/jira.js";
+import { jiraContext, markdownToJiraWiki } from "../scm/jira.js";
+import { postToStory } from "../reporting/statusComment.js";
 import { log } from "../log.js";
 
 export interface ReviewStoryOptions {
@@ -64,7 +65,7 @@ async function reviewStoryRun(o: ReviewStoryOptions, wrap: (e: AgentEngine) => A
     const ctx = jiraContext(c.requirements.jira.baseUrl);
     if (!ctx || !req.storyKey) log.warn("--post: Jira is not configured or the story key is unknown; nothing posted");
     else {
-      const res = await upsertIssueComment(ctx, req.storyKey, "story-review", markdownToJiraWiki(md), c.reporting.jira.visibility, "qa-sentinel:story-review");
+      const res = await postToStory(c, ctx, req.storyKey, { name: "story-review", wiki: markdownToJiraWiki(md), legacyKind: "story-review", legacyMarker: "qa-sentinel:story-review" });
       log.ok(`Jira ${req.storyKey}: story review ${res.action}`);
     }
   }

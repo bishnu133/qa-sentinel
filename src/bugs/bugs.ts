@@ -16,8 +16,8 @@ import {
   markdownToJiraWiki,
   projectIssueTypes,
   setIssueProperty,
-  upsertIssueComment,
 } from "../scm/jira.js";
+import { postToStory } from "../reporting/statusComment.js";
 import { log } from "../log.js";
 import { classifyFailure } from "../reporting/taxonomy.js";
 
@@ -169,7 +169,7 @@ export async function fileBugs(ctx: JiraContext, c: Config, story: string, candi
       "",
       ...list.map((b) => `- *${b.item}*${b.suspected ? " _(suspected)_" : ""}: ${b.title}\n  Expected: ${b.expected}\n  Actual: ${b.actual}${b.test ? `\n  Test: \`${b.test.file}${b.test.line ? `:${b.test.line}` : ""}\`` : ""}`),
     ].join("\n");
-    await upsertIssueComment(ctx, story, "bugs", markdownToJiraWiki(md), c.reporting.jira.visibility, "qa-sentinel:bugs");
+    await postToStory(c, ctx, story, { name: "bugs", wiki: markdownToJiraWiki(md), legacyKind: "bugs", legacyMarker: "qa-sentinel:bugs" });
     return { created, suggested: list.length, skipped };
   }
   const record = ((await getIssueProperty<BugRecord>(ctx, story, BUGS_PROPERTY)) ?? {}) as BugRecord;

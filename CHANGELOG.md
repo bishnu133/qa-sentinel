@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased — one QA status comment per story (phase 4)
+
+- **One comment on the Jira story** (`reporting.jira.layout: single`, the default). Feature readiness, each service's gap report, the story review, proposed bugs and post-deploy results are sections of one "QA status" comment. A command replaces only its own section; the comment is edited in place, with the time each section was last updated. The old layout (one comment per kind) stays available as `layout: separate`.
+- The showcase comment stays separate: it @mentions reviewers, and an edited comment does not notify anyone.
+- Comments made by earlier versions are left as they are (nothing is deleted); remove them by hand if you want.
+
 ## Unreleased — automation (phase 2)
 
 - **Credentials check** before the first AI call (one tiny call, `agent.accessCheckSeconds`): a missing, malformed or wrong key, a wrong Bedrock region or a missing `claude` stops at once (exit 3) with the fix. `doctor --online` runs it too.

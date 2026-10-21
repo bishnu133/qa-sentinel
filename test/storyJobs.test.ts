@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { type JobPolicy, type Budgets, beginJob, budgetStatus, budgetedEngine, digest, endJob, generateJobKey, jobPolicy, ownerAlive, specJobKey } from "../src/stories/jobs.js";
 import { NO_STORY, assertSafeKey, emptyRecord, fileStore, fitForJira, recordsDir, trimRecord } from "../src/stories/record.js";
 import type { AgentEngine, AgentTask } from "../src/engines/AgentEngine.js";
@@ -103,6 +103,7 @@ describe("job keys", () => {
 });
 
 describe("beginJob / endJob", () => {
+  afterEach(() => vi.unstubAllEnvs());
   const go = (s: ReturnType<typeof fileStore>, o: { key?: string; p?: Partial<JobPolicy>; b?: Partial<Budgets>; now?: Date; kind?: "spec" | "generate" | "other" } = {}) =>
     beginJob(s, { story: "SHOP-101", kind: o.kind ?? "spec", key: o.key ?? "spec:SHOP-101:x", policy: policy(o.p), budgets: budgets(o.b), now: o.now ?? T0 });
 
@@ -116,6 +117,7 @@ describe("beginJob / endJob", () => {
     expect((b as any).message).toMatch(/already running/);
   });
   it("lets a second run take over when the first is past the lock time, or its process is gone", async () => {
+    vi.stubEnv("CI", ""); // in CI a missing local process proves nothing (see "a missing local PID" below)
     const s = fileStore(dir);
     await go(s);
     const late = await go(s, { now: mins(95) });
@@ -128,6 +130,7 @@ describe("beginJob / endJob", () => {
     expect((await go(s, { now: mins(96) })).run).toBe(true);
   });
   it("sees a live process on this machine as alive, and other machines as alive until the lock expires", () => {
+    vi.stubEnv("CI", ""); // in CI a missing local process proves nothing (see "a missing local PID" below)
     expect(ownerAlive(`${os.hostname()}:${process.pid}`)).toBe(true);
     expect(ownerAlive(`${os.hostname()}:2147483646`)).toBe(false);
     expect(ownerAlive("some-other-host:1")).toBe(true);
