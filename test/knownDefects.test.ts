@@ -2,7 +2,7 @@ import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ConfigSchema, writeConfig } from "../src/config.js";
 import { indexSource } from "../src/analysis/testIndex.js";
 import { defectStatuses, removeAllMarkers, removeMarkers } from "../src/analysis/markers.js";
@@ -110,6 +110,8 @@ describe("known defect states", () => {
 describe("known-defects command", () => {
   let repo: string;
   beforeEach(() => {
+    // The command commits with the process environment; a CI runner has no git identity of its own.
+    for (const [k, v] of Object.entries({ GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@t", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@t" })) vi.stubEnv(k, v);
     repo = fs.mkdtempSync(path.join(os.tmpdir(), "qas-kd-"));
     fs.mkdirSync(path.join(repo, "tests/api"), { recursive: true });
     fs.mkdirSync(path.join(repo, "test-results"));
@@ -129,7 +131,10 @@ describe("known-defects command", () => {
     git(repo, "add", "-A");
     git(repo, "commit", "-qm", "init");
   });
-  afterEach(() => fs.rmSync(repo, { recursive: true, force: true }));
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    fs.rmSync(repo, { recursive: true, force: true });
+  });
   const text = () => fs.readFileSync(path.join(repo, FILE), "utf8");
 
   it("only reports without --apply", async () => {
