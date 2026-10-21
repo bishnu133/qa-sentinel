@@ -10,6 +10,16 @@
 
 - **Jira workflow and hierarchy settings** (`requirements.jira.workflow`, `hierarchy`, `components`): ready statuses (global and per project), which link wording ties a bug/task to its story, and Jira Component → service names. A card named with `--story` that is a bug, task or sub-task is reported under its story by strict fixed rules (only cards with code, one hop, parent first, target must be a feature type in `projectKeys`, two features means neither). `story-check` shows how a card resolves; `doctor --online` checks that the statuses, issue types and link names exist in your Jira.
 
+### Fixed in review (phase 2)
+
+- `known-defects` did not recognise a fixed bug in real Playwright reports: the JSON report has no error for a `test.fail` test that passes, and JUnit puts "Expected to fail, but passed." in the failure body. Both are read now (checked against Playwright 1.64 output).
+- `generate`: tests committed while verification was not VERIFIED (e.g. waiting for deployment) counted as a failed job, so a retry generated them again and three retries blocked the job. Committed tests now end the job as done.
+- Job attempts count failures in a row; a done run resets the count.
+- Trimming the story record drops finished gap-report / review jobs first, so a done spec or generate job is not forgotten (and paid for again).
+- In CI, a missing local process no longer marks a job's lock dead (CI containers share host names and reuse PIDs); the lock time decides.
+- Removing a known-defect marker also removes QA-BUG / QA-AGENT notes separated from the test by other comments.
+- Ready status: Jira's "Done" status category counts as ready (a finished story is not stuck waiting).
+
 ## Unreleased — AC-first generation (phase 1)
 
 **Upgrading:** `qa-sentinel upgrade` refreshes the planning and authoring skills, but not your `write-api-test`, `write-web-test` and `write-mobile-test` skills (they hold your learned conventions). Copy the discrepancy line (`test.fixme` + `// QA-AGENT:` with the behaviour id, never `test.fail`) and the "never assert the code's value" line from `templates/skills/…` by hand.

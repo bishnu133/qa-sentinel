@@ -156,3 +156,27 @@ describe("known-defects command", () => {
     await expect(knownDefectsCommand({ cwd: repo, results: "nope.json" })).rejects.toThrow(/No test results/);
   });
 });
+
+describe("real Playwright 1.64 reports (test.fail that passes)", () => {
+  // Recorded from a real run: a fixed bug's test.fail has no error in the JSON report, and its
+  // "Expected to fail, but passed." is in the JUnit failure body, not in message="…".
+  for (const f of ["results.json", "results.xml"])
+    it(`reads ${f}`, async () => {
+      const { readRunResults } = await import("../src/showcase/results.js");
+      const r = readRunResults(path.join(__dirname, "fixtures/playwright-fail", f));
+      const by = (t: string) => r.find((x) => x.title === t)!;
+      expect(by("fixed bug")).toMatchObject({ status: "failed", unexpectedPass: true });
+      expect(by("still broken")).toMatchObject({ status: "passed" });
+      expect(by("still broken").unexpectedPass).toBeUndefined();
+    });
+});
+
+describe("notes in the comment block", () => {
+  it("removes QA-BUG / QA-AGENT lines but keeps other comments above the test", async () => {
+    const { removeMarkers } = await import("../src/analysis/markers.js");
+    const src = ['// QA-BUG: SHOP-9', "// @ac AC-1", "// QA-AGENT: confirmed by QA", 'test.fail("t", async () => {});'].join("\n");
+    const e = removeMarkers(src, { line: 4, title: "t" });
+    expect(e.text).toBe(['// @ac AC-1', 'test("t", async () => {});'].join("\n"));
+    expect(e.removed).toEqual(["// QA-BUG: SHOP-9", "// QA-AGENT: confirmed by QA"]);
+  });
+});

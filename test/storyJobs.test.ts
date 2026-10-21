@@ -180,7 +180,7 @@ describe("beginJob / endJob", () => {
     const rec = (await s.load("SHOP-101"))!;
     expect(rec.totalCostUsd).toBeCloseTo(0.5);
     expect(rec.ledger).toEqual([{ at: mins(2).toISOString(), job: "spec:SHOP-101:x", kind: "spec", costUsd: 0.5 }]);
-    expect(rec.jobs["spec:SHOP-101:x"]).toMatchObject({ state: "done", attempts: 1, runId: "r1", costUsd: 0.5 });
+    expect(rec.jobs["spec:SHOP-101:x"]).toMatchObject({ state: "done", attempts: 0, runId: "r1", costUsd: 0.5 });
   });
   it("does not throw when the record can't be written", async () => {
     const s = fileStore(dir);
@@ -287,5 +287,46 @@ describe("jobPolicy", () => {
     expect(jobPolicy(cfg("never"), {}, { CI: "true" }).skipDone).toBe(false);
     expect(jobPolicy(cfg("never"), { once: true }, {}).skipDone).toBe(true);
     expect(jobPolicy(cfg("ci"), { force: true }, {}).force).toBe(true);
+  });
+});
+
+describe("review fixes", () => {
+  it("committed tests are done even when not verified; other non-zero ends are failed", async () => {
+    const { endStateOf } = await import("../src/stories/jobs.js");
+    expect(endStateOf(1, "committed-waiting_for_deployment")).toBe("done");
+    expect(endStateOf(1, "committed-failed")).toBe("done");
+    expect(endStateOf(1, "not-pushed-failed")).toBe("failed");
+    expect(endStateOf(1, "guardrail-violation")).toBe("failed");
+  });
+  it("a missing local PID proves nothing in CI", () => {
+    const dead = `${os.hostname()}:999999`;
+    expect(ownerAlive(dead, {})).toBe(false);
+    expect(ownerAlive(dead, { CI: "true" })).toBe(true);
+  });
+  it("trimming drops finished 'other' jobs before spec/generate jobs", () => {
+    const rec = emptyRecord("SHOP-1");
+    rec.jobs["spec:SHOP-1:x"] = { key: "spec:SHOP-1:x", kind: "spec", state: "done", startedAt: "2026-01-01T00:00:00Z", finishedAt: "2026-01-01T00:01:00Z", attempts: 0, costUsd: 1 };
+    for (let i = 0; i < 70; i++) rec.jobs[`other:g:${i}`] = { key: `other:g:${i}`, kind: "other", state: "done", startedAt: `2026-02-01T00:00:${String(i % 60).padStart(2, "0")}Z`, finishedAt: `2026-02-0${1 + Math.floor(i / 60)}T00:01:${String(i % 60).padStart(2, "0")}Z`, attempts: 0, costUsd: 0.1 };
+    const t = trimRecord(rec, new Date("2026-02-05T00:00:00Z"));
+    expect(Object.keys(t.jobs)).toHaveLength(60);
+    expect(t.jobs["spec:SHOP-1:x"]).toBeDefined();
+  });
+  it("attempts count failures in a row: a done run resets them", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "qas-att-"));
+    const store = fileStore(dir);
+    const policy: JobPolicy = { skipDone: false, lockMinutes: 90, maxAttempts: 2, force: false };
+    const budgets: Budgets = { perStoryUsd: 0, perDayUsd: 0, perMonthUsd: 0 };
+    const run = async (state: "done" | "failed") => {
+      const r = await beginJob(store, { story: "SHOP-1", kind: "spec", key: "spec:SHOP-1:k", policy, budgets });
+      if (!r.run) return r.reason;
+      await endJob(store, r.handle, { state });
+      return "ran";
+    };
+    expect(await run("failed")).toBe("ran");
+    expect(await run("done")).toBe("ran");
+    expect(await run("failed")).toBe("ran");
+    expect(await run("failed")).toBe("ran");
+    expect(await run("failed")).toBe("attempts");
+    fs.rmSync(dir, { recursive: true, force: true });
   });
 });

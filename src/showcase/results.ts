@@ -20,6 +20,8 @@ export interface RunResult {
   evidence: Evidence[];
   /** First line of the failure, when failed. */
   error?: string;
+  /** A test marked to fail (test.fail) that passed: Playwright counts it as a failure. */
+  unexpectedPass?: boolean;
 }
 
 export function kindOf(name: string, contentType = "", file = ""): Evidence["kind"] {
@@ -41,8 +43,10 @@ function fromPlaywrightJson(json: any, baseDir: string): RunResult[] {
         const evidence: Evidence[] = (last?.attachments ?? [])
           .filter((a: any) => a.path)
           .map((a: any) => ({ kind: kindOf(a.name, a.contentType, a.path), name: a.name, path: path.resolve(baseDir, a.path), contentType: a.contentType }));
-        const err = last?.error?.message ?? last?.errors?.[0]?.message;
-        out.push({ file: spec.file, line: spec.line, title: spec.title, status, evidence, ...(status === "failed" && err ? { error: String(err).replace(/\u001b\[[0-9;]*m/g, "").split("\n").slice(0, 3).join(" ").slice(0, 300) } : {}) });
+        // A test.fail test that passed: the JSON report has no error for it, only expectedStatus "failed" and a passed result.
+        const unexpectedPass = status === "failed" && t.expectedStatus === "failed" && last?.status === "passed";
+        const err = unexpectedPass ? "Expected to fail, but passed." : (last?.error?.message ?? last?.errors?.[0]?.message);
+        out.push({ file: spec.file, line: spec.line, title: spec.title, status, evidence, ...(status === "failed" && err ? { error: String(err).replace(/\u001b\[[0-9;]*m/g, "").split("\n").slice(0, 3).join(" ").slice(0, 300) } : {}), ...(unexpectedPass ? { unexpectedPass } : {}) });
       }
     }
   };
@@ -64,8 +68,10 @@ function fromJUnit(xml: string, baseDir: string): RunResult[] {
     const cls = attr("classname");
     // The failure's message ("Expected to fail, but passed." for a test.fail test that now passes), when the report has one.
     const message = status === "failed" ? body.match(/<(?:failure|error)\b[^>]*?\smessage="([^"]*)"/)?.[1] : undefined;
+    // Playwright's JUnit puts the location in message="…" and "Expected to fail, but passed." in the failure's body.
+    const unexpectedPass = status === "failed" && /Expected to fail, but passed/i.test(body);
     const error = message?.replace(/&#10;|&#xA;/gi, " ").replace(/&quot;/g, '"').replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&").replace(/\u001b\[[0-9;]*m/g, "").slice(0, 300);
-    out.push({ file: attr("file") ?? (cls && /\.([cm]?[jt]sx?|py|java|kt|cs|rb|go|php|feature)$/.test(cls.trim()) ? cls : undefined), title: (attr("name") ?? "").replace(/&quot;/g, '"').replace(/&amp;/g, "&"), status, evidence, ...(error ? { error } : {}) });
+    out.push({ file: attr("file") ?? (cls && /\.([cm]?[jt]sx?|py|java|kt|cs|rb|go|php|feature)$/.test(cls.trim()) ? cls : undefined), title: (attr("name") ?? "").replace(/&quot;/g, '"').replace(/&amp;/g, "&"), status, evidence, ...(unexpectedPass ? { error: "Expected to fail, but passed.", unexpectedPass } : error ? { error } : {}) });
   }
   return out;
 }

@@ -1,0 +1,243 @@
+{
+ "config": {
+  "argv": [
+   "/opt/node22/bin/node",
+   "/repo/node_modules/.bin/playwright",
+   "test"
+  ],
+  "configFile": "/repo/playwright.config.ts",
+  "rootDir": "/repo/tests",
+  "failOnFlakyTests": false,
+  "forbidOnly": false,
+  "fullyParallel": false,
+  "globalSetup": null,
+  "globalTeardown": null,
+  "globalTimeout": 0,
+  "grep": {},
+  "grepInvert": null,
+  "maxFailures": 0,
+  "metadata": {
+   "actualWorkers": 1
+  },
+  "preserveOutput": "always",
+  "projects": [
+   {
+    "outputDir": "/repo/test-results",
+    "repeatEach": 1,
+    "retries": 0,
+    "metadata": {
+     "actualWorkers": 1
+    },
+    "id": "",
+    "name": "",
+    "testDir": "/repo/tests",
+    "testIgnore": [],
+    "testMatch": [
+     "**/*.@(spec|test).?(c|m)[jt]s?(x)"
+    ],
+    "timeout": 30000
+   }
+  ],
+  "filteredProjects": [
+   {
+    "grep": {},
+    "grepInvert": null,
+    "outputDir": "/repo/test-results",
+    "repeatEach": 1,
+    "retries": 0,
+    "metadata": {
+     "actualWorkers": 1
+    },
+    "name": "",
+    "testDir": "/repo/tests",
+    "snapshotDir": "/repo/tests",
+    "testIgnore": [],
+    "testMatch": "**/*.@(spec|test).?(c|m)[jt]s?(x)",
+    "timeout": 30000,
+    "use": {},
+    "dependencies": [],
+    "ignoreSnapshots": false,
+    "__projectId": ""
+   }
+  ],
+  "quiet": false,
+  "reporter": [
+   [
+    "json",
+    {
+     "outputFile": "results.json"
+    }
+   ],
+   [
+    "junit",
+    {
+     "outputFile": "results.xml"
+    }
+   ]
+  ],
+  "reportSlowTests": {
+   "max": 5,
+   "threshold": 300000
+  },
+  "shard": null,
+  "tags": [],
+  "updateSnapshots": "default",
+  "updateSourceMethod": "patch",
+  "version": "1.64.0",
+  "workers": 1,
+  "webServer": null
+ },
+ "suites": [
+  {
+   "title": "a.spec.ts",
+   "file": "a.spec.ts",
+   "column": 0,
+   "line": 0,
+   "specs": [
+    {
+     "title": "fixed bug",
+     "ok": false,
+     "tags": [],
+     "tests": [
+      {
+       "timeout": 30000,
+       "annotations": [
+        {
+         "type": "fail",
+         "location": {
+          "file": "/repo/tests/a.spec.ts",
+          "line": 3,
+          "column": 6
+         }
+        }
+       ],
+       "expectedStatus": "failed",
+       "projectId": "",
+       "projectName": "",
+       "results": [
+        {
+         "workerIndex": 0,
+         "parallelIndex": 0,
+         "status": "passed",
+         "duration": 5,
+         "errors": [],
+         "stdout": [],
+         "stderr": [],
+         "retry": 0,
+         "startTime": "2026-10-21T03:37:35.991Z",
+         "annotations": [
+          {
+           "type": "fail",
+           "location": {
+            "file": "/repo/tests/a.spec.ts",
+            "line": 3,
+            "column": 6
+           }
+          }
+         ],
+         "attachments": []
+        }
+       ],
+       "status": "unexpected"
+      }
+     ],
+     "id": "4bb17c2992a2b9ccc470-4d55148b7030189d6a17",
+     "file": "a.spec.ts",
+     "line": 3,
+     "column": 6
+    },
+    {
+     "title": "still broken",
+     "ok": true,
+     "tags": [],
+     "tests": [
+      {
+       "timeout": 30000,
+       "annotations": [
+        {
+         "type": "fail",
+         "location": {
+          "file": "/repo/tests/a.spec.ts",
+          "line": 5,
+          "column": 6
+         }
+        }
+       ],
+       "expectedStatus": "failed",
+       "projectId": "",
+       "projectName": "",
+       "results": [
+        {
+         "workerIndex": 1,
+         "parallelIndex": 0,
+         "status": "failed",
+         "duration": 11,
+         "error": {
+          "message": "Error: \u001b[2mexpect(\u001b[22m\u001b[31mreceived\u001b[39m\u001b[2m).\u001b[22mtoBe\u001b[2m(\u001b[22m\u001b[32mexpected\u001b[39m\u001b[2m) // Object.is equality\u001b[22m\n\nExpected: \u001b[32m2\u001b[39m\nReceived: \u001b[31m1\u001b[39m",
+          "stack": "Error: \u001b[2mexpect(\u001b[22m\u001b[31mreceived\u001b[39m\u001b[2m).\u001b[22mtoBe\u001b[2m(\u001b[22m\u001b[32mexpected\u001b[39m\u001b[2m) // Object.is equality\u001b[22m\n\nExpected: \u001b[32m2\u001b[39m\nReceived: \u001b[31m1\u001b[39m\n    at /repo/tests/a.spec.ts:5:51",
+          "location": {
+           "file": "/repo/tests/a.spec.ts",
+           "column": 51,
+           "line": 5
+          },
+          "snippet": "  3 | test.fail(\"fixed bug\", async () => { expect(1).toBe(1); });\n  4 | // QA-BUG: SHOP-8\n> 5 | test.fail(\"still broken\", async () => { expect(1).toBe(2); });\n    |                                                   ^\n  6 |"
+         },
+         "errors": [
+          {
+           "location": {
+            "file": "/repo/tests/a.spec.ts",
+            "column": 51,
+            "line": 5
+           },
+           "message": "Error: \u001b[2mexpect(\u001b[22m\u001b[31mreceived\u001b[39m\u001b[2m).\u001b[22mtoBe\u001b[2m(\u001b[22m\u001b[32mexpected\u001b[39m\u001b[2m) // Object.is equality\u001b[22m\n\nExpected: \u001b[32m2\u001b[39m\nReceived: \u001b[31m1\u001b[39m\n\n  3 | test.fail(\"fixed bug\", async () => { expect(1).toBe(1); });\n  4 | // QA-BUG: SHOP-8\n> 5 | test.fail(\"still broken\", async () => { expect(1).toBe(2); });\n    |                                                   ^\n  6 |\n    at /repo/tests/a.spec.ts:5:51"
+          }
+         ],
+         "stdout": [],
+         "stderr": [],
+         "retry": 0,
+         "startTime": "2026-10-21T03:37:36.476Z",
+         "annotations": [
+          {
+           "type": "fail",
+           "location": {
+            "file": "/repo/tests/a.spec.ts",
+            "line": 5,
+            "column": 6
+           }
+          }
+         ],
+         "attachments": [
+          {
+           "name": "error-context",
+           "contentType": "text/markdown",
+           "path": "/repo/test-results/a-still-broken/error-context.md"
+          }
+         ],
+         "errorLocation": {
+          "file": "/repo/tests/a.spec.ts",
+          "column": 51,
+          "line": 5
+         }
+        }
+       ],
+       "status": "expected"
+      }
+     ],
+     "id": "4bb17c2992a2b9ccc470-587415785225b69b5d68",
+     "file": "a.spec.ts",
+     "line": 5,
+     "column": 6
+    }
+   ]
+  }
+ ],
+ "errors": [],
+ "stats": {
+  "startTime": "2026-10-21T03:37:35.535Z",
+  "duration": 1013.2330000000001,
+  "expected": 1,
+  "skipped": 0,
+  "unexpected": 1,
+  "flaky": 0
+ }
+}

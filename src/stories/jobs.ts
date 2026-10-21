@@ -97,9 +97,11 @@ export type BeginResult =
   | { run: false; reason: "done" | "running" | "attempts" | "budget"; message: string };
 
 /** Is the process that holds a job still there? Only known for this machine; anything else counts as alive until the lock expires. */
-export function ownerAlive(owner: string | undefined): boolean {
+export function ownerAlive(owner: string | undefined, env: NodeJS.ProcessEnv = process.env): boolean {
   const m = /^(.*):(\d+)$/.exec(owner ?? "");
   if (!m || m[1] !== os.hostname()) return true;
+  // CI containers often share a host name (and reuse low PIDs), so a missing PID there proves nothing: wait for the lock to expire.
+  if (truthy(env.CI)) return true;
   try {
     process.kill(Number(m[2]), 0);
     return true;
@@ -206,7 +208,8 @@ export async function endJob(store: RecordStore, h: JobHandle, o: EndOptions): P
         ...j,
         state: o.state,
         finishedAt: now.toISOString(),
-        attempts: j.attempts + (o.state === "aborted" ? 0 : 1),
+        // Failed runs in a row with these inputs: a run that ends done starts the count again.
+        attempts: o.state === "done" ? 0 : o.state === "failed" ? j.attempts + 1 : j.attempts,
         costUsd: Math.round((j.costUsd + h.spentUsd) * 1e6) / 1e6,
         ...(o.runId ? { runId: o.runId } : {}),
         ...(o.outcome ? { outcome: o.outcome } : {}),
@@ -252,7 +255,11 @@ export function jobPolicy(c: { automation: { jobs: { skipDone: "ci" | "always" |
   return { skipDone: o.once || j.skipDone === "always" || (j.skipDone === "ci" && truthy(env.CI)), lockMinutes: j.lockMinutes, maxAttempts: j.maxAttempts, force: Boolean(o.force) };
 }
 
-/** How a job ended, from a command's exit code and outcome word. */
+/**
+ * How a job ended, from a command's exit code and outcome word. Tests committed (and pushed) are done even when
+ * verification was not VERIFIED (waiting for deployment, a failing check): the MR carries them, and generating the
+ * same tests again would cost the same and change nothing.
+ */
 export function endStateOf(code: number, outcome: string): "done" | "failed" {
-  return code === 0 || outcome === "dry-run" ? "done" : "failed";
+  return code === 0 || outcome === "dry-run" || outcome.startsWith("committed-") ? "done" : "failed";
 }

@@ -39,7 +39,7 @@ export async function storyCheckCommand(o: { cwd: string; story?: string; storyF
       "",
       r.explain + (r.kind === "none" && !c.requirements.jira.featureIssueTypes.length ? "" : "."),
       ...(c.requirements.jira.featureIssueTypes.length ? [] : ["Every issue type counts as a feature because `requirements.jira.featureIssueTypes` is empty; set it (e.g. `[Story]`) to trace bugs and sub-tasks to their story."]),
-      `Status "${issue.status}": ${isReadyStatus(c, issue.key, issue.status) ? "a ready status" : "not a ready status"} for ${issue.key.replace(/-\d+$/, "")} (requirements.jira.workflow).`,
+      `Status "${issue.status}": ${isReadyStatus(c, issue.key, issue.status, issue.statusCategory) ? "a ready status" : "not a ready status"} for ${issue.key.replace(/-\d+$/, "")} (requirements.jira.workflow).`,
       ...(issue.components?.length ? [`Components: ${issue.components.join(", ")}${comps.services.length ? ` → services ${comps.services.join(", ")}` : ""}${comps.unmapped.length ? ` (not mapped: ${comps.unmapped.join(", ")}; see requirements.jira.components)` : ""}.`] : []),
       "",
     ].join("\n");

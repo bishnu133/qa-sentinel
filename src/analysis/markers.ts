@@ -27,7 +27,7 @@ export function defectStatuses(index: IndexedTest[], results: RunResult[]): Defe
       if (!r || r.status === "skipped") return { test, state: "not-run" as const, detail: r ? "skipped in this run" : "not in this run's results" };
       // Passed here means "failed as expected" (Playwright's own judgement for test.fail).
       if (r.status === "passed") return { test, state: "still-failing" as const };
-      if (r.error && FAIL_PASSED.test(r.error)) return { test, state: "fixed" as const };
+      if (r.unexpectedPass || (r.error && FAIL_PASSED.test(r.error))) return { test, state: "fixed" as const };
       return { test, state: "inconclusive" as const, detail: r.error ?? "failed without a message" };
     });
 }
@@ -58,10 +58,11 @@ export function removeMarkers(source: string, t: Pick<IndexedTest, "line" | "tit
   const head = lines.slice(at, at + 6).join("\n").split(/=>|\bfunction\b/)[0];
   if (/\bannotation\b/.test(head)) return { reason: `${t.line}: the bug link is an \`annotation\` on the test, not a comment: take test.fail and the annotation off by hand` };
   lines[at] = line.replace(DECLARATION, "$1$2");
+  // The notes in the comment block right above the test (other comments, e.g. @ac tags, stay).
   let from = at;
-  while (from > 0 && NOTE.test(lines[from - 1])) from--;
-  const removed = lines.slice(from, at).map((l) => l.trim());
-  lines.splice(from, at - from);
+  while (from > 0 && /^\s*\/\//.test(lines[from - 1])) from--;
+  const removed = lines.slice(from, at).filter((l) => NOTE.test(l)).map((l) => l.trim());
+  lines.splice(from, at - from, ...lines.slice(from, at).filter((l) => !NOTE.test(l)));
   return { text: lines.join("\n"), removed };
 }
 

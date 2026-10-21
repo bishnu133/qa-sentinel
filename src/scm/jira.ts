@@ -27,6 +27,8 @@ export interface JiraIssue {
   description: string;
   acceptanceCriteria?: string;
   status: string;
+  /** Jira's category of the status: "new", "indeterminate" or "done" (the same in every workflow). */
+  statusCategory?: string;
   /** Issue type name (Story, Bug, Task, …). */
   issueType?: string;
   labels?: string[];
@@ -80,6 +82,7 @@ export async function fetchIssue(ctx: JiraContext, key: string, acField?: string
     description: toText(f.description),
     acceptanceCriteria: acField ? toText(f[acField]) || undefined : undefined,
     status: String(f.status?.name ?? ""),
+    ...(f.status?.statusCategory?.key ? { statusCategory: String(f.status.statusCategory.key) } : {}),
     ...(f.issuetype?.name ? { issueType: String(f.issuetype.name) } : {}),
     ...(Array.isArray(f.labels) ? { labels: f.labels.map(String) } : {}),
     ...(f.parent?.key ? { parent: { key: String(f.parent.key), ...(f.parent.fields?.issuetype?.name ? { issueType: String(f.parent.fields.issuetype.name) } : {}) } } : {}),

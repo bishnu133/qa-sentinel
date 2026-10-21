@@ -4,7 +4,8 @@ import type { JiraIssue, JiraLink } from "../scm/jira.js";
 /**
  * Which feature a Jira card belongs to. A bug, task or sub-task is tested and reported under its story, but a wrong
  * link would pull an unrelated bug into a feature, so the rules are strict and fixed (not configurable):
- *  1. only cards with code are resolved (the caller says so: a bug that merely links to a story is not part of it)
+ *  1. only cards with code are resolved: a caller that knows passes hasCode (false stops it; a bug that merely links
+ *     to a story is not part of it). `stories --story` and `story-check` do not look for code yet, so they resolve by Jira alone
  *  2. one hop: card → feature, never card → task → story → epic
  *  3. the parent comes first; links are used only when the card has no parent that is a feature
  *  4. the target must be a feature type, in one of `projectKeys`

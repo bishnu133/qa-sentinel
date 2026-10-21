@@ -88,9 +88,8 @@ test.fail("rejects a fourth order @story:SHOP-101 @ac:AC-1", async () => {
   expect(1).toBe(1);
 });
 TS
-cat > test-results/results.json <<'JSON'
-{"suites":[{"specs":[{"file":"api/demo/defects.spec.ts","line":6,"title":"rejects a fourth order @story:SHOP-101 @ac:AC-1","tests":[{"status":"unexpected","results":[{"status":"failed","error":{"message":"Error: Expected to fail, but passed."}}]}]}]}]}
-JSON
+# A real run: the bug is "fixed" (the test passes), so Playwright reports "Expected to fail, but passed".
+npx playwright test tests/api/demo/defects.spec.ts --reporter=json > test-results/results.json || true
 git add -A tests && git commit -qm "demo defect"
 qa-sentinel known-defects                  # report only
 git diff --stat                            # nothing changed yet

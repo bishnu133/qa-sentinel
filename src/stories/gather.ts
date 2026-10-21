@@ -51,7 +51,7 @@ export function skippedBeforeReading(c: Config, f: { key?: string; status?: stri
 export async function inputsFromJira(c: Config, ctx: JiraContext, o: { keys?: string[]; hasCode?: boolean }): Promise<StoryInput[]> {
   const j = c.requirements.jira;
   const fetchRaw = (key: string) => fetchIssue(ctx, key, j.acceptanceCriteriaField, j.scopeFields.map((f) => f.field));
-  const toInput = (issue: Awaited<ReturnType<typeof fetchRaw>>, resolvedFrom?: string): StoryInput => ({ key: issue.key, title: issue.summary, status: issue.status, issueType: issue.issueType, labels: issue.labels ?? [], url: issue.url, text: jiraIssueText(c, issue), source: "jira", ready: isReadyStatus(c, issue.key, issue.status), components: issue.components, ...(resolvedFrom ? { resolvedFrom } : {}) });
+  const toInput = (issue: Awaited<ReturnType<typeof fetchRaw>>, resolvedFrom?: string): StoryInput => ({ key: issue.key, title: issue.summary, status: issue.status, issueType: issue.issueType, labels: issue.labels ?? [], url: issue.url, text: jiraIssueText(c, issue), source: "jira", ready: isReadyStatus(c, issue.key, issue.status, issue.statusCategory), components: issue.components, ...(resolvedFrom ? { resolvedFrom } : {}) });
   const fetchOne = async (key: string): Promise<StoryInput> => toInput(await fetchRaw(key));
   if (o.keys?.length) {
     // A bug, task or sub-task is reported under its feature (strict rules, see stories/resolve.ts); with no feature types set, every card is its own feature.

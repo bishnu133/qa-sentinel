@@ -1,0 +1,27 @@
+<testsuites id="" name="" tests="2" failures="1" skipped="0" errors="0" time="1.013233">
+<testsuite name="a.spec.ts" timestamp="2026-10-21T03:37:35.640Z" hostname="" tests="2" failures="1" skipped="0" time="0.016" errors="0">
+<testcase name="fixed bug" classname="a.spec.ts" time="0.005">
+<properties>
+<property name="fail" value="">
+</property>
+</properties>
+<failure message="a.spec.ts:3:6 fixed bug" type="FAILURE">
+<![CDATA[  a.spec.ts:3:6 › fixed bug ────────────────────────────────────────────────────────────────────────
+
+    Expected to fail, but passed.
+]]>
+</failure>
+</testcase>
+<testcase name="still broken" classname="a.spec.ts" time="0.011">
+<properties>
+<property name="fail" value="">
+</property>
+</properties>
+<system-out>
+<![CDATA[
+[[ATTACHMENT|test-results/a-still-broken/error-context.md]]
+]]>
+</system-out>
+</testcase>
+</testsuite>
+</testsuites>

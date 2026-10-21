@@ -28,7 +28,7 @@ export const JobSchema = z.object({
   state: z.enum(["running", "done", "failed", "aborted"]),
   startedAt: z.string(),
   finishedAt: z.string().optional(),
-  /** Runs that ended done or failed with this key (aborted runs and expired locks are not counted). */
+  /** Failed runs in a row with this key (a done run resets it; aborted runs and expired locks are not counted). */
   attempts: z.number().int().min(0).default(0),
   /** Cost of all runs with this key, USD. */
   costUsd: z.number().min(0).default(0),
@@ -237,12 +237,18 @@ export function jiraStore(cwd: string, ctx: JiraContext): RecordStore {
 }
 
 /** Drop what the record doesn't need to keep: old ledger entries and the oldest finished jobs. */
+/** Which jobs to drop first: finished "other" jobs (never looked up by key), then the oldest; running jobs last. */
+const dropOrder = (a: Job, b: Job) => {
+  const rank = (j: Job) => (j.state === "running" ? 2 : j.kind === "other" ? 0 : 1);
+  return rank(a) - rank(b) || (a.finishedAt ?? a.startedAt).localeCompare(b.finishedAt ?? b.startedAt);
+};
+
 export function trimRecord(rec: StoryRecord, now = new Date()): StoryRecord {
   const cutoff = new Date(now.getTime() - LEDGER_DAYS * 86_400_000).toISOString();
   const ledger = rec.ledger.filter((e) => e.at >= cutoff);
   const jobs = Object.values(rec.jobs);
   if (jobs.length <= MAX_JOBS) return { ...rec, ledger };
-  const keep = [...jobs].sort((a, b) => (b.finishedAt ?? b.startedAt).localeCompare(a.finishedAt ?? a.startedAt)).slice(0, MAX_JOBS);
+  const keep = [...jobs].sort(dropOrder).slice(jobs.length - MAX_JOBS);
   return { ...rec, ledger, jobs: Object.fromEntries(keep.map((j) => [j.key, j])) };
 }
 
@@ -251,7 +257,7 @@ export function fitForJira(rec: StoryRecord): StoryRecord {
   let r = rec;
   const size = (x: StoryRecord) => Buffer.byteLength(JSON.stringify(x));
   while (size(r) > JIRA_MAX_BYTES && (r.ledger.length > 10 || Object.keys(r.jobs).length > 5)) {
-    const jobs = Object.values(r.jobs).sort((a, b) => (a.finishedAt ?? a.startedAt).localeCompare(b.finishedAt ?? b.startedAt));
+    const jobs = Object.values(r.jobs).sort(dropOrder);
     const dropJob = Object.keys(r.jobs).length > 5 && r.ledger.length <= Object.keys(r.jobs).length;
     r = dropJob ? { ...r, jobs: Object.fromEntries(Object.entries(r.jobs).filter(([k]) => k !== jobs[0].key)) } : { ...r, ledger: r.ledger.slice(Math.ceil(r.ledger.length * 0.2)) };
   }
