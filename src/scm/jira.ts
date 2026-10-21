@@ -27,16 +27,49 @@ export interface JiraIssue {
   description: string;
   acceptanceCriteria?: string;
   status: string;
+  /** Jira's category of the status: "new", "indeterminate" or "done" (the same in every workflow). */
+  statusCategory?: string;
   /** Issue type name (Story, Bug, Task, …). */
   issueType?: string;
+  labels?: string[];
   url: string;
   updated?: string;
   /** Extra fields asked for (scope fields), as text. */
   extra?: Record<string, string>;
+  /** The parent card (a sub-task's story, a task's epic, …). */
+  parent?: { key: string; issueType?: string };
+  /** Issue links on this card, with the other card's key and type. */
+  links?: JiraLink[];
+  /** Jira Components on this card. */
+  components?: string[];
+}
+
+export interface JiraLink {
+  /** The link type's name and both wordings ("Blocks", "blocks", "is blocked by"). */
+  type: string;
+  inward: string;
+  outward: string;
+  /** Which way the OTHER card relates to this one: "outward" = this card <outward wording> other. */
+  direction: "inward" | "outward";
+  key: string;
+  issueType?: string;
+}
+
+/** Links of an issue as returned by Jira (`fields.issuelinks`). */
+export function parseLinks(raw: unknown): JiraLink[] {
+  if (!Array.isArray(raw)) return [];
+  const out: JiraLink[] = [];
+  for (const l of raw as any[]) {
+    const t = l?.type ?? {};
+    const other = l?.outwardIssue ?? l?.inwardIssue;
+    if (!other?.key) continue;
+    out.push({ type: String(t.name ?? ""), inward: String(t.inward ?? ""), outward: String(t.outward ?? ""), direction: l.outwardIssue ? "outward" : "inward", key: String(other.key), ...(other.fields?.issuetype?.name ? { issueType: String(other.fields.issuetype.name) } : {}) });
+  }
+  return out;
 }
 
 export async function fetchIssue(ctx: JiraContext, key: string, acField?: string, extraFields: string[] = []): Promise<JiraIssue> {
-  const fields = ["summary", "description", "status", "issuetype", "updated", ...(acField ? [acField] : []), ...extraFields].join(",");
+  const fields = ["summary", "description", "status", "issuetype", "labels", "updated", "parent", "issuelinks", "components", ...(acField ? [acField] : []), ...extraFields].join(",");
   const res = await netFetch(`${ctx.baseUrl}/rest/api/2/issue/${encodeURIComponent(key)}?fields=${fields}`, {
     headers: { Authorization: ctx.authHeader, Accept: "application/json" },
   });
@@ -49,7 +82,12 @@ export async function fetchIssue(ctx: JiraContext, key: string, acField?: string
     description: toText(f.description),
     acceptanceCriteria: acField ? toText(f[acField]) || undefined : undefined,
     status: String(f.status?.name ?? ""),
+    ...(f.status?.statusCategory?.key ? { statusCategory: String(f.status.statusCategory.key) } : {}),
     ...(f.issuetype?.name ? { issueType: String(f.issuetype.name) } : {}),
+    ...(Array.isArray(f.labels) ? { labels: f.labels.map(String) } : {}),
+    ...(f.parent?.key ? { parent: { key: String(f.parent.key), ...(f.parent.fields?.issuetype?.name ? { issueType: String(f.parent.fields.issuetype.name) } : {}) } } : {}),
+    links: parseLinks(f.issuelinks),
+    components: Array.isArray(f.components) ? f.components.map((x: any) => String(x?.name ?? x)).filter(Boolean) : [],
     url: `${ctx.baseUrl}/browse/${j.key ?? key}`,
     updated: f.updated,
     extra: Object.fromEntries(extraFields.map((x) => [x, toText(f[x])]).filter(([, v]) => v)),
@@ -369,4 +407,93 @@ export async function downloadAttachment(ctx: JiraContext, url: string, size?: n
     chunks.push(value);
   }
   return Buffer.concat(chunks).toString("utf8");
+}
+
+// ---------------------------------------------------------------------------------------------
+// Finding stories (JQL). Jira Cloud's search was replaced by /rest/api/3/search/jql (token paging);
+// Server and Data Center still use /rest/api/2/search (offset paging).
+
+export interface FoundStory {
+  key: string;
+  summary: string;
+  status: string;
+  issueType?: string;
+  labels: string[];
+  updated?: string;
+}
+
+const quoteJql = (v: string) => `"${v.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
+
+/** The JQL `qa-sentinel stories` asks when none is configured. */
+export function storiesJql(o: { projectKeys: string[]; statuses: string[]; issueTypes: string[]; lookbackDays: number }): string {
+  if (!o.projectKeys.length) throw new Error("set requirements.jira.projectKeys (or requirements.jira.search.jql): the search must name the projects it covers");
+  const parts = [`project in (${o.projectKeys.map(quoteJql).join(", ")})`];
+  if (o.statuses.length) parts.push(`status in (${o.statuses.map(quoteJql).join(", ")})`);
+  if (o.issueTypes.length) parts.push(`issuetype in (${o.issueTypes.map(quoteJql).join(", ")})`);
+  parts.push(`updated >= -${Math.round(o.lookbackDays)}d`);
+  return `${parts.join(" AND ")} ORDER BY updated DESC`;
+}
+
+const toFound = (i: any): FoundStory => ({
+  key: String(i.key),
+  summary: String(i.fields?.summary ?? ""),
+  status: String(i.fields?.status?.name ?? ""),
+  ...(i.fields?.issuetype?.name ? { issueType: String(i.fields.issuetype.name) } : {}),
+  labels: Array.isArray(i.fields?.labels) ? i.fields.labels.map(String) : [],
+  ...(i.fields?.updated ? { updated: String(i.fields.updated) } : {}),
+});
+
+const SEARCH_FIELDS = "summary,status,issuetype,labels,updated";
+
+export async function searchStories(ctx: JiraContext, jql: string, o: { max: number; api?: "auto" | "cloud" | "server" }): Promise<FoundStory[]> {
+  const api = o.api ?? "auto";
+  const cloud = async () => {
+    const out: FoundStory[] = [];
+    let token: string | undefined;
+    do {
+      const q = `jql=${encodeURIComponent(jql)}&fields=${SEARCH_FIELDS}&maxResults=${Math.min(100, o.max - out.length)}${token ? `&nextPageToken=${encodeURIComponent(token)}` : ""}`;
+      const page = await jiraCall(ctx, "GET", `/rest/api/3/search/jql?${q}`);
+      out.push(...(page.issues ?? []).map(toFound));
+      token = page.isLast === true ? undefined : page.nextPageToken;
+    } while (token && out.length < o.max);
+    return out.slice(0, o.max);
+  };
+  const server = async () => {
+    const out: FoundStory[] = [];
+    for (let startAt = 0; out.length < o.max; ) {
+      const page = await jiraCall(ctx, "GET", `/rest/api/2/search?jql=${encodeURIComponent(jql)}&fields=${SEARCH_FIELDS}&startAt=${startAt}&maxResults=${Math.min(100, o.max - out.length)}`);
+      const issues: any[] = page.issues ?? [];
+      out.push(...issues.map(toFound));
+      startAt += issues.length;
+      if (!issues.length || startAt >= (page.total ?? 0)) break;
+    }
+    return out.slice(0, o.max);
+  };
+  if (api === "cloud") return cloud();
+  if (api === "server") return server();
+  try {
+    return await cloud();
+  } catch (e) {
+    // Server and Data Center have no /search/jql: 404 (or 405). Anything else (bad JQL, no permission) is a real error.
+    if (!/ 40[45] /.test((e as Error).message)) throw e;
+    return server();
+  }
+}
+
+/** The statuses a Jira project's workflows use (all issue types), for `doctor` to check the configured names against. */
+export async function projectStatuses(ctx: JiraContext, projectKey: string): Promise<string[]> {
+  const j = await jiraCall(ctx, "GET", `/rest/api/2/project/${encodeURIComponent(projectKey)}/statuses`);
+  return [...new Set((Array.isArray(j) ? j : []).flatMap((t: any) => (t.statuses ?? []).map((x: any) => String(x.name))))] as string[];
+}
+
+/** Every link type in the Jira (name and both wordings). */
+export async function linkTypes(ctx: JiraContext): Promise<{ name: string; inward: string; outward: string }[]> {
+  const j = await jiraCall(ctx, "GET", "/rest/api/2/issueLinkType");
+  return (j.issueLinkTypes ?? []).map((t: any) => ({ name: String(t.name), inward: String(t.inward), outward: String(t.outward) }));
+}
+
+/** The issue types a Jira project uses (same endpoint as the statuses). */
+export async function allIssueTypes(ctx: JiraContext, projectKey: string): Promise<string[]> {
+  const j = await jiraCall(ctx, "GET", `/rest/api/2/project/${encodeURIComponent(projectKey)}/statuses`);
+  return [...new Set((Array.isArray(j) ? j : []).map((t: any) => String(t.name)))] as string[];
 }

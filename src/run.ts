@@ -84,6 +84,7 @@ export const ARTIFACT_GLOBS = [
   "qa-healed.md",
   "qa-metrics.md",
   "qa-story-check.md",
+  "qa-stories.md",
   "qa-lessons.md",
   "qa-story-review.md",
   "qa-healed.json",

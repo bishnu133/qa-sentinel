@@ -6,6 +6,8 @@ import { matchesAny } from "../fsutil.js";
 import { ARTIFACT_GLOBS, agentEnv } from "../run.js";
 import { checkPaths, claudePermissions, diffSnapshots, findingsMarkdown, learnPolicy, snapshotTree } from "../guardrails.js";
 import { log } from "../log.js";
+import { withSpend } from "../stories/start.js";
+import type { JobHandle } from "../stories/jobs.js";
 
 export interface LearnOptions {
   cwd: string;
@@ -17,6 +19,11 @@ export interface LearnOptions {
  * write-api-test skill and drafts test-map.yaml. Only three files may change; the result is reviewed as a diff.
  */
 export async function learnCommand(o: LearnOptions): Promise<number> {
+  const cwd = path.resolve(o.cwd);
+  return withSpend({ cwd, c: loadConfig(cwd), label: "learn", skip: o.dryRun }, (code) => code, (_wrap, handle) => learnRun(o, handle), (code) => code);
+}
+
+async function learnRun(o: LearnOptions, handle?: JobHandle): Promise<number> {
   const cwd = path.resolve(o.cwd);
   const c = loadConfig(cwd);
   log.title("qa-sentinel learn");
@@ -41,11 +48,13 @@ export async function learnCommand(o: LearnOptions): Promise<number> {
     deny: perms.deny,
     addDirs: serviceDirs,
     model: c.agent.model,
-    maxBudgetUsd: c.agent.maxBudgetUsd.learn,
+    maxBudgetUsd: Math.min(c.agent.maxBudgetUsd.learn, handle?.remainingUsd() ?? Infinity),
     timeoutMs: c.agent.timeoutMinutes.learn * 60_000,
     env: agentEnv(c),
     dryRun: o.dryRun,
+    accessCheckSeconds: c.agent.accessCheckSeconds,
   });
+  handle?.addCost(res.costUsd ?? 0);
   if (!res.ok) throw new Error(`learn ${res.status}: ${res.result.slice(0, 500)}`);
 
   const touched = diffSnapshots(before, snapshotTree(cwd)).filter((p) => !matchesAny(p, ARTIFACT_GLOBS));

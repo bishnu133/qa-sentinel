@@ -23,6 +23,8 @@ export interface AgentTask {
   env: NodeJS.ProcessEnv;
   model?: string;
   dryRun?: boolean;
+  /** Seconds to wait for the pre-run test call (0 = skip). */
+  accessCheckSeconds?: number;
 }
 
 export type AgentStatus = "ok" | "error" | "timeout" | "max-turns" | "max-budget";

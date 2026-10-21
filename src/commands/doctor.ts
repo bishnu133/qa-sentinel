@@ -9,11 +9,14 @@ import path from "node:path";
 import YAML from "yaml";
 import { indexTests, checkTestMap, readTestMap } from "../analysis/testIndex.js";
 import { CONFIG_FILE, type Config, configPath, loadConfig } from "../config.js";
-import { claudeAvailable } from "../claude.js";
+import { checkClaudeAccess, claudeAvailable, staticAccessProblem } from "../claude.js";
+import { agentEnv } from "../run.js";
 import { isGitRepo } from "../git.js";
 import { log } from "../log.js";
 import { SECRET_NAME } from "../env.js";
 import { currentUser, getProject, gitlabContext } from "../scm/gitlab.js";
+import { jiraContext, projectStatuses, allIssueTypes, linkTypes } from "../scm/jira.js";
+import { statusSets } from "../stories/resolve.js";
 import { junitReporter, layers, roleEnvNames, runCommandRunsEverything, runnerOf } from "../layers.js";
 import { packageScripts } from "../verification.js";
 
@@ -51,6 +54,9 @@ export function runChecks(cwd: string, env: NodeJS.ProcessEnv = process.env): Ch
   else if (route.unsure?.length) add("warn", `model route: ${route.label}`, route.unsure.join("; "))
   else if (route.kind === "login") add("warn", `model route: ${route.label}`, "fine locally; CI needs ANTHROPIC_API_KEY, Bedrock (CLAUDE_CODE_USE_BEDROCK) or Vertex (CLAUDE_CODE_USE_VERTEX)");
   else add("ok", `model route: ${route.label}`, route.managed ? `from ${route.managed}: runs are billed to whoever owns that setup` : undefined);
+
+  const keyProblem = route.missing.length ? undefined : staticAccessProblem(env, route);
+  if (keyProblem) add("fail", "Claude credentials look right", keyProblem);
 
   isGitRepo(cwd) ? add("ok", "test repo is a git repository") : add("fail", "test repo is a git repository", "git init");
 
@@ -272,10 +278,25 @@ export async function onlineChecks(cwd: string, env: NodeJS.ProcessEnv = process
   return checks;
 }
 
+/** A real one-word call to Claude, the way a run would make it (costs a fraction of a cent). */
+export async function claudeLiveCheck(cwd: string): Promise<Check> {
+  const c = loadConfig(cwd);
+  const seconds = c.agent.accessCheckSeconds || 60;
+  const r = await checkClaudeAccess({ cwd, env: agentEnv(c), model: c.agent.model, seconds });
+  if (r.ok) return { level: r.warning ? "warn" : "ok", label: "Claude answers a test call", hint: r.warning ?? (r.durationMs !== undefined ? `${Math.round(r.durationMs / 100) / 10}s` : r.skipped) };
+  return { level: "fail", label: "Claude answers a test call", hint: r.message };
+}
+
 export async function doctorCommand(cwd: string, o: { online?: boolean } = {}): Promise<number> {
   log.title("qa-sentinel doctor");
   const checks = runChecks(path.resolve(cwd));
+  if (o.online && !checks.some((c) => c.level === "fail" && c.label.includes("valid"))) checks.push(await claudeLiveCheck(path.resolve(cwd)));
   if (o.online && !checks.some((c) => c.level === "fail" && c.label.includes("valid"))) checks.push(...(await onlineChecks(path.resolve(cwd))));
+  if (o.online && !checks.some((c) => c.level === "fail" && c.label.includes("valid"))) {
+    const c = loadConfig(path.resolve(cwd));
+    const ctx = jiraContext(c.requirements.jira.baseUrl);
+    if (ctx && (c.requirements.jira.projectKeys.length || c.requirements.jira.hierarchy.links.length)) checks.push(...(await jiraConfigChecks(c, { statuses: (p) => projectStatuses(ctx, p), issueTypes: (p) => allIssueTypes(ctx, p), linkTypes: () => linkTypes(ctx) })));
+  }
   for (const ch of checks) {
     const line = ch.hint ? `${ch.label}  — ${ch.hint}` : ch.label;
     if (ch.level === "ok") log.ok(line);
@@ -286,4 +307,53 @@ export async function doctorCommand(cwd: string, o: { online?: boolean } = {}): 
   const warns = checks.filter((c) => c.level === "warn").length;
   log.info(`\n${fails} failing, ${warns} warning(s).`);
   return fails > 0 ? 1 : 0;
+}
+
+/** What `doctor --online` can ask Jira, injectable so the checks can be tested. */
+export interface JiraProbe {
+  statuses(project: string): Promise<string[]>;
+  issueTypes(project: string): Promise<string[]>;
+  linkTypes(): Promise<{ name: string; inward: string; outward: string }[]>;
+}
+
+/** The Jira settings against the real Jira: do the status, issue type and link names exist? A wrong name fails silently otherwise. */
+export async function jiraConfigChecks(c: ReturnType<typeof loadConfig>, probe: JiraProbe): Promise<Check[]> {
+  const j = c.requirements.jira;
+  const out: Check[] = [];
+  const has = (list: string[], v: string) => list.some((x) => x.toLowerCase() === v.toLowerCase());
+  for (const project of j.projectKeys) {
+    const sets = statusSets(c, `${project}-1`);
+    try {
+      const known = await probe.statuses(project);
+      for (const [label, names, setting] of [["ready", sets.ready, "requirements.jira.workflow.readyStatuses"], ["approved", sets.approved, "requirements.jira.approvedStatuses"]] as const) {
+        const found = names.filter((n) => has(known, n));
+        if (!found.length) out.push({ level: "warn", label: `${project}: some ${label} status exists in Jira`, hint: `none of ${names.join(", ")} is a status of ${project}; ${setting}${j.workflow.byProject[project] ? ` (byProject.${project})` : ""} should use: ${known.join(", ")}` });
+        else out.push({ level: "ok", label: `${project}: ${label} statuses found in Jira (${found.join(", ")})${found.length < names.length ? `; not in this project: ${names.filter((n) => !has(known, n)).join(", ")}` : ""}` });
+      }
+    } catch (e) {
+      out.push({ level: "warn", label: `${project}: workflow statuses readable`, hint: (e as Error).message.slice(0, 160) });
+    }
+    if (j.featureIssueTypes.length) {
+      try {
+        const types = await probe.issueTypes(project);
+        const unknown = j.featureIssueTypes.filter((t) => !has(types, t));
+        out.push(unknown.length ? { level: "warn", label: `${project}: feature issue types exist`, hint: `${unknown.join(", ")} not found; the project has ${types.join(", ")}` } : { level: "ok", label: `${project}: feature issue types exist (${j.featureIssueTypes.join(", ")})` });
+      } catch (e) {
+        out.push({ level: "warn", label: `${project}: issue types readable`, hint: (e as Error).message.slice(0, 160) });
+      }
+    }
+  }
+  if (j.hierarchy.links.length) {
+    try {
+      const types = await probe.linkTypes();
+      for (const l of j.hierarchy.links) {
+        const hit = types.some((t) => [t.name, t.inward, t.outward].some((w) => w.toLowerCase() === l.name.toLowerCase()));
+        out.push(hit ? { level: "ok", label: `link type "${l.name}" exists` } : { level: "warn", label: `link type "${l.name}" exists in Jira`, hint: `available: ${types.map((t) => `${t.name} (${t.outward} / ${t.inward})`).join("; ")}` });
+      }
+    } catch (e) {
+      out.push({ level: "warn", label: "Jira link types readable", hint: (e as Error).message.slice(0, 160) });
+    }
+  }
+  if (j.hierarchy.links.length && !j.featureIssueTypes.length) out.push({ level: "warn", label: "requirements.jira.featureIssueTypes set", hint: "hierarchy.links is set but with no feature types every card is its own feature, so nothing is followed" });
+  return out;
 }

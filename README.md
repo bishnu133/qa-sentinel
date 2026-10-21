@@ -133,6 +133,8 @@ Starting from nothing? `qa-sentinel init --mode scratch` scaffolds Playwright AP
 | `verify [--policy] [--base <ref>]` | The same independent checks, for any branch. Use it as the blocking CI gate on agent MRs. |
 | `gap-report --story KEY` / `generate --story KEY` | Story mode: the story's changes in every service (from MRs, branches and commits naming the key) as one analysis and one test MR on `qa-sentinel/story-KEY`. |
 | `spec --story KEY [--story-file f] [--commit] [--dry-run]` | Writes or updates `expected/<STORY>.md` from the story alone (code-blind): what each AC means in testable terms; lists questions for the PO. `generate` does it as its first step. See [docs/EXPECTED-BEHAVIOUR.md](docs/EXPECTED-BEHAVIOUR.md) and [docs/GLOSSARY.md](docs/GLOSSARY.md). |
+| `stories [--stories-dir <dir>]` | No AI. Background check of every story (Jira search or story files): state, next step, who acts, what blocks it. Writes `qa-stories.md` and story records. `--json` for machines. See [docs/AUTOMATION.md](docs/AUTOMATION.md). |
+| `known-defects [--apply] [--commit] [--push]` | No AI. After a test run: finds `test.fail` known defects that now pass (bug fixed); `--apply` takes the marker and QA-BUG note off for review. |
 | `story-check --story KEY [--fields]` | Onboarding: how qa-sentinel reads one of your stories (each heading's role, ACs from lists, Gherkin or Given/When/Then tables, scope items, out of scope, services named) and what to change in `requirements.template`. `--fields` lists the issue's Jira fields with their ids. No AI call. |
 | `review-story --story KEY [--post]` | Before development: reviews the story's ACs and scope (ambiguity, missing negative/edge cases, scope without an AC). `--post` comments on the story. |
 | `add-mobile [--platform android\|ios]` | Adds the mobile layer (WebdriverIO + Appium): turns `tests.mobile` on, writes `wdio.conf.ts`, screen objects, ui helper, evidence hooks, example spec, the write-mobile-test skill and the WebdriverIO packages. (`init --mobile` for new projects.) |
@@ -228,6 +230,13 @@ requirements:
     scopeFields: [{ field: customfield_10050, name: Tech scope, prefix: TS }]   # optional: scope kept in Jira fields
     approvedStatuses: [Ready for Dev, In Progress, Done]   # these statuses make AC "approved"
     featureIssueTypes: [Story]   # only these get expected behaviour (empty = every type)
+    workflow:
+      readyStatuses: [Ready for Testing]      # development is done; cross-service tests wait for this
+      byProject: { ABC: { readyStatuses: [QA Ready] } }   # a project with different status names
+    hierarchy:
+      followParent: true                      # a bug/sub-task follows its parent story
+      links: [{ name: "is caused by", from: [Bug] }]   # or follow this link (wording or link type name)
+    components: { Orders: orders-api }        # Jira Component -> service name
   template:                          # how your team writes stories (`story-check` shows how a story is read)
     - { role: acceptance-criteria, name: Acceptance criteria, headings: [acceptance criteria, acs] }
     - { role: scope, name: In scope, prefix: IS, headings: [in scope, scope] }

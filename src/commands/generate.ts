@@ -21,6 +21,13 @@ import { TEST_FILE, addedLines } from "../guardrails.js";
 import { indexTests, changedTests, checkNewTests, checkTestMap, readTestMap, traceMarkdown, traceStory } from "../analysis/testIndex.js";
 import { createOrUpdateMergeRequest, gitlabContext, pushUrl } from "../scm/gitlab.js";
 import { engineFor } from "../engines/ClaudeCodeEngine.js";
+import { ClaudeAccessError } from "../claude.js";
+import { budgetedEngine, endStateOf, generateJobKey } from "../stories/jobs.js";
+import { NO_STORY } from "../stories/record.js";
+import { type JobHandle } from "../stories/jobs.js";
+import { type RecordStore } from "../stories/record.js";
+import { endJob, startJob } from "../stories/start.js";
+import { acHash } from "../expected/format.js";
 import { type AgentResult, addUsage } from "../engines/AgentEngine.js";
 import { planChange } from "../plan/planner.js";
 import { actionable } from "../plan/validate.js";
@@ -49,6 +56,10 @@ export interface GenerateOptions {
   storyFile?: string;
   /** Story mode: tests for everything this story changed, across all its service repos (one branch, one MR). */
   story?: string;
+  /** Run even if the same job (same story, ACs and commit) already finished, failed too often or looks to be running. Budgets still apply. */
+  force?: boolean;
+  /** Skip a job that already finished with the same inputs, also outside CI. */
+  once?: boolean;
   push?: boolean;
   /** Named environment from `environments` to run the tests against before anything is pushed. */
   env?: string;
@@ -76,6 +87,28 @@ export interface BackfillTarget {
  * Returns the exit code: 0 when VERIFIED, or when the plan needs no test changes.
  */
 export async function generateCommand(o: GenerateOptions): Promise<number> {
+  const ctl: JobControl = {};
+  let code: number;
+  try {
+    code = await generateRun(o, ctl);
+  } catch (e) {
+    // Credentials missing or refused (stopped by something outside this story) don't count against the job; other errors do.
+    if (ctl.handle && ctl.store) await endJob(ctl.store, ctl.handle, { state: e instanceof ClaudeAccessError ? "aborted" : "failed", outcome: ctl.outcome ?? "error", error: (e as Error).message, runId: ctl.runId });
+    throw e;
+  }
+  if (ctl.handle && ctl.store) await endJob(ctl.store, ctl.handle, { state: endStateOf(code, ctl.outcome ?? ""), outcome: ctl.outcome ?? `exit ${code}`, runId: ctl.runId });
+  return code;
+}
+
+/** What the wrapper needs to close the story record's job when the run ends. */
+interface JobControl {
+  store?: RecordStore;
+  handle?: JobHandle;
+  outcome?: string;
+  runId?: string;
+}
+
+async function generateRun(o: GenerateOptions, ctl: JobControl): Promise<number> {
   const cwd = path.resolve(o.cwd);
   const c = loadConfig(cwd);
   if (c.level === "intelligence") {
@@ -159,6 +192,17 @@ export async function generateCommand(o: GenerateOptions): Promise<number> {
     log.step(`requirements: ${req.storyKey ?? req.title ?? req.source} (${req.acceptanceCriteria.length} AC${req.scopeItems?.length ? ` + ${req.scopeItems.length} scope item(s)` : ""}, ${req.source}, ${req.approvalStatus})`);
   }
 
+  // AI work starts here: claim the job (same story, ACs and commit = same key) and check the budget first.
+  if (!o.dryRun) {
+    const story = (req.storyKey ?? o.story ?? "").toUpperCase() || NO_STORY;
+    const hashes = o.backfill ? o.backfill.map((t) => `${t.method} ${t.path}`) : req.acceptanceCriteria.map((a) => acHash(a.text));
+    const head = parts ? parts.map((p) => p.cs.head).join("+") : cs.head;
+    const start = await startJob({ cwd, c, story, kind: "generate", key: generateJobKey(story === NO_STORY ? undefined : story, parts ? "story" : service.name, head, hashes), force: o.force, once: o.once });
+    if (!start.run) return start.exitCode;
+    ctl.store = start.store;
+    ctl.handle = start.handle;
+  }
+
   const sha8 = parts ? o.story! : cs.head.slice(0, 8);
   const backfillId = o.backfill ? `${new Date().toISOString().slice(0, 10)}-${backfillHash(o.backfill)}` : "";
   const branch = parts ? `qa-sentinel/story-${o.story}` : o.backfill ? `qa-sentinel/backfill-${service.name}-${backfillId}` : `qa-sentinel/${service.name}-${sha8}`;
@@ -175,9 +219,11 @@ export async function generateCommand(o: GenerateOptions): Promise<number> {
   const manifest = startManifest(cwd, c, run, "generate", { service, base: cs.base, head: cs.head, changedFiles: relevant, diff: cs.diff }, req);
   let startSha = resolveSha(cwd, "HEAD");
   const before = (parts ? parts.map((p) => ({ name: p.service.name, repo: p.repo })) : [{ name: service.name, repo }]).map((r) => ({ ...r, snap: snapshotTree(r.repo) }));
-  const engine = engineFor(c);
+  ctl.runId = run.id;
+  const engine = ctl.handle ? budgetedEngine(engineFor(c), ctl.handle) : engineFor(c);
   const runs: AgentResult[] = [];
   const finish = (outcome: string, code: number) => {
+    ctl.outcome = outcome;
     const usage = addUsage(...runs);
     const denials = runs.flatMap((r) => r.denials ?? []);
     manifest.agent = { status: runs.at(-1)?.status ?? "not-run", ...usage, deniedToolCalls: denials.length };

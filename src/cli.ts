@@ -10,8 +10,10 @@ import { Command, Option } from "commander";
 import { addDataLedgerCommand, addMobileCommand, addWebCommand, initCommand, upgradeCommand } from "./commands/init.js";
 import { healedCommand } from "./commands/healed.js";
 import { specCommand } from "./commands/spec.js";
+import { storiesCommand } from "./commands/stories.js";
 import { reviewStoryCommand } from "./commands/reviewStoryCmd.js";
 import { bugsCommand } from "./commands/bugs.js";
+import { knownDefectsCommand } from "./commands/knownDefects.js";
 import { tagCommand } from "./commands/tag.js";
 import { metricsCommand } from "./commands/metrics.js";
 import { storyCheckCommand } from "./commands/storyCheck.js";
@@ -118,7 +120,30 @@ program
   .option("--story-file <path>", "story as a markdown file")
   .option("--commit", "commit the file on the current branch")
   .option("--dry-run", "prepare the inputs without calling the agent")
-  .action(wrap(async (o) => specCommand({ cwd: cwd(), story: o.story, storyFile: o.storyFile, commit: o.commit, dryRun: o.dryRun })));
+  .option("--force", "run even if the same job (same ACs) finished, failed too often or looks to be running; budgets still apply")
+  .option("--once", "skip the AI run if the same job already finished (the default in CI)")
+  .action(wrap(async (o) => specCommand({ cwd: cwd(), story: o.story, storyFile: o.storyFile, commit: o.commit, dryRun: o.dryRun, force: o.force, once: o.once })));
+
+program
+  .command("stories")
+  .description("background check, no AI: for each story, what it needs next (expected behaviour, tests, QA triage) and who does it")
+  .option("--story <key...>", "these Jira stories (default: search Jira, see requirements.jira.search)")
+  .option("--stories-dir <dir>", "read stories from markdown files in this folder instead of Jira")
+  .option("--all", "also list the stories that are left alone (opted out, not approved, not a feature)")
+  .option("--json", "print JSON (state, next step, tasks per story) for a pipeline to act on")
+  .option("--no-record", "don't update the story records")
+  .option("-o, --out <file>", "markdown output", "qa-stories.md")
+  .action(wrap(async (o) => storiesCommand({ cwd: cwd(), story: o.story, storiesDir: o.storiesDir, all: o.all, json: o.json, noRecord: o.record === false, out: o.out })));
+
+program
+  .command("known-defects")
+  .description("no AI: find known-defect tests (test.fail + QA-BUG) that now pass because the bug is fixed; --apply takes the markers off")
+  .option("--results <file>", "Playwright JSON report", "test-results/results.json")
+  .option("--apply", "edit the test files (test.fail -> test, remove QA-BUG / QA-AGENT note lines)")
+  .option("--commit", "also commit on a new branch (needs --apply)")
+  .option("--push", "also push and open a merge request (needs --commit)")
+  .option("--branch <name>", "branch for --commit")
+  .action(wrap(async (o) => knownDefectsCommand({ cwd: cwd(), results: o.results, apply: o.apply, commit: o.commit, push: o.push, branch: o.branch })));
 
 program
   .command("bugs")
@@ -294,6 +319,8 @@ program
   .option("--push", "push the branch and open a GitLab merge request")
   .option("--env <name>", "run the tests against this environment from `environments:` (e.g. dev, sit) before pushing")
   .option("--dry-run", "do everything except call Claude and commit")
+  .option("--force", "run even if the same job (same story, ACs and commit) finished, failed too often or looks to be running; budgets still apply")
+  .option("--once", "skip the run if the same job already finished (the default in CI)")
   .action(wrap(async (o) => generateCommand({ cwd: cwd(), ...needService(o) })));
 
 program

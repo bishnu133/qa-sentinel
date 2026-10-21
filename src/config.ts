@@ -224,6 +224,77 @@ export const ConfigSchema = z.object({
            * their text, without those. Empty (default): every issue type counts as a feature.
            */
           featureIssueTypes: z.array(z.string()).default([]),
+          /**
+           * Which statuses mean what, per Jira project (one test repository often serves projects with different
+           * workflows). `readyStatuses`: development is done and the story can be tested end to end (matched without
+           * regard to case; Jira's own "Done" category counts too, where known). `byProject` overrides either list for
+           * one project key.
+           */
+          workflow: z
+            .object({
+              readyStatuses: z.array(z.string()).default(["Ready for Testing", "Ready for QA", "Dev Done", "In Testing", "In QA"]),
+              byProject: z.record(z.object({ readyStatuses: z.array(z.string()).optional(), approvedStatuses: z.array(z.string()).optional() })).default({}),
+            })
+            .default({}),
+          /**
+           * How a bug, task or sub-task is traced to its feature (only when `featureIssueTypes` is set; with no
+           * feature types every card is its own feature). The rules that keep wrong links out are fixed in code:
+           * only cards with code, one hop, parent first, the target must be a feature in `projectKeys`, and a card
+           * that reaches two features is not attached to either.
+           */
+          hierarchy: z
+            .object({
+              followParent: z.boolean().default(true),
+              /** Link types to follow when a card has no parent that is a feature: `name` is the link type or its inward/outward wording ("is caused by"). `from`: issue types it applies to (empty: any non-feature). */
+              links: z.array(z.object({ name: z.string().min(1), from: z.array(z.string()).default([]) })).default([]),
+            })
+            .default({}),
+          /** Jira Components mapped to services of `workspace.services` (the firmest "which services does this story need" signal). */
+          components: z.record(z.string()).default({}),
+          /**
+           * Which stories the background check (`qa-sentinel stories`) looks at when it is not given keys. Without
+           * `jql`, it asks for stories of `projectKeys` in an approved status, of a feature issue type, changed
+           * within `lookbackDays`.
+           */
+          search: z
+            .object({
+              /** Your own JQL instead of the built one (it should be ordered; maxStories still applies). */
+              jql: z.string().optional(),
+              lookbackDays: z.number().int().min(1).max(365).default(30),
+              maxStories: z.number().int().min(1).max(500).default(50),
+              /** Stories with one of these labels are left alone (QA opts a story out by adding it). */
+              skipLabels: z.array(z.string()).default(["qa-skip"]),
+              /** When not empty, only stories with one of these labels are looked at (QA opts a story in). */
+              onlyLabels: z.array(z.string()).default([]),
+              /** Jira Cloud and Server/Data Center search differently. auto: try the Cloud search, fall back to the Server one. */
+              api: z.enum(["auto", "cloud", "server"]).default("auto"),
+            })
+            .default({}),
+        })
+        .default({}),
+    })
+    .default({}),
+  /**
+   * Background work: where the story record is kept, how repeated AI jobs are handled, and how much the AI may spend.
+   * Budgets count what the story record knows about (see docs/AUTOMATION.md); 0 means no limit.
+   */
+  automation: z
+    .object({
+      /** file: .qa-sentinel/stories/ (keep it with the CI cache). jira: also a Jira issue property, so a runner with no cache still knows. */
+      record: z.enum(["file", "jira"]).default("file"),
+      jobs: z
+        .object({
+          /** ci (default): in CI, a job whose inputs were already done is skipped; always: also on a laptop; never. */
+          skipDone: z.enum(["ci", "always", "never"]).default("ci"),
+          lockMinutes: z.number().int().min(5).max(1440).default(90),
+          maxAttempts: z.number().int().min(1).max(10).default(3),
+        })
+        .default({}),
+      budgets: z
+        .object({
+          perStoryUsd: z.number().min(0).default(25),
+          perDayUsd: z.number().min(0).default(100),
+          perMonthUsd: z.number().min(0).default(1000),
         })
         .default({}),
     })
@@ -417,6 +488,8 @@ export const ConfigSchema = z.object({
         })
         .default({}),
       maxFixAttempts: z.number().int().min(0).max(10).default(3),
+      /** Seconds to wait for a one-word test call before the first agent run, so bad credentials fail in seconds. 0 = skip the check. */
+      accessCheckSeconds: z.number().int().min(0).max(600).default(60),
       timeoutMinutes: z
         .object({
           gapReport: z.number().positive().default(15),
