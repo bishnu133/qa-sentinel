@@ -21,6 +21,15 @@
 - Removing a known-defect marker also removes QA-BUG / QA-AGENT notes separated from the test by other comments.
 - Ready status: Jira's "Done" status category counts as ready (a finished story is not stuck waiting).
 
+## Unreleased — one test MR per story, readiness per AC (phase 3)
+
+- **Readiness per acceptance criterion** in `qa-sentinel feature <STORY>`: an AC is ready for its end-to-end tests when every service it names (`Services` in `expected/<STORY>.md`; none named = every service the story changed) is merged and deployed in `--env`, and the Jira card is in a ready status. The report shows a table with the reason for each AC. `--run` now runs only the tests whose ACs are all ready (a test with no `@ac` tag waits for all of them); `--force` runs everything.
+- **Gap report once, when the MR is ready for review:** with `automation.gapReport.when: ready` (the default) a dev MR that is still a draft gets no gap report (exit 0, a short note instead). `--even-if-draft` or `when: always` restores the old behaviour. Story-wide reports (`--story`) are not affected.
+- **One comment, refreshed only when something changed:** the MR comment carries a hidden fingerprint of the test-relevant diff and the story's ACs. A later push with the same fingerprint (rebase, merge from main, docs/config only) makes no AI run and no edit; a changed one updates the same comment and adds an "Updated for commit …" line on top. `--refresh` forces a new report.
+- Review fixes (Opus) for the above: the fingerprint reads each file's diff from git (non-ASCII paths, paths with spaces and binary files used to be missed, which could skip a needed report); it also covers the expected-behaviour file and scope items; only the comment written by the token's own user counts, and the stamp must be the last line; the draft and unchanged checks run before any job or budget is claimed (no exit 4 for a draft); a draft MR now gets a visible "waiting" note; a partial `feature --run` ends with a warning naming the ACs that did not run; "Draft-mode toggle" is no longer taken for a draft.
+- Already in place and unchanged: `generate --story` writes one test branch and MR for the whole story across services.
+
+
 ## Unreleased — AC-first generation (phase 1)
 
 **Upgrading:** `qa-sentinel upgrade` refreshes the planning and authoring skills, but not your `write-api-test`, `write-web-test` and `write-mobile-test` skills (they hold your learned conventions). Copy the discrepancy line (`test.fixme` + `// QA-AGENT:` with the behaviour id, never `test.fail`) and the "never assert the code's value" line from `templates/skills/…` by hand.

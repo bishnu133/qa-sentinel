@@ -150,6 +150,22 @@ qa-sentinel stories --story YOUR-BUG-KEY
 ```
 Expect: `doctor` says OK or warns about a status, issue type or link name Jira does not have (with the names it does have); `story-check` ends with "Which feature this card belongs to" and says how the bug reaches its story, or why it does not; `stories` lists the story, not the bug. If a bug is not attached, the sentence says why.
 
+## 12. Phase 3 checks (no AI; read-only)
+
+Per-AC readiness (needs a story with an `expected/<KEY>.md` whose ACs list `Services`, and `workspace.services[].version` set):
+```bash
+qa-sentinel feature YOUR-KEY --env uat
+```
+Expect a table "Ready for end-to-end tests, per acceptance criterion". An AC that lists only a deployed service shows ✅ even if another service of the story is still waiting.
+
+Draft gap report (in an MR pipeline, or simulate):
+```bash
+CI_MERGE_REQUEST_IID=1 CI_PROJECT_ID=1 CI_MERGE_REQUEST_TITLE="Draft: test" qa-sentinel gap-report -s <service>
+```
+Expect "merge request is a draft; the gap report waits" and exit code 0. Without a GitLab token it uses the title; with one it asks GitLab.
+
+Refresh behaviour (needs a real MR with a GitLab token and AI access): mark the MR ready and let the pipeline post the report. Push a docs-only change: expect "nothing changed since the report for …" and the MR comment untouched. Push a code change: the same comment is updated and starts with "Updated for commit …".
+
 ## What to send back
 
 - Output of steps 2, 3, 5 and 6 (copy the terminal text).

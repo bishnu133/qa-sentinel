@@ -304,6 +304,8 @@ program
   .option("-o, --out <file>", "where to write the report", "qa-gap-report.md")
   .option("--post", "post or update the report as a GitLab MR comment")
   .option("--dry-run", "do everything except call Claude")
+  .option("--even-if-draft", "make the report even if the merge request is still a draft")
+  .option("--refresh", "make a new report even if nothing changed since the one on the merge request")
   .action(wrap(async (o) => (await gapReportCommand({ cwd: cwd(), ...needService(o) })).exitCode));
 
 program

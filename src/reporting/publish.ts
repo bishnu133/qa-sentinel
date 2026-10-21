@@ -9,7 +9,7 @@ import { log } from "../log.js";
  */
 export async function publish(
   c: Config,
-  i: { report: string; jiraSummary?: string; service: string; storyKey?: string; mr: Partial<ReturnType<typeof gitlabMrFromEnv>>; targets?: Config["reporting"]["targets"] },
+  i: { report: string; jiraSummary?: string; service: string; storyKey?: string; /** Hidden stamp for the MR comment only (see plan/fingerprint.ts). */ stamp?: string; mr: Partial<ReturnType<typeof gitlabMrFromEnv>>; targets?: Config["reporting"]["targets"] },
   env: NodeJS.ProcessEnv = process.env,
 ): Promise<string[]> {
   const done: string[] = [];
@@ -20,7 +20,7 @@ export async function publish(
         if (!ctx) log.warn("--post (gitlab-mr): set QA_SENTINEL_GITLAB_TOKEN (or GITLAB_TOKEN) to comment on the MR");
         else if (!i.mr.project || !i.mr.mrIid) log.warn("--post (gitlab-mr): no merge request context (CI_PROJECT_ID / CI_MERGE_REQUEST_IID)");
         else {
-          const r = await upsertMrNote(ctx, i.mr.project, i.mr.mrIid, i.report);
+          const r = await upsertMrNote(ctx, i.mr.project, i.mr.mrIid, i.stamp ? `${i.report}\n${i.stamp}\n` : i.report);
           log.ok(`MR !${i.mr.mrIid}: comment ${r.action}`);
           done.push("gitlab-mr");
         }

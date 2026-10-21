@@ -82,3 +82,14 @@ Set under `requirements.jira` (see the README for the YAML):
 - `components`: maps a Jira Component name to a service name; components not mapped are listed as `unmappedComponents`.
 
 Check it with `qa-sentinel story-check --story KEY` (section "Which feature this card belongs to") and `qa-sentinel doctor --online` (warns when a status, issue type or link name does not exist in your Jira). These only read Jira.
+
+
+## Readiness per AC and the gap report on ready MRs (phase 3)
+
+`qa-sentinel feature SHOP-12 --env uat` adds a table: for each AC, ✅ ready, 🛠️ not merged, ⏳ waiting for the Jira status, ⏳ waiting for deployment, or ❔ can't tell, each with the reason. Fixed rules, no AI: an AC depends on the services listed for it in `expected/SHOP-12.md` (none listed = every service the story changed); it is ready when each of them is merged and deployed (the service's `version` endpoint, see `workspace.services[].version`) and the card is in a ready status (`requirements.jira.workflow`). `feature --run` runs the tests whose ACs are all ready and says which ones wait.
+
+`gap-report` on a dev MR: `automation.gapReport.when` is `ready` by default, so a draft MR gets no report until the author marks it ready; GitLab is asked for the current draft state, so a retried pipeline sees a change made after it started. Marking an MR ready does not start a pipeline by itself: push, or retry the job. `--even-if-draft` overrides.
+
+Each push after that: the report on the MR carries a hidden stamp (a fingerprint of the diff of the test-relevant files, line numbers ignored, plus the ACs). If the stamp matches, nothing runs and the comment is left alone; if it differs, the same comment is updated and starts with "Updated for commit …". A failed report is not stamped, so the next push tries again. `--refresh` makes a new report regardless. Story-wide reports (`--story`) are not stamped. The stamp is read from the GitLab comment, so it works on runners with no cache; if the comment is deleted, the next push makes a fresh report.
+
+While an MR is a draft, `gap-report --post` puts a short "waiting" note in the report's comment, so nobody assumes a report exists; the real report replaces it. The "nothing changed" check also covers the story's `expected/` file and scope items, and it only trusts the comment written by the GitLab token's own user.

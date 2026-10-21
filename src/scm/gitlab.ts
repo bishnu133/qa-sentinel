@@ -71,11 +71,27 @@ const enc = (p: string | number) => encodeURIComponent(String(p));
 
 export const MARKER = "<!-- qa-sentinel:gap-report -->";
 
+/** The notes written by the token's own user (anyone can paste the marker into a comment; only ours counts). Without a user id, all notes. */
+async function ownNotes(ctx: GitLabContext, notes: any[]): Promise<any[]> {
+  try {
+    const me = (await call(ctx, "GET", "/user", undefined, 1)).data?.id;
+    return me === undefined ? notes : notes.filter((n) => n.author?.id === me);
+  } catch {
+    return notes;
+  }
+}
+
+/** The body of the qa-sentinel gap-report note on an MR, if there is one. */
+export async function getMrNoteBody(ctx: GitLabContext, project: string | number, mrIid: string | number): Promise<string | undefined> {
+  const notes = await getAll(ctx, `/projects/${enc(project)}/merge_requests/${enc(mrIid)}/notes?sort=asc`);
+  return (await ownNotes(ctx, notes)).find((n) => typeof n.body === "string" && n.body.includes(MARKER))?.body;
+}
+
 /** Create or update the single qa-sentinel note on an MR (searches all pages of notes). */
 export async function upsertMrNote(ctx: GitLabContext, project: string | number, mrIid: string | number, body: string) {
   const base = `/projects/${enc(project)}/merge_requests/${enc(mrIid)}/notes`;
   const notes = await getAll(ctx, `${base}?sort=asc`);
-  const existing = notes.find((n) => typeof n.body === "string" && n.body.includes(MARKER));
+  const existing = (await ownNotes(ctx, notes)).find((n) => typeof n.body === "string" && n.body.includes(MARKER));
   const full = `${MARKER}\n${body}`;
   if (existing) {
     await call(ctx, "PUT", `${base}/${existing.id}`, { body: full });
@@ -127,6 +143,27 @@ export async function getProject(ctx: GitLabContext, project: string | number): 
 
 export async function currentUser(ctx: GitLabContext): Promise<any> {
   return (await call(ctx, "GET", "/user", undefined, 1)).data;
+}
+
+/** GitLab treats these title prefixes as a draft: "Draft:", "Draft -", "[Draft]", "(Draft)". */
+export const isDraftTitle = (title: string | undefined) => /^\s*(\[draft\]|\(draft\)|draft\s*:|draft\s+-(\s|$))/i.test(title ?? "");
+
+/**
+ * Is this merge request still a draft? Asks GitLab (a retried pipeline keeps the title it started with); when that
+ * can't be asked, the title from the pipeline is used. Unknown is "not a draft" so a report is never lost by accident.
+ */
+export async function mrIsDraft(ctx: GitLabContext | undefined, project: string | undefined, iid: string | undefined, titleFromEnv: string | undefined): Promise<boolean> {
+  if (ctx && project && iid) {
+    try {
+      const { data } = await call(ctx, "GET", `/projects/${encodeURIComponent(project)}/merge_requests/${encodeURIComponent(iid)}`, undefined, 2);
+      if (typeof data?.draft === "boolean") return data.draft;
+      if (typeof data?.work_in_progress === "boolean") return data.work_in_progress;
+      if (typeof data?.title === "string") return isDraftTitle(data.title);
+    } catch {
+      /* fall back to the title below */
+    }
+  }
+  return isDraftTitle(titleFromEnv);
 }
 
 /** MR context when running inside a GitLab merge request pipeline (or Jenkins with the GitLab plugin). */
