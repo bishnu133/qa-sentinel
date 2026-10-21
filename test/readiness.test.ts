@@ -38,6 +38,11 @@ describe("acReadiness", () => {
     expect(r.state).toBe("undetermined");
     expect(r.reason).toContain("billing");
   });
+  it("says which named services were not waited for", () => {
+    const r = acReadiness(manifest([orders]), expected({ "AC-1": ["orders", "web"] }), ["AC-1"], true)[0];
+    expect(r.state).toBe("ready");
+    expect(r.reason).toContain("web named by the AC, not changed in this story");
+  });
   it("renders a table", () => {
     const md = readinessMarkdown(acReadiness(manifest([orders]), undefined, ["AC-1"], true)).join("\n");
     expect(md).toContain("| AC-1 | ✅ ready |");
@@ -66,7 +71,7 @@ describe("draft merge requests", () => {
   afterEach(() => vi.unstubAllGlobals());
   it("knows GitLab's draft prefixes", () => {
     for (const t of ["Draft: x", "draft - x", "[Draft] x", "(Draft) x", "  DRAFT: x"]) expect(isDraftTitle(t)).toBe(true);
-    for (const t of ["Drafting rules", "Add draft mode", undefined, ""]) expect(isDraftTitle(t)).toBe(false);
+    for (const t of ["Drafting rules", "Add draft mode", "Draft-mode toggle", undefined, ""]) expect(isDraftTitle(t)).toBe(false);
   });
   it("asks GitLab first, falls back to the title, and never guesses draft", async () => {
     const ctx = { baseUrl: "https://gl.example", token: "t", apiUrl: "https://gl.example/api/v4", headers: {} } as any;

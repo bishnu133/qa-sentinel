@@ -71,7 +71,7 @@ export function changeSet(repo: string, baseRef: string, headRef: string): Chang
   const head = resolveSha(repo, headRef);
   const range = `${base}...${head}`;
   // --relative: a service that is a folder of a monorepo sees only its own changes, with paths from its folder.
-  const files = git(repo, ["diff", "--relative", "--name-only", range]).split("\n").filter(Boolean);
+  const files = git(repo, ["-c", "core.quotePath=false", "diff", "--relative", "--name-only", range]).split("\n").filter(Boolean);
   const diff = git(repo, ["diff", "--relative", "--unified=5", range]);
   return { base, head, files, diff };
 }

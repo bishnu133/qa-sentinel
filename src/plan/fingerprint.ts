@@ -2,37 +2,35 @@ import crypto from "node:crypto";
 
 /**
  * Has anything the gap report depends on changed since the last report on this MR? The report is stamped with a
- * fingerprint of the test-relevant diff and the story's ACs; a later push with the same fingerprint (a rebase, a
- * merge from main, a doc or config change) needs no new AI run and no edit of the comment.
+ * fingerprint of the test-relevant diff, the story's ACs and the other inputs of the plan; a later push with the same
+ * fingerprint (a rebase, a merge from main, a doc or config change) needs no new AI run and no edit of the comment.
+ * When a fingerprint cannot be built safely, there is none, and the report is made.
  */
 
-/** The per-file parts of a unified diff, keyed by path (new path for renames). */
-export function diffByFile(diff: string): Map<string, string> {
-  const out = new Map<string, string>();
-  for (const block of diff.split(/^(?=diff --git )/m)) {
-    const m = /^diff --git a\/(.+?) b\/(.+)$/m.exec(block);
-    if (m) out.set(m[2], block);
+/**
+ * Digest of the diff of the relevant files only. `diffOf` returns one file's diff straight from git (so quoted
+ * paths, spaces and binary files need no parsing here). Line numbers are dropped (a rebase moves lines without
+ * changing the change). A relevant file whose diff comes back empty cannot be fingerprinted: undefined.
+ */
+export function relevantDiffDigest(diffOf: (file: string) => string, relevant: string[]): string | undefined {
+  const parts: string[] = [];
+  for (const f of [...relevant].sort()) {
+    const d = diffOf(f);
+    if (!d.trim()) return undefined;
+    parts.push(`${f}\n${d.split("\n").filter((l) => !/^(index |@@ )/.test(l)).join("\n")}`);
   }
-  return out;
+  return crypto.createHash("sha256").update(parts.join("\n\u0000")).digest("hex").slice(0, 16);
 }
 
-/** Digest of the diff of the relevant files only, with line numbers dropped (a rebase moves lines without changing the change). */
-export function relevantDiffDigest(diff: string, relevant: string[]): string {
-  const files = diffByFile(diff);
-  const body = [...relevant]
-    .sort()
-    .map((f) => `${f}\n${(files.get(f) ?? "").split("\n").filter((l) => !/^(index |@@ )/.test(l)).join("\n")}`)
-    .join("\n\u0000");
-  return crypto.createHash("sha256").update(body).digest("hex").slice(0, 16);
-}
-
-export const gapFingerprint = (diff: string, relevant: string[], acHashes: string[]) =>
-  crypto.createHash("sha256").update([relevantDiffDigest(diff, relevant), ...[...acHashes].sort()].join("\u0001")).digest("hex").slice(0, 16);
+/** `extra`: the other inputs of the plan (the expected-behaviour file, scope items), as text. */
+export const gapFingerprint = (diffDigest: string | undefined, acHashes: string[], extra: string[] = []): string | undefined =>
+  diffDigest === undefined ? undefined : crypto.createHash("sha256").update([diffDigest, ...[...acHashes].sort(), "\u0002", ...extra].join("\u0001")).digest("hex").slice(0, 16);
 
 export const stampOf = (fp: string, head: string) => `<!-- qa-sentinel:gap-fp fp=${fp} head=${head.slice(0, 12)} -->`;
 
+/** The stamp is the last thing in the comment; text earlier in the body that looks like one (an AC quoted in the report) does not count. */
 export function parseStamp(body: string | undefined): { fp: string; head: string } | undefined {
-  const m = /<!-- qa-sentinel:gap-fp fp=([0-9a-f]+) head=([0-9a-f]+) -->/.exec(body ?? "");
+  const m = /<!-- qa-sentinel:gap-fp fp=([0-9a-f]+) head=([0-9a-f]+) -->\s*$/.exec(body ?? "");
   return m ? { fp: m[1], head: m[2] } : undefined;
 }
 

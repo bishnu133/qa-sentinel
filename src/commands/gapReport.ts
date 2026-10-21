@@ -5,14 +5,14 @@ import { requirementItems } from "../requirements.js";
 import fs from "node:fs";
 import path from "node:path";
 import { loadConfig } from "../config.js";
-import { changeSet, commitMessages, ensureAtCommit, isGitRepo } from "../git.js";
+import { changeSet, commitMessages, ensureAtCommit, git, isGitRepo } from "../git.js";
 import { matchesAny } from "../fsutil.js";
 import { formatUsage } from "../claude.js";
 import { ARTIFACT_GLOBS, createRunDir, findService, startManifest, writeManifest } from "../run.js";
 import { checkServiceUntouched, diffSnapshots, findingsMarkdown, snapshotTree, type Finding } from "../guardrails.js";
 import { requirementsLine, resolveRequirements, skippedBranch, storyMarkdown } from "../requirements.js";
-import { getMrNoteBody, gitlabContext, gitlabMrFromEnv, mrIsDraft } from "../scm/gitlab.js";
-import { gapFingerprint, parseStamp, stampOf, updatedLine } from "../plan/fingerprint.js";
+import { getMrNoteBody, gitlabContext, gitlabMrFromEnv, mrIsDraft, upsertMrNote } from "../scm/gitlab.js";
+import { gapFingerprint, parseStamp, relevantDiffDigest, stampOf, updatedLine } from "../plan/fingerprint.js";
 import { assembleFeature } from "../feature/manifest.js";
 import { publish } from "../reporting/publish.js";
 import { engineFor } from "../engines/ClaudeCodeEngine.js";
@@ -54,27 +54,50 @@ export interface GapReportOptions {
   dryRun?: boolean;
 }
 
-export async function gapReportCommand(o: GapReportOptions): Promise<{ report: string; skipped: boolean; exitCode: number }> {
+type GapResult = { report: string; skipped: boolean; exitCode: number };
+
+/** What the AI part of the run needs from the free checks before it. */
+interface Prepared {
+  c: ReturnType<typeof loadConfig>;
+  cwd: string;
+  mr: ReturnType<typeof gitlabMrFromEnv>;
+  service: ServiceConfig;
+  repo: string;
+  cs: ChangeSet;
+  relevant: string[];
+  parts: StoryPart[] | undefined;
+  out: string;
+  req: Awaited<ReturnType<typeof resolveRequirements>>;
+  fp: string | undefined;
+  previousHead: string | undefined;
+}
+
+export async function gapReportCommand(o: GapReportOptions): Promise<GapResult> {
   const cwd = path.resolve(o.cwd);
+  const c = loadConfig(cwd);
+  // The checks that need no AI come first, so a draft or an unchanged push costs nothing and never trips a budget.
+  const pre = await gapReportPrepare(o, c, cwd);
+  if (pre.done) return pre.done;
   return withSpend(
-    { cwd, c: loadConfig(cwd), story: o.story, label: "gap-report", skip: o.dryRun },
+    { cwd, c, story: o.story, label: "gap-report", skip: o.dryRun },
     (exitCode) => ({ report: "", skipped: true, exitCode }),
-    (wrap) => gapReportRun(o, wrap),
+    (wrap) => gapReportBody(o, wrap, pre.s!),
     (r) => r.exitCode,
   );
 }
 
-async function gapReportRun(o: GapReportOptions, wrap: (e: AgentEngine) => AgentEngine): Promise<{ report: string; skipped: boolean; exitCode: number }> {
-  const cwd = path.resolve(o.cwd);
-  const c = loadConfig(cwd);
+async function gapReportPrepare(o: GapReportOptions, c: ReturnType<typeof loadConfig>, cwd: string): Promise<{ done?: GapResult; s?: Prepared }> {
   const mr = gitlabMrFromEnv();
   // One gap report per dev MR, when the author marks it ready for review: a draft is still changing.
   if (!o.story && !o.evenIfDraft && !o.dryRun && c.automation.gapReport.when === "ready" && mr.mrIid && (await mrIsDraft(gitlabContext(c.ci.gitlabUrl), mr.project, mr.mrIid, mr.title))) {
     const out = path.resolve(cwd, o.out ?? "qa-gap-report.md");
     const report = `### QA impact · waiting\n**Verdict:** this merge request is a draft. The gap report is made once it is marked ready for review (automation.gapReport.when: ready; --even-if-draft overrides).\n`;
     fs.writeFileSync(out, report);
+    // Say so on the MR: marking it ready does not start a pipeline by itself, and nobody should think a report exists.
+    const gl = o.post && c.reporting.targets.includes("gitlab-mr") ? gitlabContext(c.ci.gitlabUrl) : undefined;
+    if (gl && mr.project) await upsertMrNote(gl, mr.project, mr.mrIid, report).catch((e) => log.warn(`could not post the waiting note: ${(e as Error).message}`));
     log.ok("merge request is a draft; the gap report waits until it is ready for review");
-    return { report, skipped: true, exitCode: 0 };
+    return { done: { report, skipped: true, exitCode: 0 } };
   }
   let service: ServiceConfig, repo: string, cs: ChangeSet, relevant: string[];
   let parts: StoryPart[] | undefined;
@@ -102,7 +125,7 @@ async function gapReportRun(o: GapReportOptions, wrap: (e: AgentEngine) => Agent
     const report = `### QA impact – ${service.name} · 🟢 Low risk\n**Verdict:** no test-relevant changes (${cs.files.length} file(s) changed, all docs/config). Nothing to check.\n`;
     fs.writeFileSync(out, report);
     log.ok("no test-relevant changes; skipped agent run");
-    return { report, skipped: true, exitCode: 0 };
+    return { done: { report, skipped: true, exitCode: 0 } };
   }
 
   const bot = o.story ? undefined : skippedBranch(c, mr.sourceBranch, process.env.CI_MERGE_REQUEST_SOURCE_BRANCH_NAME, process.env.gitlabSourceBranch);
@@ -110,27 +133,39 @@ async function gapReportRun(o: GapReportOptions, wrap: (e: AgentEngine) => Agent
     const report = `### QA impact – ${service.name} · skipped\n**Verdict:** changes from \`${bot}\` (listed in ci.skipBranches) get no gap report.\n`;
     fs.writeFileSync(out, report);
     log.ok(`${bot} is in ci.skipBranches; skipped`);
-    return { report, skipped: true, exitCode: 0 };
+    return { done: { report, skipped: true, exitCode: 0 } };
   }
   const req = await resolveRequirements(c, {
     storyFile: o.storyFile,
     mr: { title: mr.title, description: mr.description, url: mr.url, sourceBranch: mr.sourceBranch },
     keyHints: o.story ? [o.story] : [mr.sourceBranch, ...commitMessages(repo, cs.base, cs.head)],
   });
-  // One comment per MR, refreshed only when the code that matters (or the ACs) changed since the report on it.
-  const fp = gapFingerprint(cs.diff, relevant, req.acceptanceCriteria.map((a) => acHash(a.text)));
+  // One comment per MR, refreshed only when the code that matters (or the ACs, the expected behaviour, the scope) changed since the report on it.
+  let fp: string | undefined;
   let previousHead: string | undefined;
-  if (o.post && !o.story && !o.dryRun && !o.refresh && c.reporting.targets.includes("gitlab-mr") && mr.project && mr.mrIid) {
+  if (!o.story) {
+    const range = `${cs.base}...${cs.head}`;
+    const digest = relevantDiffDigest((f) => { try { return git(repo, ["-c", "core.quotePath=false", "diff", "--relative", "--binary", "--full-index", range, "--", f]); } catch { return ""; } }, relevant);
+    let expectedText = "";
+    if (req.storyKey) try { expectedText = fs.readFileSync(path.join(cwd, expectedPath(expectedDirOf(c.tests.expectedDir), req.storyKey.toUpperCase())), "utf8"); } catch { /* none yet */ }
+    fp = gapFingerprint(digest, req.acceptanceCriteria.map((a) => `${a.id}:${acHash(a.text)}`), [expectedText, JSON.stringify(req.scopeItems ?? []), JSON.stringify(req.outOfScope ?? [])]);
+  }
+  if (fp && o.post && !o.dryRun && !o.refresh && c.reporting.targets.includes("gitlab-mr") && mr.project && mr.mrIid) {
     const gl = gitlabContext(c.ci.gitlabUrl);
     const last = gl ? parseStamp(await getMrNoteBody(gl, mr.project, mr.mrIid).catch(() => undefined)) : undefined;
     if (last?.fp === fp) {
-      const report = `### QA impact · unchanged\n**Verdict:** nothing the gap report depends on changed since the report for ${last.head.slice(0, 8)} (the diff of the relevant files and the acceptance criteria are the same). The comment on the merge request still stands; --refresh makes a new one.\n`;
-      fs.writeFileSync(path.resolve(cwd, o.out ?? "qa-gap-report.md"), report);
+      const report = `### QA impact · unchanged\n**Verdict:** nothing the gap report depends on changed since the report for ${last.head.slice(0, 8)} (the diff of the relevant files, the acceptance criteria, the expected behaviour and the scope are the same). The comment on the merge request still stands; --refresh makes a new one.\n`;
+      fs.writeFileSync(out, report);
       log.ok(`nothing changed since the report for ${last.head.slice(0, 8)}; no new gap report`);
-      return { report, skipped: true, exitCode: 0 };
+      return { done: { report, skipped: true, exitCode: 0 } };
     }
     previousHead = last?.head;
   }
+  return { s: { c, cwd, mr, service, repo, cs, relevant, parts, out, req, fp, previousHead } };
+}
+
+async function gapReportBody(o: GapReportOptions, wrap: (e: AgentEngine) => AgentEngine, s: Prepared): Promise<GapResult> {
+  const { c, cwd, mr, service, repo, cs, relevant, parts, out, req, fp, previousHead } = s;
   const run = createRunDir(cwd, `gap-${service.name}`);
   fs.writeFileSync(path.join(run.dir, "change.diff"), cs.diff);
   fs.writeFileSync(path.join(run.dir, "story.md"), storyMarkdown(req));
@@ -281,7 +316,7 @@ async function gapReportRun(o: GapReportOptions, wrap: (e: AgentEngine) => Agent
   writeManifest(run, manifest);
   log.ok(`report written to ${path.relative(cwd, out)}${u ? ` (${u})` : ""}`);
 
-  if (o.post) await publish(c, { report, jiraSummary, service: service.name, storyKey: req.storyKey, mr, ...(o.story || exitCode !== 0 ? {} : { stamp: stampOf(fp, cs.head) }) });
+  if (o.post) await publish(c, { report, jiraSummary, service: service.name, storyKey: req.storyKey, mr, ...(!fp || exitCode !== 0 ? {} : { stamp: stampOf(fp, cs.head) }) });
   // Story mode with every part merged: requirements nothing builds (or builds differently) become (suspected) bugs.
   if (o.post && parts && parts.every((p) => p.merged) && c.bugs.mode !== "off" && req.storyKey && outcome.plan) {
     const jira = jiraContext(c.requirements.jira.baseUrl);

@@ -95,7 +95,7 @@ export async function featureCommand(o: FeatureOptions): Promise<number> {
       log.warn(`not running the feature tests: ${byAc ? "no acceptance criterion is ready" : manifest.status}${environment ? "" : " (pass --env to check deployments)"}; use --force to run anyway`);
       return 2;
     }
-    if (runnable.length < active.length) log.info(`running ${runnable.length} of ${active.length} test(s); the rest wait for their ACs to be ready (${readiness.filter((r) => r.state !== "ready").map((r) => r.ac).join(", ")})`);
+    if (runnable.length < active.length) log.warn(`running ${runnable.length} of ${active.length} test(s); the rest wait for their ACs to be ready (${readiness.filter((r) => r.state !== "ready").map((r) => r.ac).join(", ")})`);
     log.step(`running ${runnable.length} feature test(s)${environment ? ` on ${environment}` : ""}`);
     // API and web tests in one run where possible; healing is allowed here: these are existing, reviewed tests.
     let status = 0;
@@ -103,6 +103,8 @@ export async function featureCommand(o: FeatureOptions): Promise<number> {
       const r = spawnSync(cmd, { cwd, shell: true, stdio: "inherit", env: testEnv(c, process.env, { healing: true }) });
       if ((r.status ?? 1) !== 0) status = r.status ?? 1;
     }
+    const held = readiness.filter((r) => r.state !== "ready");
+    if (!o.force && runnable.length < active.length) log.warn(`${active.length - runnable.length} test(s) were NOT run: ${held.map((r) => `${r.ac} (${r.state})`).join(", ")}. A green result covers only the ready ACs.`);
     return status;
   }
   return 0;

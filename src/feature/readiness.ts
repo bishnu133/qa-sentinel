@@ -24,7 +24,10 @@ export function acReadiness(m: FeatureManifest, expected: ExpectedFile | undefin
     const named = namedBy.get(ac) ?? [];
     const parts = named.length ? m.parts.filter((p) => named.some((n) => n.toLowerCase() === p.service.toLowerCase())) : m.parts;
     const services = parts.map((p) => p.service);
-    const done = (state: AcState, reason: string): AcReadiness => ({ ac, state, services, reason });
+    // A named service the story did not change has nothing to wait for; it is said so rather than dropped silently.
+    const ignored = named.filter((n) => !m.parts.some((p) => p.service.toLowerCase() === n.toLowerCase()));
+    const note = ignored.length && parts.length ? ` (${ignored.join(", ")} named by the AC, not changed in this story: not waited for)` : "";
+    const done = (state: AcState, reason: string): AcReadiness => ({ ac, state, services, reason: reason + note });
     if (!parts.length) return done("undetermined", named.length ? `the story has no change in ${named.join(", ")}, which this AC names (check "Services" for ${ac} in the expected-behaviour file)` : "no service change found for the story");
     const open = parts.filter((p) => !p.merged);
     if (open.length) return done("not-merged", `not merged yet: ${open.map((p) => p.service).join(", ")}`);
