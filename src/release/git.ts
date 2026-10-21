@@ -73,32 +73,60 @@ export function findCherryPicks(repo: string, sha: string, target: string, limit
   return [...found.values()];
 }
 
-/** Is `sha` reverted by a commit on `target`? Returns the reverting commit. */
-export function findRevert(repo: string, sha: string, target: string, limit = 1000): string | undefined {
-  if (!FULL.test(sha) && !ok(repo, ["rev-parse", "--verify", "-q", `${sha}^{commit}`])) return undefined;
-  const full = git(repo, ["rev-parse", "--verify", `${sha}^{commit}`]);
-  const log = git(repo, ["log", "-n", String(limit), "--format=%H%x09%B%x1e", target]).split("\x1e").map((x) => x.trim()).filter(Boolean);
-  for (const m of log) {
+/** Refs come from the command line: never let one be read by git as an option. */
+export function safeRef(ref: string, what = "ref"): string {
+  if (!ref || ref.startsWith("-") || /[\0\n]/.test(ref)) throw new Error(`Not a valid ${what}: ${JSON.stringify(ref)}`);
+  return ref;
+}
+
+const isShallow = (repo: string) => {
+  try {
+    return git(repo, ["rev-parse", "--is-shallow-repository"]) === "true";
+  } catch {
+    return false;
+  }
+};
+
+/**
+ * Is any of these commits reverted by a commit on `target`? Returns the reverting commit. A revert that is itself
+ * reverted (the change landed again) does not count. Commits that are not in this clone are ignored.
+ */
+export function findRevert(repo: string, shas: string | string[], target: string, limit = 1000): string | undefined {
+  const full: string[] = [];
+  for (const sha of Array.isArray(shas) ? shas : [shas]) {
+    if (!sha || sha.startsWith("-") || !ok(repo, ["cat-file", "-e", `${sha}^{commit}`])) continue;
+    full.push(git(repo, ["rev-parse", "--verify", `${sha}^{commit}`]));
+  }
+  if (!full.length) return undefined;
+  const entries = git(repo, ["log", "-n", String(limit), "--format=%H%x09%B%x1e", target]).split("\x1e").map((x) => x.trim()).filter(Boolean).map((m) => {
     const [commit, ...rest] = m.split("\t");
-    if (revertedBy(rest.join("\t")).some((r) => full.startsWith(r))) return commit;
+    return { commit, reverts: revertedBy(rest.join("\t")) };
+  });
+  const revertedNow = (sha: string, depth: number): string | undefined =>
+    entries.filter((e) => e.reverts.some((r) => sha.startsWith(r))).find((e) => depth > 5 || !revertedNow(e.commit, depth + 1))?.commit;
+  for (const sha of full) {
+    const r = revertedNow(sha, 0);
+    if (r) return r;
   }
   return undefined;
 }
 
 /** Is the commit part of `ref` (a release tag or a branch)? undefined when the ref or the commit is not in this clone. */
 export function inRef(repo: string, sha: string, ref: string): boolean | undefined {
+  if (ref.startsWith("-") || isShallow(repo)) return undefined;
   if (!ok(repo, ["rev-parse", "--verify", "-q", `${ref}^{commit}`]) || !ok(repo, ["cat-file", "-e", `${sha}^{commit}`])) return undefined;
   return ok(repo, ["merge-base", "--is-ancestor", sha, ref]);
 }
 
 /** Story keys named in the commit messages between two refs (what a release contains). */
 export function storyKeysBetween(repo: string, from: string | undefined, to: string, keyPattern: string): { key: string; commits: string[] }[] {
-  const range = from ? `${from}..${to}` : to;
+  const range = from ? `${safeRef(from, "tag")}..${safeRef(to, "tag")}` : safeRef(to, "tag");
   const log = git(repo, ["log", "--format=%H%x09%s %b%x1e", range]).split("\x1e").map((x) => x.trim()).filter(Boolean);
   const re = new RegExp(`(?<![A-Za-z0-9])(${keyPattern})(?![0-9])`, "g");
   const by = new Map<string, string[]>();
   for (const m of log) {
     const [commit, ...rest] = m.split("\t");
+    if (/^Revert\b/i.test(rest.join("\t").trim())) continue; // a revert names the story but does not deliver it
     for (const k of new Set([...rest.join("\t").matchAll(re)].map((x) => x[1].toUpperCase()))) by.set(k, [...(by.get(k) ?? []), commit]);
   }
   return [...by].map(([key, commits]) => ({ key, commits })).sort((a, b) => a.key.localeCompare(b.key, undefined, { numeric: true }));

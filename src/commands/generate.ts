@@ -184,7 +184,8 @@ async function generateRun(o: GenerateOptions, ctl: JobControl): Promise<number>
     return 0;
   }
   // A hotfix branch: no generation here. The change reaches the target branch by cherry-pick, and tests are written once, there.
-  const pipelineBranch = process.env.CI_COMMIT_BRANCH ?? process.env.CI_MERGE_REQUEST_TARGET_BRANCH_NAME;
+  // The service's branch is passed down by the trigger job (QA_SERVICE_BRANCH): this pipeline's own branch is the test repo's.
+  const pipelineBranch = process.env.QA_SERVICE_BRANCH;
   if (!parts && !o.backfill && pipelineBranch && matchesAny(pipelineBranch, c.ci.hotfixBranches)) {
     log.ok(`${pipelineBranch} is a hotfix branch (ci.hotfixBranches): no test generation here; tests are written when the change reaches ${c.ci.targetBranch}`);
     return 0;

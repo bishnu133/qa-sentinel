@@ -1,7 +1,7 @@
 import path from "node:path";
 import { loadConfig } from "../config.js";
 import { git, isGitRepo } from "../git.js";
-import { findCherryPicks, type CherryPick } from "../release/git.js";
+import { findCherryPicks, safeRef, type CherryPick } from "../release/git.js";
 import { findService } from "../run.js";
 import { postToStory } from "../reporting/statusComment.js";
 import { jiraContext, markdownToJiraWiki } from "../scm/jira.js";
@@ -45,7 +45,9 @@ export async function hotfixCommand(o: HotfixOptions): Promise<number> {
   const service = findService(c, o.service, cwd, o.servicePath);
   const repo = path.resolve(cwd, service.path);
   if (!isGitRepo(repo)) throw new Error(`${repo} is not a git repository`);
-  const shas = o.range ? git(repo, ["rev-list", "--no-merges", "--reverse", o.range]).split("\n").filter(Boolean) : (o.commit ?? []).map((x) => git(repo, ["rev-parse", "--verify", `${x}^{commit}`]));
+  if (o.range && o.commit?.length) throw new Error("Pass --commit or --range, not both");
+  for (const x of [...(o.commit ?? []), ...(o.range ? [o.range] : [])]) safeRef(x);
+  const shas = o.range ? git(repo, ["rev-list", "--no-merges", "--reverse", o.range, "--"]).split("\n").filter(Boolean) : (o.commit ?? []).map((x) => git(repo, ["rev-parse", "--verify", "--end-of-options", `${x}^{commit}`]));
   if (!shas.length) throw new Error("Pass --commit <sha> (repeatable) or --range <base>..<hotfix-branch>");
   const target = ["origin/" + c.ci.targetBranch, c.ci.targetBranch].find((b) => {
     try {
@@ -63,13 +65,24 @@ export async function hotfixCommand(o: HotfixOptions): Promise<number> {
   } catch {
     /* no test history */
   }
-  const testCommitsFor = (shasToFind: string[]) =>
-    testLog
-      .split("\x1e")
-      .map((x) => x.trim())
-      .filter(Boolean)
-      .filter((m) => shasToFind.some((s) => m.includes(`${service.name}@${s}`)))
-      .map((m) => m.split("\t")[0]);
+  // generate records "<service>@<head sha>" of the commit it ran for; with merge commits that is a later commit than the
+  // cherry-pick itself, so a recorded head that contains the commit counts.
+  const esc = service.name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const recorded = testLog
+    .split("\x1e")
+    .map((x) => x.trim())
+    .filter(Boolean)
+    .map((m) => ({ testCommit: m.split("\t")[0], head: new RegExp(`${esc}@([0-9a-f]{40})`).exec(m)?.[1] }))
+    .filter((x): x is { testCommit: string; head: string } => !!x.head);
+  const contains = (head: string, sha: string) => {
+    try {
+      git(repo, ["merge-base", "--is-ancestor", sha, head]);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  const testCommitsFor = (find: string[]) => recorded.filter((r) => find.some((s) => r.head === s || contains(r.head, s))).map((r) => r.testCommit);
 
   const rows: HotfixRow[] = shas.map((commit) => {
     const picks = findCherryPicks(repo, commit, target);

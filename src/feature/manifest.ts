@@ -22,6 +22,8 @@ export interface ServicePart {
   merged: boolean;
   /** The commit on the target branch that reverts this change (found in the local clone, when there is one). */
   reverted?: string;
+  /** Every non-revert commit of the story found in the clone, and the merge commit that brought it to the target branch: what a revert may name. */
+  related?: string[];
   deployed?: { environment: string; sha?: string; includesChange?: boolean; error?: string };
 }
 
@@ -53,6 +55,7 @@ export function partFromGit(repo: string, s: ServiceConfig, story: string, targe
     .filter(Boolean)
     .map((l) => l.split("\t"))
     .filter(([, msg]) => re.test(msg ?? ""))
+    .filter(([, msg]) => !/^Revert\b/i.test((msg ?? "").trim()))
     .map(([sha]) => sha);
   if (!branches.length && !commits.length) return undefined;
   const target = ["origin/" + targetBranch, targetBranch].find((b) => {
@@ -74,7 +77,17 @@ export function partFromGit(repo: string, s: ServiceConfig, story: string, targe
     }
   };
   // The tip of the story's work: a deployment includes the change exactly when it contains this commit.
-  return { service: s.name, source: "git", branch: branches[0]?.[0], sha: tip, merged: onTarget(tip) };
+  const merged = onTarget(tip);
+  const related = [...new Set([tip, ...commits])];
+  if (merged && target) {
+    try {
+      const m = git(repo, ["log", "--ancestry-path", "--merges", "--format=%H", `${tip}..${target}`]).split("\n").filter(Boolean).pop();
+      if (m) related.push(m);
+    } catch {
+      /* no merge commit: a fast-forward or squash */
+    }
+  }
+  return { service: s.name, source: "git", branch: branches[0]?.[0], sha: tip, merged, related };
 }
 
 /** GitLab: merge requests whose title, description or source branch carry the story key. */
@@ -160,6 +173,8 @@ export async function assembleFeature(i: {
   gitlab?: GitLabContext;
   environment?: string;
   baseUrl?: string;
+  /** Also ask the environment about changes that are not on the main branch yet (a hotfix is deployed before it is cherry-picked). */
+  checkUnmerged?: boolean;
 }): Promise<FeatureManifest> {
   const notes: string[] = [];
   const parts: ServicePart[] = [];
@@ -182,9 +197,15 @@ export async function assembleFeature(i: {
           return false;
         }
       });
-      if (target) part.reverted = findRevert(repo, part.sha, target);
+      if (target) {
+        try {
+          part.reverted = findRevert(repo, [part.sha, ...(part.related ?? [])], target);
+        } catch (e) {
+          notes.push(`${s.name}: could not check whether ${i.story} was reverted: ${(e as Error).message.split("\n")[0]}`);
+        }
+      }
     }
-    if (i.environment && i.baseUrl && part.merged && !part.reverted) part.deployed = await checkDeployment(part, s, i.environment, i.baseUrl, fs.existsSync(repo) ? repo : undefined, i.gitlab);
+    if (i.environment && i.baseUrl && (part.merged || i.checkUnmerged) && !part.reverted) part.deployed = await checkDeployment(part, s, i.environment, i.baseUrl, fs.existsSync(repo) ? repo : undefined, i.gitlab);
     parts.push(part);
   }
   return { story: i.story, environment: i.environment, parts, status: featureStatus(parts, i.environment), notes };
@@ -209,7 +230,7 @@ export function featureMarkdown(m: FeatureManifest, extra: string[] = []): strin
     lines.push("", `| Service | Change | Merged | ${m.environment ? `Deployed on ${m.environment}` : "Deployed"} |`, "| --- | --- | --- | --- |");
     for (const p of m.parts) {
       const change = p.mr ? `[!${p.mr.iid}](${p.mr.url}) ${p.mr.title}` : `${p.branch ?? "commits"} @ \`${(p.sha ?? "").slice(0, 8)}\``;
-      const dep = !m.environment ? "–" : !p.merged ? "–" : p.deployed?.error ? `❔ ${p.deployed.error}` : p.deployed?.includesChange ? `✅ \`${p.deployed.sha?.slice(0, 8)}\`` : p.deployed?.includesChange === undefined ? `❔ running \`${p.deployed?.sha?.slice(0, 8)}\` (can't tell if it includes the change)` : `⏳ running \`${p.deployed?.sha?.slice(0, 8)}\``;
+      const dep = !m.environment ? "–" : p.reverted ? "–" : !p.merged ? "–" : p.deployed?.error ? `❔ ${p.deployed.error}` : p.deployed?.includesChange ? `✅ \`${p.deployed.sha?.slice(0, 8)}\`` : p.deployed?.includesChange === undefined ? `❔ running \`${p.deployed?.sha?.slice(0, 8)}\` (can't tell if it includes the change)` : `⏳ running \`${p.deployed?.sha?.slice(0, 8)}\``;
       lines.push(`| ${p.service} | ${change} | ${p.reverted ? `↩️ reverted by \`${p.reverted.slice(0, 8)}\`` : p.merged ? "✅" : "🛠️ not yet"} | ${dep} |`);
     }
   }

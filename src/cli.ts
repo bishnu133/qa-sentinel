@@ -360,14 +360,14 @@ program
 program
   .command("hotfix")
   .description("no AI: where a hotfix stands: its cherry-pick on the main branch (by -x line or patch id) and whether tests were written from it")
-  .option("-s, --service <name|path>", "service the hotfix is in")
+  .requiredOption("-s, --service <name|path>", "service the hotfix is in")
   .option("--service-path <dir>", "override where the service repo is checked out")
-  .option("--commit <sha...>", "the hotfix commit(s)")
+  .option("--commit <sha>", "a hotfix commit (repeat the option for more)", (v: string, prev: string[] = []) => [...prev, v])
   .option("--range <range>", "or a range, e.g. production..hotfix/orders-1")
   .option("--story <key>", "the story (default: from the commit message)")
   .option("--post", "put the status in the Jira story's QA status comment")
   .option("--json", "print JSON")
-  .action(wrap(async (o) => hotfixCommand({ cwd: cwd(), ...needService(o) })));
+  .action(wrap(async (o) => hotfixCommand({ cwd: cwd(), ...o })));
 
 program
   .command("release-features")
