@@ -99,7 +99,7 @@ async function storiesRun(o: StoriesOptions): Promise<number> {
   const changes = new Map<string, string[]>();
   for (const input of inputs) {
     const facts = await gatherFacts({ cwd, c, store, policy, budgets: c.automation.budgets, records, gitlab, now }, input, shared);
-    const a = assessStory(facts);
+    const a = { ...assessStory(facts), ...(facts.jiraReady !== undefined ? { jiraReady: facts.jiraReady } : {}), ...(facts.services ? { services: facts.services } : {}), ...(facts.unmappedComponents ? { unmappedComponents: facts.unmappedComponents } : {}), ...(facts.resolvedFrom ? { resolvedFrom: facts.resolvedFrom } : {}) };
     list.push(a);
     const acs = facts.acs.map((x) => ({ id: x.id, hash: acHash(x.text) }));
     if (a.state !== "skipped") {

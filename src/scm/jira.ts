@@ -34,10 +34,40 @@ export interface JiraIssue {
   updated?: string;
   /** Extra fields asked for (scope fields), as text. */
   extra?: Record<string, string>;
+  /** The parent card (a sub-task's story, a task's epic, …). */
+  parent?: { key: string; issueType?: string };
+  /** Issue links on this card, with the other card's key and type. */
+  links?: JiraLink[];
+  /** Jira Components on this card. */
+  components?: string[];
+}
+
+export interface JiraLink {
+  /** The link type's name and both wordings ("Blocks", "blocks", "is blocked by"). */
+  type: string;
+  inward: string;
+  outward: string;
+  /** Which way the OTHER card relates to this one: "outward" = this card <outward wording> other. */
+  direction: "inward" | "outward";
+  key: string;
+  issueType?: string;
+}
+
+/** Links of an issue as returned by Jira (`fields.issuelinks`). */
+export function parseLinks(raw: unknown): JiraLink[] {
+  if (!Array.isArray(raw)) return [];
+  const out: JiraLink[] = [];
+  for (const l of raw as any[]) {
+    const t = l?.type ?? {};
+    const other = l?.outwardIssue ?? l?.inwardIssue;
+    if (!other?.key) continue;
+    out.push({ type: String(t.name ?? ""), inward: String(t.inward ?? ""), outward: String(t.outward ?? ""), direction: l.outwardIssue ? "outward" : "inward", key: String(other.key), ...(other.fields?.issuetype?.name ? { issueType: String(other.fields.issuetype.name) } : {}) });
+  }
+  return out;
 }
 
 export async function fetchIssue(ctx: JiraContext, key: string, acField?: string, extraFields: string[] = []): Promise<JiraIssue> {
-  const fields = ["summary", "description", "status", "issuetype", "labels", "updated", ...(acField ? [acField] : []), ...extraFields].join(",");
+  const fields = ["summary", "description", "status", "issuetype", "labels", "updated", "parent", "issuelinks", "components", ...(acField ? [acField] : []), ...extraFields].join(",");
   const res = await netFetch(`${ctx.baseUrl}/rest/api/2/issue/${encodeURIComponent(key)}?fields=${fields}`, {
     headers: { Authorization: ctx.authHeader, Accept: "application/json" },
   });
@@ -52,6 +82,9 @@ export async function fetchIssue(ctx: JiraContext, key: string, acField?: string
     status: String(f.status?.name ?? ""),
     ...(f.issuetype?.name ? { issueType: String(f.issuetype.name) } : {}),
     ...(Array.isArray(f.labels) ? { labels: f.labels.map(String) } : {}),
+    ...(f.parent?.key ? { parent: { key: String(f.parent.key), ...(f.parent.fields?.issuetype?.name ? { issueType: String(f.parent.fields.issuetype.name) } : {}) } } : {}),
+    links: parseLinks(f.issuelinks),
+    components: Array.isArray(f.components) ? f.components.map((x: any) => String(x?.name ?? x)).filter(Boolean) : [],
     url: `${ctx.baseUrl}/browse/${j.key ?? key}`,
     updated: f.updated,
     extra: Object.fromEntries(extraFields.map((x) => [x, toText(f[x])]).filter(([, v]) => v)),
@@ -442,4 +475,22 @@ export async function searchStories(ctx: JiraContext, jql: string, o: { max: num
     if (!/ 40[45] /.test((e as Error).message)) throw e;
     return server();
   }
+}
+
+/** The statuses a Jira project's workflows use (all issue types), for `doctor` to check the configured names against. */
+export async function projectStatuses(ctx: JiraContext, projectKey: string): Promise<string[]> {
+  const j = await jiraCall(ctx, "GET", `/rest/api/2/project/${encodeURIComponent(projectKey)}/statuses`);
+  return [...new Set((Array.isArray(j) ? j : []).flatMap((t: any) => (t.statuses ?? []).map((x: any) => String(x.name))))] as string[];
+}
+
+/** Every link type in the Jira (name and both wordings). */
+export async function linkTypes(ctx: JiraContext): Promise<{ name: string; inward: string; outward: string }[]> {
+  const j = await jiraCall(ctx, "GET", "/rest/api/2/issueLinkType");
+  return (j.issueLinkTypes ?? []).map((t: any) => ({ name: String(t.name), inward: String(t.inward), outward: String(t.outward) }));
+}
+
+/** The issue types a Jira project uses (same endpoint as the statuses). */
+export async function allIssueTypes(ctx: JiraContext, projectKey: string): Promise<string[]> {
+  const j = await jiraCall(ctx, "GET", `/rest/api/2/project/${encodeURIComponent(projectKey)}/statuses`);
+  return [...new Set((Array.isArray(j) ? j : []).map((t: any) => String(t.name)))] as string[];
 }

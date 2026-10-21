@@ -131,11 +131,29 @@ qa-sentinel stories --json | head -40
 Expect: your recent stories (last 30 days) with states. If it fails, send me the exact message; do not edit it.
 Optional property test (`automation.record: jira` writes a Jira issue property on each story; skip if you don't want any write to Jira).
 
+## 11. Jira settings: bug to story, ready statuses, components (read-only)
+
+Keep your Jira URL, email and token out of git (use environment variables; do not paste them anywhere). In `qa-sentinel.config.yaml` set, for example:
+```yaml
+requirements:
+  jira:
+    featureIssueTypes: [Story]          # use the types your Jira really has
+    workflow: { readyStatuses: ["Ready for Testing"] }
+    hierarchy: { links: [{ name: "is caused by", from: [Bug] }] }
+    components: { YourComponent: your-service }
+```
+```bash
+qa-sentinel doctor --online
+qa-sentinel story-check --story YOUR-BUG-KEY
+qa-sentinel stories --story YOUR-BUG-KEY
+```
+Expect: `doctor` says OK or warns about a status, issue type or link name Jira does not have (with the names it does have); `story-check` ends with "Which feature this card belongs to" and says how the bug reaches its story, or why it does not; `stories` lists the story, not the bug. If a bug is not attached, the sentence says why.
+
 ## What to send back
 
 - Output of steps 2, 3, 5 and 6 (copy the terminal text).
 - Step 7/8 results if you ran them, and the contents of `.qa-sentinel/stories/SHOP-101.json`.
-- Step 10 output or error.
+- Step 10 and 11 output or error (remove any URLs or names you do not want to share).
 - Anything that surprised you.
 
 ## When to switch to Opus

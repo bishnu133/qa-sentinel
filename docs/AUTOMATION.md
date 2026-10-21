@@ -71,3 +71,14 @@ A person reviews and merges: that is the gate. A test that failed for another re
 - The Jira search was tested against mocked responses, not yet a live Jira (see the try guide for the live check).
 - The per-story budget never resets.
 - `stories` reads `expected/` on the checked-out branch: "approved" means merged on the branch you run from.
+
+
+## Jira workflow, hierarchy and components
+
+Set under `requirements.jira` (see the README for the YAML):
+
+- `workflow.readyStatuses` (and `byProject.<KEY>`): the statuses that mean development is done. Jira's own "Done" category also counts. `stories --json` shows `jiraReady`.
+- `hierarchy`: how a bug, task or sub-task is tied to its story. Fixed rules, not configurable: only cards with code; one hop; the parent first, links only when there is no parent feature; the target must be a `featureIssueTypes` type in `projectKeys`; a card reaching two features is attached to neither. With `featureIssueTypes` empty every card is its own feature and nothing is followed.
+- `components`: maps a Jira Component name to a service name; components not mapped are listed as `unmappedComponents`.
+
+Check it with `qa-sentinel story-check --story KEY` (section "Which feature this card belongs to") and `qa-sentinel doctor --online` (warns when a status, issue type or link name does not exist in your Jira). These only read Jira.

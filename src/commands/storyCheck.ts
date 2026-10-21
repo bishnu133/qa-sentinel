@@ -3,6 +3,7 @@ import path from "node:path";
 import { loadConfig } from "../config.js";
 import { extractStoryKey, jiraIssueText, parseStoryFor, serviceNamesOf } from "../requirements.js";
 import { fetchIssue, issueFields, jiraContext } from "../scm/jira.js";
+import { resolveFeature, servicesFromComponents, isReadyStatus } from "../stories/resolve.js";
 import type { ParsedStory } from "../storyTemplate.js";
 import { log } from "../log.js";
 
@@ -19,6 +20,7 @@ export async function storyCheckCommand(o: { cwd: string; story?: string; storyF
   let text: string;
   let title: string | undefined;
   let fields: { id: string; name: string; preview: string }[] | undefined;
+  let tracked = "";
   const source = o.storyFile ? `file ${o.storyFile}` : `Jira ${o.story}`;
   if (o.storyFile) text = fs.readFileSync(path.resolve(cwd, o.storyFile), "utf8");
   else {
@@ -28,6 +30,19 @@ export async function storyCheckCommand(o: { cwd: string; story?: string; storyF
     title = issue.summary;
     text = jiraIssueText(c, issue);
     if (o.fields) fields = await issueFields(ctx, o.story!);
+    // Which feature this card is tracked under (a bug, task or sub-task follows its story by the strict rules), and what Jira says about it.
+    const r = await resolveFeature(c, issue, (k) => fetchIssue(ctx, k).catch(() => undefined));
+    const comps = servicesFromComponents(c, issue.components);
+    tracked = [
+      "",
+      "## Which feature this card belongs to",
+      "",
+      r.explain + (r.kind === "none" && !c.requirements.jira.featureIssueTypes.length ? "" : "."),
+      ...(c.requirements.jira.featureIssueTypes.length ? [] : ["Every issue type counts as a feature because `requirements.jira.featureIssueTypes` is empty; set it (e.g. `[Story]`) to trace bugs and sub-tasks to their story."]),
+      `Status "${issue.status}": ${isReadyStatus(c, issue.key, issue.status) ? "a ready status" : "not a ready status"} for ${issue.key.replace(/-\d+$/, "")} (requirements.jira.workflow).`,
+      ...(issue.components?.length ? [`Components: ${issue.components.join(", ")}${comps.services.length ? ` → services ${comps.services.join(", ")}` : ""}${comps.unmapped.length ? ` (not mapped: ${comps.unmapped.join(", ")}; see requirements.jira.components)` : ""}.`] : []),
+      "",
+    ].join("\n");
   }
   const parsed = parseStoryFor(c, text);
   if (o.json) {
@@ -36,8 +51,8 @@ export async function storyCheckCommand(o: { cwd: string; story?: string; storyF
   }
   const md = storyCheckMarkdown({ c, source, title, story: o.story, parsed, fields, keyFound: extractStoryKey(c.requirements.storyKeyPattern, o.story, text) });
   const out = path.resolve(cwd, o.out ?? "qa-story-check.md");
-  fs.writeFileSync(out, md);
-  process.stdout.write(md);
+  fs.writeFileSync(out, md + tracked);
+  process.stdout.write(md + tracked);
   if (parsed.acceptanceCriteria.length) log.ok(`${parsed.acceptanceCriteria.length} AC (${parsed.acFormat}), ${parsed.scopeItems.length} scope item(s), ${parsed.outOfScope.length} out of scope · ${path.relative(cwd, out)}`);
   else log.fail(`no acceptance criteria found · see "What to change" in ${path.relative(cwd, out)}`);
   return parsed.acceptanceCriteria.length ? 0 : 1;

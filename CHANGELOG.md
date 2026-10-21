@@ -8,6 +8,8 @@
 - **Budgets** (`automation.budgets`: per story, per day, per month): every AI call is clamped to what is left; a refused step exits 4. All AI commands count, `--force` never overrides budgets. See [docs/AUTOMATION.md](docs/AUTOMATION.md).
 - **`qa-sentinel known-defects`** (no AI): finds `test.fail` tests whose bug is fixed and, with `--apply`, takes the marker and the QA-BUG / QA-AGENT notes off (optionally on a branch / MR for review).
 
+- **Jira workflow and hierarchy settings** (`requirements.jira.workflow`, `hierarchy`, `components`): ready statuses (global and per project), which link wording ties a bug/task to its story, and Jira Component → service names. A card named with `--story` that is a bug, task or sub-task is reported under its story by strict fixed rules (only cards with code, one hop, parent first, target must be a feature type in `projectKeys`, two features means neither). `story-check` shows how a card resolves; `doctor --online` checks that the statuses, issue types and link names exist in your Jira.
+
 ## Unreleased — AC-first generation (phase 1)
 
 **Upgrading:** `qa-sentinel upgrade` refreshes the planning and authoring skills, but not your `write-api-test`, `write-web-test` and `write-mobile-test` skills (they hold your learned conventions). Copy the discrepancy line (`test.fixme` + `// QA-AGENT:` with the behaviour id, never `test.fail`) and the "never assert the code's value" line from `templates/skills/…` by hand.

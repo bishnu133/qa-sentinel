@@ -13,6 +13,7 @@ import { fetchIssue, jiraContext, searchStories, storiesJql, type FoundStory, ty
 import type { CodeState, StoryFacts } from "./assess.js";
 import { type JobPolicy, type Budgets, budgetStatus, digest, jobGate, MIN_USEFUL_USD, specJobKey } from "./jobs.js";
 import { type RecordStore, type StoryRecord } from "./record.js";
+import { isReadyStatus, resolveFeature, servicesFromComponents, statusSets } from "./resolve.js";
 import { log } from "../log.js";
 
 /** One story as read from its source, before anything is worked out about it. */
@@ -26,29 +27,48 @@ export interface StoryInput {
   /** The story as markdown (summary, description, AC field), parsed with the project's story template. Empty for stories skipped before reading. */
   text: string;
   source: "jira" | "story-file";
+  /** Jira's status is a ready status for the story's project. */
+  ready?: boolean;
+  components?: string[];
+  /** Set when the story was reached through a bug, task or sub-task: how. */
+  resolvedFrom?: string;
 }
 
 const same = (a: string | undefined, b: string) => (a ?? "").toLowerCase() === b.toLowerCase();
 
-export function isApprovedStatus(c: Config, status: string | undefined): boolean {
-  return c.requirements.jira.approvedStatuses.some((s) => same(status, s));
+export function isApprovedStatus(c: Config, status: string | undefined, key?: string): boolean {
+  return (key ? statusSets(c, key).approved : c.requirements.jira.approvedStatuses).some((s) => same(status, s));
 }
 
 /** Would this story be left alone, judging by what the search already says (so its text needn't be fetched)? */
-export function skippedBeforeReading(c: Config, f: { status?: string; issueType?: string; labels: string[] }): boolean {
+export function skippedBeforeReading(c: Config, f: { key?: string; status?: string; issueType?: string; labels: string[] }): boolean {
   const s = c.requirements.jira.search;
   const has = (l: string) => f.labels.some((x) => same(x, l));
-  return s.skipLabels.some(has) || (s.onlyLabels.length > 0 && !s.onlyLabels.some(has)) || !isFeature(c, { issueType: f.issueType }) || !isApprovedStatus(c, f.status);
+  return s.skipLabels.some(has) || (s.onlyLabels.length > 0 && !s.onlyLabels.some(has)) || !isFeature(c, { issueType: f.issueType }) || !isApprovedStatus(c, f.status, f.key);
 }
 
 /** Stories from Jira: the given keys, or what the search (requirements.jira.search) finds. */
-export async function inputsFromJira(c: Config, ctx: JiraContext, o: { keys?: string[] }): Promise<StoryInput[]> {
+export async function inputsFromJira(c: Config, ctx: JiraContext, o: { keys?: string[]; hasCode?: boolean }): Promise<StoryInput[]> {
   const j = c.requirements.jira;
-  const fetchOne = async (key: string): Promise<StoryInput> => {
-    const issue = await fetchIssue(ctx, key, j.acceptanceCriteriaField, j.scopeFields.map((f) => f.field));
-    return { key: issue.key, title: issue.summary, status: issue.status, issueType: issue.issueType, labels: issue.labels ?? [], url: issue.url, text: jiraIssueText(c, issue), source: "jira" };
-  };
-  if (o.keys?.length) return Promise.all(o.keys.map((k) => fetchOne(k.toUpperCase())));
+  const fetchRaw = (key: string) => fetchIssue(ctx, key, j.acceptanceCriteriaField, j.scopeFields.map((f) => f.field));
+  const toInput = (issue: Awaited<ReturnType<typeof fetchRaw>>, resolvedFrom?: string): StoryInput => ({ key: issue.key, title: issue.summary, status: issue.status, issueType: issue.issueType, labels: issue.labels ?? [], url: issue.url, text: jiraIssueText(c, issue), source: "jira", ready: isReadyStatus(c, issue.key, issue.status), components: issue.components, ...(resolvedFrom ? { resolvedFrom } : {}) });
+  const fetchOne = async (key: string): Promise<StoryInput> => toInput(await fetchRaw(key));
+  if (o.keys?.length) {
+    // A bug, task or sub-task is reported under its feature (strict rules, see stories/resolve.ts); with no feature types set, every card is its own feature.
+    const out: StoryInput[] = [];
+    for (const k of o.keys.map((x) => x.toUpperCase())) {
+      const card = await fetchRaw(k);
+      const r = await resolveFeature(c, card, (key) => fetchRaw(key).catch(() => undefined), { hasCode: o.hasCode });
+      if (r.kind === "resolved") {
+        log.info(r.explain);
+        if (!out.some((x) => x.key === r.feature)) out.push(toInput(await fetchRaw(r.feature), r.explain));
+      } else {
+        if (r.kind !== "feature") log.warn(r.explain);
+        if (!out.some((x) => x.key === card.key)) out.push(toInput(card));
+      }
+    }
+    return out;
+  }
   // Statuses are filtered here, not in the JQL: a status name the workflow doesn't have makes Jira reject the whole query.
   const jql = j.search.jql ?? storiesJql({ projectKeys: j.projectKeys, statuses: [], issueTypes: j.featureIssueTypes, lookbackDays: j.search.lookbackDays });
   const found = await searchStories(ctx, jql, { max: j.search.maxStories, api: j.search.api });
@@ -114,12 +134,14 @@ export async function gatherFacts(g: GatherContext, input: StoryInput, shared: {
   const { c, cwd } = g;
   const now = g.now ?? new Date();
   const key = input.key;
-  const approved = input.source === "story-file" ? true : isApprovedStatus(c, input.status);
+  const approved = input.source === "story-file" ? true : isApprovedStatus(c, input.status, input.key);
   const feature = isFeature(c, { issueType: input.issueType });
   const s = c.requirements.jira.search;
-  const skipping = skippedBeforeReading(c, { status: input.status, issueType: input.issueType, labels: input.labels }) && input.source === "jira";
+  const skipping = skippedBeforeReading(c, { key: input.key, status: input.status, issueType: input.issueType, labels: input.labels }) && input.source === "jira";
   const acs = skipping || !input.text ? [] : parseStoryFor(c, input.text).acceptanceCriteria.map((a) => ({ id: a.id, text: a.text }));
-  const base = { key, title: input.title, source: input.source, url: input.url, status: input.status, approved, issueType: input.issueType, isFeature: feature, labels: input.labels, skipLabels: s.skipLabels, onlyLabels: s.onlyLabels, acs, expectationsMode: c.tests.expectations };
+  const comps = servicesFromComponents(c, input.components);
+  const extra = { ...(input.ready !== undefined ? { jiraReady: input.ready } : {}), ...(comps.services.length ? { services: comps.services } : {}), ...(comps.unmapped.length ? { unmappedComponents: comps.unmapped } : {}), ...(input.resolvedFrom ? { resolvedFrom: input.resolvedFrom } : {}) };
+  const base = { ...extra, key, title: input.title, source: input.source, url: input.url, status: input.status, approved, issueType: input.issueType, isFeature: feature, labels: input.labels, skipLabels: s.skipLabels, onlyLabels: s.onlyLabels, acs, expectationsMode: c.tests.expectations };
   if (skipping || !acs.length) return { ...base, expected: {}, trace: [], code: "unknown", limits: {} };
 
   let expected: StoryFacts["expected"] = {};

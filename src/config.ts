@@ -225,6 +225,33 @@ export const ConfigSchema = z.object({
            */
           featureIssueTypes: z.array(z.string()).default([]),
           /**
+           * Which statuses mean what, per Jira project (one test repository often serves projects with different
+           * workflows). `readyStatuses`: development is done and the story can be tested end to end (matched without
+           * regard to case; Jira's own "Done" category counts too, where known). `byProject` overrides either list for
+           * one project key.
+           */
+          workflow: z
+            .object({
+              readyStatuses: z.array(z.string()).default(["Ready for Testing", "Ready for QA", "Dev Done", "In Testing", "In QA"]),
+              byProject: z.record(z.object({ readyStatuses: z.array(z.string()).optional(), approvedStatuses: z.array(z.string()).optional() })).default({}),
+            })
+            .default({}),
+          /**
+           * How a bug, task or sub-task is traced to its feature (only when `featureIssueTypes` is set; with no
+           * feature types every card is its own feature). The rules that keep wrong links out are fixed in code:
+           * only cards with code, one hop, parent first, the target must be a feature in `projectKeys`, and a card
+           * that reaches two features is not attached to either.
+           */
+          hierarchy: z
+            .object({
+              followParent: z.boolean().default(true),
+              /** Link types to follow when a card has no parent that is a feature: `name` is the link type or its inward/outward wording ("is caused by"). `from`: issue types it applies to (empty: any non-feature). */
+              links: z.array(z.object({ name: z.string().min(1), from: z.array(z.string()).default([]) })).default([]),
+            })
+            .default({}),
+          /** Jira Components mapped to services of `workspace.services` (the firmest "which services does this story need" signal). */
+          components: z.record(z.string()).default({}),
+          /**
            * Which stories the background check (`qa-sentinel stories`) looks at when it is not given keys. Without
            * `jql`, it asks for stories of `projectKeys` in an approved status, of a feature issue type, changed
            * within `lookbackDays`.

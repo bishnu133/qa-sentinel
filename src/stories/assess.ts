@@ -38,6 +38,13 @@ export interface StoryFacts {
   code: CodeState;
   /** Why the AI step can't start right now (budget, too many failed attempts, already running), per step. */
   limits: { spec?: string; generate?: string };
+  /** Jira's status is a ready status for this story's project (requirements.jira.workflow). Informs readiness; does not change the state. */
+  jiraReady?: boolean;
+  /** Services named by the card's Jira Components (requirements.jira.components), and components with no mapping. */
+  services?: string[];
+  unmappedComponents?: string[];
+  /** How the story was reached when it was asked for through a bug, task or sub-task ("SHOP-210 (Bug) → SHOP-12 via parent"). */
+  resolvedFrom?: string;
 }
 
 export type StoryState = "skipped" | "needs-attention" | "needs-expectations" | "needs-tests" | "needs-triage" | "covered";
@@ -75,6 +82,10 @@ export interface Assessment {
   acs: AcView[];
   counts: { acs: number; covered: number; questions: number; knownDefects: number; awaitingTriage: number };
   code: CodeState;
+  jiraReady?: boolean;
+  services?: string[];
+  unmappedComponents?: string[];
+  resolvedFrom?: string;
 }
 
 const isTriage = (t: IndexedTest) => t.status === "fixme" || t.status === "skip";

@@ -230,6 +230,13 @@ requirements:
     scopeFields: [{ field: customfield_10050, name: Tech scope, prefix: TS }]   # optional: scope kept in Jira fields
     approvedStatuses: [Ready for Dev, In Progress, Done]   # these statuses make AC "approved"
     featureIssueTypes: [Story]   # only these get expected behaviour (empty = every type)
+    workflow:
+      readyStatuses: [Ready for Testing]      # development is done; cross-service tests wait for this
+      byProject: { ABC: { readyStatuses: [QA Ready] } }   # a project with different status names
+    hierarchy:
+      followParent: true                      # a bug/sub-task follows its parent story
+      links: [{ name: "is caused by", from: [Bug] }]   # or follow this link (wording or link type name)
+    components: { Orders: orders-api }        # Jira Component -> service name
   template:                          # how your team writes stories (`story-check` shows how a story is read)
     - { role: acceptance-criteria, name: Acceptance criteria, headings: [acceptance criteria, acs] }
     - { role: scope, name: In scope, prefix: IS, headings: [in scope, scope] }
