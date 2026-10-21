@@ -21,6 +21,13 @@
 - Removing a known-defect marker also removes QA-BUG / QA-AGENT notes separated from the test by other comments.
 - Ready status: Jira's "Done" status category counts as ready (a finished story is not stuck waiting).
 
+## Unreleased — one test MR per story, readiness per AC (phase 3)
+
+- **Readiness per acceptance criterion** in `qa-sentinel feature <STORY>`: an AC is ready for its end-to-end tests when every service it names (`Services` in `expected/<STORY>.md`; none named = every service the story changed) is merged and deployed in `--env`, and the Jira card is in a ready status. The report shows a table with the reason for each AC. `--run` now runs only the tests whose ACs are all ready (a test with no `@ac` tag waits for all of them); `--force` runs everything.
+- **Gap report once, when the MR is ready for review:** with `automation.gapReport.when: ready` (the default) a dev MR that is still a draft gets no gap report (exit 0, a short note instead). `--even-if-draft` or `when: always` restores the old behaviour. Story-wide reports (`--story`) are not affected.
+- Already in place and unchanged: `generate --story` writes one test branch and MR for the whole story across services.
+
+
 ## Unreleased — AC-first generation (phase 1)
 
 **Upgrading:** `qa-sentinel upgrade` refreshes the planning and authoring skills, but not your `write-api-test`, `write-web-test` and `write-mobile-test` skills (they hold your learned conventions). Copy the discrepancy line (`test.fixme` + `// QA-AGENT:` with the behaviour id, never `test.fail`) and the "never assert the code's value" line from `templates/skills/…` by hand.

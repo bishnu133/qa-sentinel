@@ -290,6 +290,8 @@ export const ConfigSchema = z.object({
           maxAttempts: z.number().int().min(1).max(10).default(3),
         })
         .default({}),
+      /** ready (default): the gap report on a dev MR is made once the MR is no longer a draft; always: on every pipeline run. */
+      gapReport: z.object({ when: z.enum(["ready", "always"]).default("ready") }).default({}),
       budgets: z
         .object({
           perStoryUsd: z.number().min(0).default(25),

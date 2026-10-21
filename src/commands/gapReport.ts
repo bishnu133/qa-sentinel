@@ -11,7 +11,7 @@ import { formatUsage } from "../claude.js";
 import { ARTIFACT_GLOBS, createRunDir, findService, startManifest, writeManifest } from "../run.js";
 import { checkServiceUntouched, diffSnapshots, findingsMarkdown, snapshotTree, type Finding } from "../guardrails.js";
 import { requirementsLine, resolveRequirements, skippedBranch, storyMarkdown } from "../requirements.js";
-import { gitlabContext, gitlabMrFromEnv } from "../scm/gitlab.js";
+import { gitlabContext, gitlabMrFromEnv, mrIsDraft } from "../scm/gitlab.js";
 import { assembleFeature } from "../feature/manifest.js";
 import { publish } from "../reporting/publish.js";
 import { engineFor } from "../engines/ClaudeCodeEngine.js";
@@ -41,6 +41,8 @@ export interface GapReportOptions {
   head?: string;
   checkout?: boolean;
   storyFile?: string;
+  /** Make the report even if the merge request is still a draft (automation.gapReport.when: ready skips drafts). */
+  evenIfDraft?: boolean;
   /** Story mode: analyse everything this story changed, across all its service repos. */
   story?: string;
   out?: string;
@@ -62,6 +64,14 @@ async function gapReportRun(o: GapReportOptions, wrap: (e: AgentEngine) => Agent
   const cwd = path.resolve(o.cwd);
   const c = loadConfig(cwd);
   const mr = gitlabMrFromEnv();
+  // One gap report per dev MR, when the author marks it ready for review: a draft is still changing.
+  if (!o.story && !o.evenIfDraft && !o.dryRun && c.automation.gapReport.when === "ready" && mr.mrIid && (await mrIsDraft(gitlabContext(c.ci.gitlabUrl), mr.project, mr.mrIid, mr.title))) {
+    const out = path.resolve(cwd, o.out ?? "qa-gap-report.md");
+    const report = `### QA impact · waiting\n**Verdict:** this merge request is a draft. The gap report is made once it is marked ready for review (automation.gapReport.when: ready; --even-if-draft overrides).\n`;
+    fs.writeFileSync(out, report);
+    log.ok("merge request is a draft; the gap report waits until it is ready for review");
+    return { report, skipped: true, exitCode: 0 };
+  }
   let service: ServiceConfig, repo: string, cs: ChangeSet, relevant: string[];
   let parts: StoryPart[] | undefined;
   if (o.story) {

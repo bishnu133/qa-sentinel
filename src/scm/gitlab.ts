@@ -129,6 +129,27 @@ export async function currentUser(ctx: GitLabContext): Promise<any> {
   return (await call(ctx, "GET", "/user", undefined, 1)).data;
 }
 
+/** GitLab treats these title prefixes as a draft: "Draft:", "Draft -", "[Draft]", "(Draft)". */
+export const isDraftTitle = (title: string | undefined) => /^\s*(\[draft\]|\(draft\)|draft\s*[:\-])/i.test(title ?? "");
+
+/**
+ * Is this merge request still a draft? Asks GitLab (a retried pipeline keeps the title it started with); when that
+ * can't be asked, the title from the pipeline is used. Unknown is "not a draft" so a report is never lost by accident.
+ */
+export async function mrIsDraft(ctx: GitLabContext | undefined, project: string | undefined, iid: string | undefined, titleFromEnv: string | undefined): Promise<boolean> {
+  if (ctx && project && iid) {
+    try {
+      const { data } = await call(ctx, "GET", `/projects/${encodeURIComponent(project)}/merge_requests/${encodeURIComponent(iid)}`, undefined, 2);
+      if (typeof data?.draft === "boolean") return data.draft;
+      if (typeof data?.work_in_progress === "boolean") return data.work_in_progress;
+      if (typeof data?.title === "string") return isDraftTitle(data.title);
+    } catch {
+      /* fall back to the title below */
+    }
+  }
+  return isDraftTitle(titleFromEnv);
+}
+
 /** MR context when running inside a GitLab merge request pipeline (or Jenkins with the GitLab plugin). */
 export function gitlabMrFromEnv(env: NodeJS.ProcessEnv = process.env) {
   const project = env.CI_PROJECT_ID ?? env.gitlabMergeRequestTargetProjectId;
