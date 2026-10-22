@@ -2,7 +2,7 @@ import path from "node:path";
 import type { Config, ServiceConfig } from "./config.js";
 import { type ChangeSet, changeSet, git } from "./git.js";
 import { matchesAny } from "./fsutil.js";
-import { assembleFeature, type FeatureManifest } from "./feature/manifest.js";
+import { assembleFeature, targetRefOf, type FeatureManifest } from "./feature/manifest.js";
 import type { GitLabContext } from "./scm/gitlab.js";
 
 /**
@@ -13,7 +13,10 @@ import type { GitLabContext } from "./scm/gitlab.js";
 export interface StoryPart {
   service: ServiceConfig;
   repo: string;
+  /** The service's whole change for the story: its files (each once) and the diffs of all its ranges. `head` is the first range's tip. */
   cs: ChangeSet;
+  /** The tip of every range of this service (the merged work, and each branch still open). */
+  heads: string[];
   relevant: string[];
   merged: boolean;
 }
@@ -62,11 +65,24 @@ export function storyRange(repo: string, story: string, tip: string, merged = fa
   return { base: parent || oldest[0], head: tip };
 }
 
+/**
+ * A branch still open: from where it left the target branch to its tip. Walking back from the tip along commit
+ * messages would pick up the story's earlier, merged commits and with them the unrelated work merged in between.
+ */
+export function openRange(repo: string, story: string, tip: string, target: string | undefined): { base: string; head: string } | undefined {
+  if (target) {
+    const base = tryGit(repo, ["merge-base", target, tip]).trim();
+    if (base && base !== tip) return { base, head: tip };
+  }
+  return storyRange(repo, story, tip, false);
+}
+
 export async function storyParts(i: { c: Config; cwd: string; story: string; gitlab?: GitLabContext }): Promise<{ parts: StoryPart[]; manifest: FeatureManifest; notes: string[] }> {
   // Local clones are the source of truth for diffs; GitLab only helps find parts whose repo isn't checked out.
   const manifest = await assembleFeature({ c: i.c, cwd: i.cwd, story: i.story });
   const notes = [...manifest.notes];
-  const parts: StoryPart[] = [];
+  // One entry per service: the mainline range for the merged work, and one range for each branch still open.
+  const byService = new Map<string, { service: ServiceConfig; repo: string; ranges: { base: string; head: string; merged: boolean }[] }>();
   for (const p of manifest.parts) {
     const service = i.c.workspace.services.find((s) => s.name === p.service)!;
     const repo = path.resolve(i.cwd, service.path);
@@ -74,13 +90,22 @@ export async function storyParts(i: { c: Config; cwd: string; story: string; git
       notes.push(`${p.service}: no commit found for ${i.story}`);
       continue;
     }
-    const range = storyRange(repo, i.story, p.sha, p.merged);
+    const range = p.merged ? storyRange(repo, i.story, p.sha, true) : openRange(repo, i.story, p.sha, targetRefOf(repo, i.c.ci.targetBranch));
     if (!range) {
       notes.push(`${p.service}: no commit message mentions ${i.story}; skipped`);
       continue;
     }
-    const cs = changeSet(repo, range.base, range.head);
-    parts.push({ service, repo, cs, relevant: cs.files.filter((f) => !matchesAny(f, i.c.agent.skipPaths)), merged: p.merged });
+    const entry = byService.get(service.name) ?? { service, repo, ranges: [] };
+    if (!entry.ranges.some((r) => r.base === range.base && r.head === range.head)) entry.ranges.push({ ...range, merged: p.merged });
+    byService.set(service.name, entry);
+  }
+  const parts: StoryPart[] = [];
+  for (const { service, repo, ranges } of byService.values()) {
+    const sets = ranges.map((r) => changeSet(repo, r.base, r.head));
+    const files = [...new Set(sets.flatMap((x) => x.files))];
+    const diff = sets.length === 1 ? sets[0].diff : sets.map((x) => `# ----- ${x.base.slice(0, 8)}..${x.head.slice(0, 8)} -----\n${x.diff}`).join("\n");
+    const cs: ChangeSet = { base: sets[0].base, head: sets[0].head, files, diff };
+    parts.push({ service, repo, cs, heads: sets.map((x) => x.head), relevant: files.filter((f) => !matchesAny(f, i.c.agent.skipPaths)), merged: ranges.every((r) => r.merged) });
   }
   return { parts, manifest, notes };
 }

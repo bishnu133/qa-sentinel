@@ -128,7 +128,7 @@ export async function resolveKeysCached(c: Config, ctx: JiraContext, keys: strin
   for (const key of [...new Set(keys)]) {
     const card = await get(key);
     if (!card.issue) {
-      out.push(card.notFound ? { work: key, via: "not-found", notFound: true, explain: `${key} is not in Jira` } : { work: key, via: "error", explain: `${key} could not be read from Jira: ${card.error?.slice(0, 160)}` });
+      out.push(card.notFound ? { work: key, via: "not-found", notFound: true, explain: `${key} is not in Jira or not visible to this user` } : { work: key, via: "error", explain: `${key} could not be read from Jira: ${card.error?.slice(0, 160)}` });
       continue;
     }
     const r = await resolveFeature(c, card.issue, async (k) => (await get(k)).issue, { hasCode: o.hasCode });

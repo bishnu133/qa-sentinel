@@ -1,5 +1,5 @@
 import type { ExpectedFile } from "../expected/format.js";
-import type { FeatureManifest } from "./manifest.js";
+import { activeParts, type FeatureManifest } from "./manifest.js";
 
 /**
  * Per-AC readiness for the end-to-end tests. A story's ACs often touch different services, so one slow service must
@@ -23,7 +23,7 @@ export function acReadiness(m: FeatureManifest, expected: ExpectedFile | undefin
   return acIds.map((ac) => {
     const named = namedBy.get(ac) ?? [];
     // A service can have several parts (one per merge request): it counts as merged only when none of them is still open.
-    const live = m.parts.filter((p) => !p.dropped);
+    const live = activeParts(m.parts);
     const parts = named.length ? live.filter((p) => named.some((n) => n.toLowerCase() === p.service.toLowerCase())) : live;
     const services = [...new Set(parts.map((p) => p.service))];
     // A named service the story did not change has nothing to wait for; it is said so rather than dropped silently.

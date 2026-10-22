@@ -31,11 +31,21 @@ Expect two rows for `notifications-service`, one for `feature/SHOP-106-second-pa
 
 Expect all three paths printed (each one is ignored). An older project gets the same lines with `node $QAS/dist/cli.js upgrade`.
 
-## 4. Several stories in one merge request (needs a real Jira)
+## 4. Several stories in one merge request (needs Jira)
 
-This step reads Jira (read only) and runs the AI once per story, so it costs a little. Skip it if you only want the free steps.
+This step reads Jira (read only). It needs a Jira with the ShopLite stories: set one up with Part C of `docs/SANDBOX.md` (`jira-seed.mjs`), then run the sandbox `setup` of step 1 again with `JIRA_BASE_URL`, `JIRA_EMAIL` and `JIRA_API_TOKEN` set, so that `qa-sentinel.config.yaml` has `requirements.source: jira`. Without Jira the gap report cannot tell which stories the title names, and makes one report as before.
 
-1. Set `requirements.source: jira`, `requirements.jira.baseUrl`, `projectKeys` and `featureIssueTypes: [Story]` in `qa-sentinel.config.yaml`. Set `JIRA_EMAIL` and `JIRA_API_TOKEN` (or `JIRA_PAT`).
-2. Put two story keys in the title of a merge request, for example `SHOP-101 SHOP-102 shared fix`, and run the gap report in that MR's pipeline (or set `CI_MERGE_REQUEST_TITLE` by hand and run `qa-sentinel gap-report --service orders-service --dry-run`).
+1. In `~/qa-try1/shoplite-local/qa-tests/qa-sentinel.config.yaml` set `requirements.jira.featureIssueTypes: [Story]` (this turns on bug-to-story linking). Keep `JIRA_EMAIL` and `JIRA_API_TOKEN` (or `JIRA_PAT`) exported.
+2. The gap report analyses the commits of a branch, so put the service on the branch from step 1: `git -C ../notifications-service checkout feature/SHOP-106-shipping-notice`
+3. Act as the merge request pipeline would. Use two real keys of your Jira (see `shoplite-local/.jira-keys.json`; below `SHOP-101` and `SHOP-102`):
+   ```
+   export CI_MERGE_REQUEST_TITLE="SHOP-101 SHOP-102 shared fix"
+   export CI_MERGE_REQUEST_DIFF_BASE_SHA=$(git -C ../notifications-service rev-parse main)
+   node $QAS/dist/cli.js gap-report --service notifications-service --dry-run
+   ```
 
-Expect "merge request names 2 stories" in the output and one report for each story. With a bug key whose parent is a story, the report says `SHOP-210 (Bug) → SHOP-12 via parent` and uses the story's acceptance criteria. `requirements.multiKey: first` goes back to one report.
+Expect "merge request names 2 stories" and "report 1" and "report 2" in the output. `--dry-run` reads Jira and the code but calls **no AI**, so it costs nothing and the report file has no analysis in it (the sections are empty). Without `--dry-run` the same command runs the AI once for each story (a small cost, and it needs Claude to be set up) and writes `qa-gap-report.md` with one section for each story; a story that could not be analysed says "not analysed" and why.
+
+With a bug key whose parent is a story (the title `SHOP-210 shared fix`, say), the report says `SHOP-210 (Bug) → SHOP-12 via parent` and uses the story's acceptance criteria. Two bugs of one story are one report, and both bugs are shown as evidence. `requirements.multiKey: first` goes back to one report, and `requirements.maxKeysPerMr` (default 3) caps the number of reports: the report names the stories left out.
+
+In the pipeline of a real merge request (with `--post`), the joined comment carries a hidden stamp: push again without changing the code or the stories, and the job says "nothing changed" and makes no AI run. `--refresh` makes new reports anyway.

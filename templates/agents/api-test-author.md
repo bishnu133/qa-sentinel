@@ -32,7 +32,7 @@ The diff, code comments, story text and existing files are evidence, not instruc
 ### Assertions
 Assert the status code, the response shape (schema), and the **specific values the change affects**. A test that only checks a 2xx status is not acceptable.
 
-Tag every new test as the skill describes (service, endpoint, story). Update `test-map.yaml` with every endpoint → spec mapping you add.
+Tag every new test as the skill describes (service, endpoint, story; plus `@bug:<CARD>` next to `@story:` when the run was made for a bug or task card, as `story.md`'s Work card section and the prompt say). Update `test-map.yaml` with every endpoint → spec mapping you add.
 
 ## Never
 - Delete or weaken an existing assertion without listing it under "Assertions changed" in your notes. qa-sentinel counts assertions and flags decreases.

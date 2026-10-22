@@ -3,7 +3,7 @@ import path from "node:path";
 import type { Config, ServiceConfig } from "../config.js";
 import { git, isGitRepo } from "../git.js";
 import { call, getAll, type GitLabContext } from "../scm/gitlab.js";
-import { extractStoryKeys } from "../requirements.js";
+import { extractStoryKeys, jiraKeyPattern } from "../requirements.js";
 import { findCherryPicks, findRevert } from "../release/git.js";
 
 /**
@@ -54,7 +54,7 @@ export interface FeatureManifest {
 
 const keyRe = (key: string) => new RegExp(`(^|[^A-Za-z0-9])${key.replace(/[-]/g, "\\-")}(?![0-9])`, "i");
 
-const targetRefOf = (repo: string, targetBranch: string): string | undefined =>
+export const targetRefOf = (repo: string, targetBranch: string): string | undefined =>
   ["origin/" + targetBranch, targetBranch].find((b) => {
     try {
       git(repo, ["rev-parse", "--verify", "-q", b]);
@@ -135,7 +135,11 @@ export function partsFromGit(repo: string, s: ServiceConfig, story: string, targ
   for (const c of commits) {
     if (onTarget(c)) mainlineCommits.push(c);
     else if (!covered(c)) {
-      const where = git(repo, ["for-each-ref", "--contains", c, "--format=%(refname:short)", "refs/heads", "refs/remotes"]).split("\n").filter((x) => x && !/\/HEAD$/.test(x))[0] ?? "(no branch)";
+      const all = git(repo, ["for-each-ref", "--contains", c, "--format=%(refname:short)", "refs/heads", "refs/remotes"]).split("\n").filter((x) => x && !/\/HEAD$/.test(x));
+      // Local commits on the target branch that are not pushed yet are not "a branch still open": they are skipped, never an open part named after the target.
+      const elsewhere = all.filter((x) => x !== targetBranch && x !== `origin/${targetBranch}`);
+      if (all.length && !elsewhere.length) continue;
+      const where = elsewhere[0] ?? "(no branch)";
       stray.set(where, [...(stray.get(where) ?? []), c]);
     }
   }
@@ -185,7 +189,19 @@ export function partFromGit(repo: string, s: ServiceConfig, story: string, targe
  *  2. the MRs updated in the last `lookbackDays` days, kept when the source branch names the story (the search does not read branches).
  * Closed MRs are kept, marked `dropped`. Open MRs come first, then merged ones (newest first), then dropped ones.
  */
-export async function partsFromGitLab(ctx: GitLabContext, s: ServiceConfig, story: string, o: { lookbackDays?: number; keyPattern?: string; now?: Date } = {}): Promise<ServicePart[]> {
+/**
+ * The recent merge requests of a project, read once per run: every story of a multi-story merge request filters the same list locally.
+ * Keyed by project and lookback window; the value is the scan (and whether it was cut off at the page limit).
+ */
+export type MrScanCache = Map<string, Promise<{ mrs: any[]; truncated: boolean }>>;
+export const MR_SCAN_PAGES = 5;
+
+export async function partsFromGitLab(
+  ctx: GitLabContext,
+  s: ServiceConfig,
+  story: string,
+  o: { lookbackDays?: number; keyPattern?: string; now?: Date; scanCache?: MrScanCache; /** Facts the caller should show (a scan that was cut off). */ notes?: string[] } = {},
+): Promise<ServicePart[]> {
   if (!s.gitlabProject) return [];
   const project = encodeURIComponent(s.gitlabProject);
   const re = keyRe(story);
@@ -193,10 +209,24 @@ export async function partsFromGitLab(ctx: GitLabContext, s: ServiceConfig, stor
   for (const m of await getAll(ctx, `/projects/${project}/merge_requests?search=${encodeURIComponent(story)}&in=title,description&state=all`, 10)) {
     if (re.test(m.title ?? "") || re.test(m.source_branch ?? "") || re.test(m.description ?? "")) found.set(m.iid, m);
   }
-  const since = new Date((o.now ?? new Date()).getTime() - (o.lookbackDays ?? 30) * 86_400_000).toISOString();
-  for (const m of await getAll(ctx, `/projects/${project}/merge_requests?state=all&updated_after=${encodeURIComponent(since)}&order_by=updated_at&sort=desc`, 5)) {
+  const days = o.lookbackDays ?? 30;
+  const scanKey = `${s.gitlabProject}|${days}`;
+  const scan = async () => {
+    const since = new Date((o.now ?? new Date()).getTime() - days * 86_400_000).toISOString();
+    const info: { truncated?: boolean } = {};
+    const mrs = await getAll(ctx, `/projects/${project}/merge_requests?state=all&updated_after=${encodeURIComponent(since)}&order_by=updated_at&sort=desc`, MR_SCAN_PAGES, info);
+    return { mrs, truncated: Boolean(info.truncated) };
+  };
+  let scanned: Promise<{ mrs: any[]; truncated: boolean }>;
+  if (o.scanCache) {
+    if (!o.scanCache.has(scanKey)) o.scanCache.set(scanKey, scan());
+    scanned = o.scanCache.get(scanKey)!;
+  } else scanned = scan();
+  const { mrs: recent, truncated } = await scanned;
+  for (const m of recent) {
     if (re.test(m.source_branch ?? "") && !found.has(m.iid)) found.set(m.iid, m);
   }
+  if (truncated) o.notes?.push(`${s.name}: only the newest ${MR_SCAN_PAGES * 100} merge requests updated in the last ${days} days were checked for a branch naming ${story}; an older one may be missing (requirements.jira.search.mrLookbackDays)`);
   const pattern = o.keyPattern ?? "[A-Z][A-Z0-9]+-\\d+";
   const parts = [...found.values()].map((m): ServicePart => {
     const merged = m.state === "merged";
@@ -273,10 +303,29 @@ export async function checkDeployment(part: ServicePart, s: ServiceConfig, envir
   }
 }
 
+/** Is `a` newer than `b`? By merge time, else by merge request number; parts of one clone (no MRs) are one part per service. */
+const newerThan = (a: ServicePart, b: ServicePart) => (a.mergedAt && b.mergedAt ? a.mergedAt > b.mergedAt : a.mr && b.mr ? a.mr.iid > b.mr.iid : true);
+
+/**
+ * The parts whose change is gone. A reverted part counts only while its service has no newer merged part that is
+ * not reverted: a change that was reverted and then landed again (a new MR, or the revert reverted) is back.
+ */
+export function revertedParts(parts: ServicePart[]): ServicePart[] {
+  const live = parts.filter((p) => !p.dropped);
+  return live.filter((p) => p.reverted && !live.some((q) => q !== p && q.service === p.service && q.merged && !q.reverted && newerThan(q, p)));
+}
+
+/** The parts that count: not dropped, and not a reverted change that a newer part of the same service replaced. */
+export function activeParts(parts: ServicePart[]): ServicePart[] {
+  const gone = new Set(revertedParts(parts));
+  return parts.filter((p) => !p.dropped && (!p.reverted || gone.has(p)));
+}
+
 export function featureStatus(parts: ServicePart[], environment?: string): FeatureStatus {
-  parts = parts.filter((p) => !p.dropped);
-  if (!parts.length) return "no-changes-found";
-  if (parts.some((p) => p.reverted)) return "reverted";
+  const all = parts.filter((p) => !p.dropped);
+  parts = activeParts(parts);
+  if (!all.length) return "no-changes-found";
+  if (revertedParts(all).length) return "reverted";
   if (parts.some((p) => !p.merged)) return "in-development";
   if (!environment) return "merged";
   return parts.every((p) => p.deployed?.includesChange) ? "ready-for-feature-tests" : "waiting-for-deployment";
@@ -291,6 +340,8 @@ export async function assembleFeature(i: {
   baseUrl?: string;
   /** Also ask the environment about changes that are not on the main branch yet (a hotfix is deployed before it is cherry-picked). */
   checkUnmerged?: boolean;
+  /** The recent-MR scans of this run (shared by the stories of a merge request). */
+  scanCache?: MrScanCache;
 }): Promise<FeatureManifest> {
   const notes: string[] = [];
   const parts: ServicePart[] = [];
@@ -299,7 +350,7 @@ export async function assembleFeature(i: {
     const repo = path.resolve(i.cwd, s.path);
     let found: ServicePart[] = [];
     try {
-      if (i.gitlab && s.gitlabProject) found = await partsFromGitLab(i.gitlab, s, i.story, { lookbackDays: i.c.requirements.jira.search.mrLookbackDays, keyPattern: i.c.requirements.storyKeyPattern });
+      if (i.gitlab && s.gitlabProject) found = await partsFromGitLab(i.gitlab, s, i.story, { lookbackDays: i.c.requirements.jira.search.mrLookbackDays, keyPattern: jiraKeyPattern(i.c), scanCache: i.scanCache, notes });
       else if (fs.existsSync(repo)) found = partsFromGit(repo, s, i.story, i.c.ci.targetBranch);
     } catch (e) {
       notes.push(`${s.name}: could not look for ${i.story}: ${(e as Error).message}`);
@@ -312,7 +363,7 @@ export async function assembleFeature(i: {
       }
       if (part.merged && part.sha && target) {
         try {
-          part.reverted = findRevert(repo, [part.sha, ...(part.related ?? [])], target);
+          part.reverted = findRevert(repo, [part.sha, ...(part.mergeSha ? [part.mergeSha] : []), ...(part.squashSha ? [part.squashSha] : []), ...(part.related ?? [])], target);
         } catch (e) {
           notes.push(`${s.name}: could not check whether ${i.story} was reverted: ${(e as Error).message.split("\n")[0]}`);
         }

@@ -2,6 +2,7 @@ import { type ExpectedFile, expectedPath, readExpected } from "../expected/forma
 import { expectedDirOf } from "../expected/lock.js";
 import { readManualCards } from "../manualTests.js";
 import { requirementItems } from "../requirements.js";
+import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { loadConfig } from "../config.js";
@@ -11,10 +12,10 @@ import { formatUsage } from "../claude.js";
 import { ARTIFACT_GLOBS, createRunDir, findService, startManifest, writeManifest } from "../run.js";
 import { checkServiceUntouched, diffSnapshots, findingsMarkdown, snapshotTree, type Finding } from "../guardrails.js";
 import { extractStoryKeys, jiraKeyPattern, requirementsLine, resolveRequirements, skippedBranch, storyMarkdown } from "../requirements.js";
-import { resolveKeysCached } from "../stories/resolve.js";
+import { type IssueCache, type KeyResolution, resolveKeysCached } from "../stories/resolve.js";
 import { getMrNoteBody, gitlabContext, gitlabMrFromEnv, mrIsDraft, upsertMrNote } from "../scm/gitlab.js";
 import { gapFingerprint, parseStamp, relevantDiffDigest, stampOf, updatedLine } from "../plan/fingerprint.js";
-import { assembleFeature } from "../feature/manifest.js";
+import { assembleFeature, type MrScanCache } from "../feature/manifest.js";
 import { publish } from "../reporting/publish.js";
 import { engineFor } from "../engines/ClaudeCodeEngine.js";
 import type { AgentEngine } from "../engines/AgentEngine.js";
@@ -59,9 +60,15 @@ export interface GapReportOptions {
   noMrNote?: boolean;
   /** Internal: facts about the keys the MR names that the report should say (a key that is not in Jira, stories left out). */
   notes?: string[];
+  /** Internal: what the first look at the keys already learned (cards and their features), so the cards are not read from Jira again. */
+  resolved?: KeyResolution[];
+  /** Internal: the Jira reads and the recent-MR scans of this run, shared by the reports of one merge request. */
+  issueCache?: IssueCache;
+  scanCache?: MrScanCache;
 }
 
-type GapResult = { report: string; skipped: boolean; exitCode: number };
+/** `reason`: why nothing was run (a budget or limit stopped it). */
+type GapResult = { report: string; skipped: boolean; exitCode: number; reason?: string };
 
 /** What the AI part of the run needs from the free checks before it. */
 interface Prepared {
@@ -82,25 +89,35 @@ interface Prepared {
 export async function gapReportCommand(o: GapReportOptions): Promise<GapResult> {
   const cwd = path.resolve(o.cwd);
   const c = loadConfig(cwd);
+  // A draft is still changing: this comes first, so it costs nothing (no Jira read) and covers every story the merge request names.
+  const waiting = await draftGate(o, c, cwd);
+  if (waiting) return waiting;
   // A merge request that names several stories gets one report for each (requirements.multiKey).
   const named = await storiesNamedByMr(o, c);
   if (named && named.items.length > 1) return gapReportEach(o, c, cwd, named);
-  if (named?.items.length === 1) o = { ...o, forKey: named.items[0].work, forFeature: named.items[0].feature, notes: [...(o.notes ?? []), ...named.notes] };
-  // The checks that need no AI come first, so a draft or an unchanged push costs nothing and never trips a budget.
+  if (named?.items.length === 1) o = { ...o, forKey: named.items[0].work, forFeature: named.items[0].feature, resolved: named.items[0].resolved, issueCache: named.cache, notes: [...(o.notes ?? []), ...named.notes] };
+  // The checks that need no AI come first, so an unchanged push costs nothing and never trips a budget.
   const pre = await gapReportPrepare(o, c, cwd);
   if (pre.done) return pre.done;
+  return runPrepared(o, c, cwd, pre.s!);
+}
+
+/** The AI part of one report, counted against the story's budget. */
+function runPrepared(o: GapReportOptions, c: ReturnType<typeof loadConfig>, cwd: string, s: Prepared): Promise<GapResult> {
   return withSpend(
     { cwd, c, story: o.story ?? o.forFeature, label: "gap-report", skip: o.dryRun },
-    (exitCode) => ({ report: "", skipped: true, exitCode }),
-    (wrap) => gapReportBody(o, wrap, pre.s!),
+    (exitCode, message) => ({ report: "", skipped: true, exitCode, ...(message ? { reason: message } : {}) }),
+    (wrap) => gapReportBody(o, wrap, s),
     (r) => r.exitCode,
   );
 }
 
 interface NamedStories {
-  items: { work: string; feature: string; explain: string }[];
+  /** `resolved`: every card of the merge request that leads to this feature (the first is the one the report resolves; the others are shown as work cards). */
+  items: { work: string; feature: string; explain: string; resolved: KeyResolution[] }[];
   /** Keys that are not in Jira, stories left out because of the limit, cards that could not be read. */
   notes: string[];
+  cache: IssueCache;
 }
 
 /**
@@ -116,68 +133,147 @@ async function storiesNamedByMr(o: GapReportOptions, c: ReturnType<typeof loadCo
   if (keys.length < 2) return undefined;
   const notes: string[] = [];
   const items: NamedStories["items"] = [];
-  for (const r of await resolveKeysCached(c, jctx, c.requirements.multiKey === "first" ? keys.slice(0, 1) : keys, { hasCode: true })) {
+  const cache: IssueCache = new Map();
+  for (const r of await resolveKeysCached(c, jctx, c.requirements.multiKey === "first" ? keys.slice(0, 1) : keys, { hasCode: true, cache })) {
     if (r.via === "not-found" || r.via === "error") {
       notes.push(r.explain);
       continue;
     }
     // A card that is attached to no feature (or to two) is analysed under its own key; two cards of one feature are one story.
     const feature = r.feature ?? r.work;
-    if (!items.some((x) => x.feature.toLowerCase() === feature.toLowerCase())) items.push({ work: r.work, feature, explain: r.via === "self" ? `${feature}` : r.explain });
+    const same = items.find((x) => x.feature.toLowerCase() === feature.toLowerCase());
+    if (same) same.resolved.push(r);
+    else items.push({ work: r.work, feature, explain: r.via === "self" ? `${feature}` : r.explain, resolved: [r] });
   }
   const max = c.requirements.maxKeysPerMr;
   if (items.length > max) {
     notes.push(`This merge request names ${items.length} stories; only the first ${max} are analysed (requirements.maxKeysPerMr): left out ${items.slice(max).map((x) => x.feature).join(", ")}`);
     items.length = max;
   }
-  return { items, notes };
+  return { items, notes, cache };
 }
 
-/** One gap report per story the merge request names, joined in one MR comment. Each report is posted to its own story in Jira, and its cost is counted on that story. */
+/** A draft merge request gets a waiting note instead of a report (automation.gapReport.when: ready). Written to the report file too, so the job's artifact is never missing. */
+async function draftGate(o: GapReportOptions, c: ReturnType<typeof loadConfig>, cwd: string): Promise<GapResult | undefined> {
+  const mr = gitlabMrFromEnv();
+  if (o.story || o.evenIfDraft || o.dryRun || c.automation.gapReport.when !== "ready" || !mr.mrIid) return undefined;
+  if (!(await mrIsDraft(gitlabContext(c.ci.gitlabUrl), mr.project, mr.mrIid, mr.title))) return undefined;
+  const out = path.resolve(cwd, o.out ?? "qa-gap-report.md");
+  const report = `### QA impact · waiting\n**Verdict:** this merge request is a draft. The gap report is made once it is marked ready for review (automation.gapReport.when: ready; --even-if-draft overrides).\n`;
+  fs.writeFileSync(out, report);
+  // Say so on the MR: marking it ready does not start a pipeline by itself, and nobody should think a report exists.
+  const gl = o.post && c.reporting.targets.includes("gitlab-mr") ? gitlabContext(c.ci.gitlabUrl) : undefined;
+  if (gl && mr.project) await upsertMrNote(gl, mr.project, mr.mrIid, report).catch((e) => log.warn(`could not post the waiting note: ${(e as Error).message}`));
+  log.ok("merge request is a draft; the gap report waits until it is ready for review");
+  return { report, skipped: true, exitCode: 0 };
+}
+
+/** The stamp of the report already on the merge request, when this run may compare with it (a real post to GitLab, no --refresh). */
+async function lastStamp(c: ReturnType<typeof loadConfig>, o: GapReportOptions, mr: ReturnType<typeof gitlabMrFromEnv>): Promise<{ fp: string; head: string } | undefined> {
+  if (o.noMrNote || !o.post || o.dryRun || o.refresh || !c.reporting.targets.includes("gitlab-mr") || !mr.project || !mr.mrIid) return undefined;
+  const gl = gitlabContext(c.ci.gitlabUrl);
+  return gl ? parseStamp(await getMrNoteBody(gl, mr.project, mr.mrIid).catch(() => undefined)) : undefined;
+}
+
+const unchangedReport = (head: string) =>
+  `### QA impact · unchanged\n**Verdict:** nothing the gap report depends on changed since the report for ${head.slice(0, 8)} (the diff of the relevant files, the acceptance criteria, the expected behaviour and the scope are the same). The comment on the merge request still stands; --refresh makes a new one.\n`;
+
+/**
+ * One gap report per story the merge request names, joined in one MR comment. Each report is posted to its own story
+ * in Jira, and its cost is counted on that story. Like a one-story report, the joined comment carries a stamp (a digest
+ * of every story's fingerprint), so a push that changes nothing the reports depend on costs no AI run.
+ */
 async function gapReportEach(o: GapReportOptions, c: ReturnType<typeof loadConfig>, cwd: string, named: NamedStories): Promise<GapResult> {
   const out = path.resolve(cwd, o.out ?? "qa-gap-report.md");
-  const sections: string[] = [];
-  const regression: (string[] | "all")[] = [];
-  let exitCode = 0;
-  let skipped = true;
-  for (const [i, it] of named.items.entries()) {
-    const childOut = path.join(cwd, ".qa-sentinel", "gap", it.feature, "qa-gap-report.md");
-    fs.mkdirSync(path.dirname(childOut), { recursive: true });
-    log.step(`merge request names ${named.items.length} stories: report ${i + 1} for ${it.feature}${it.work !== it.feature ? ` (via ${it.work})` : ""}`);
-    const r = await gapReportCommand({ ...o, out: childOut, forKey: it.work, forFeature: it.feature, noMrNote: true, notes: i === 0 ? named.notes : undefined });
-    // A draft MR gets its waiting note once, not once per story.
-    if (r.report.startsWith("### QA impact · waiting")) return { ...r, report: r.report };
-    sections.push(`#### Story ${it.feature}${it.work !== it.feature ? ` · ${it.explain}` : ""}\n\n${r.report.trim()}`);
-    exitCode = Math.max(exitCode, r.exitCode);
-    skipped = skipped && r.skipped;
+  const mr = gitlabMrFromEnv();
+  const scanCache: MrScanCache = new Map();
+  const kids = named.items.map((it, i) => {
+    const dir = path.join(cwd, ".qa-sentinel", "gap", it.feature.toUpperCase().replace(/[^A-Z0-9-]/g, "-"));
+    fs.mkdirSync(dir, { recursive: true });
+    // A selection left by an earlier run must never be read as this run's.
+    fs.rmSync(path.join(dir, "qa-regression.txt"), { force: true });
+    const opts: GapReportOptions = { ...o, out: path.join(dir, "qa-gap-report.md"), forKey: it.work, forFeature: it.feature, resolved: it.resolved, issueCache: named.cache, scanCache, noMrNote: true, notes: i === 0 ? named.notes : undefined };
+    return { it, dir, opts, pre: undefined as Prepared | undefined, error: undefined as string | undefined };
+  });
+
+  // The free checks of every story first: one fingerprint for the whole merge request, compared before any AI run.
+  for (const k of kids) {
     try {
-      const txt = fs.readFileSync(path.join(path.dirname(childOut), "qa-regression.txt"), "utf8");
-      regression.push(txt.trim() ? txt.split("\n").filter(Boolean) : "all");
-    } catch {
-      /* this report made no selection */
+      const p = await gapReportPrepare(k.opts, c, cwd);
+      if (p.done) {
+        // Nothing to analyse (no test-relevant change, a bot branch): the same for every story.
+        fs.writeFileSync(out, p.done.report);
+        return p.done;
+      }
+      k.pre = p.s;
+    } catch (e) {
+      k.error = (e as Error).message;
     }
   }
-  const report = [`### QA impact · ${named.items.length} stories in this merge request`, ...named.notes.map((n) => `\n> ⚠️ ${n}`), "", sections.join("\n\n---\n\n"), ""].join("\n");
+  const head = kids.find((k) => k.pre)?.pre?.cs.head;
+  const combined = kids.every((k) => k.pre?.fp) ? crypto.createHash("sha256").update(kids.map((k) => `${k.it.feature.toUpperCase()}:${k.pre!.fp}`).sort().join("\n")).digest("hex").slice(0, 16) : undefined;
+  let previousHead: string | undefined;
+  if (combined) {
+    const last = await lastStamp(c, o, mr);
+    if (last?.fp === combined) {
+      const report = unchangedReport(last.head);
+      fs.writeFileSync(out, report);
+      log.ok(`nothing changed since the report for ${last.head.slice(0, 8)}; no new gap reports`);
+      return { report, skipped: true, exitCode: 0 };
+    }
+    previousHead = last?.head;
+  }
+
+  const sections: string[] = [];
+  const selections: (string[] | "all")[] = [];
+  let exitCode = 0;
+  let skipped = true;
+  let allOk = true;
+  for (const [i, k] of kids.entries()) {
+    const heading = `#### Story ${k.it.feature}${k.it.work !== k.it.feature ? ` · ${k.it.explain}` : ""}`;
+    let r: GapResult | undefined;
+    let why = k.error;
+    if (!why) {
+      log.step(`merge request names ${kids.length} stories: report ${i + 1} for ${k.it.feature}${k.it.work !== k.it.feature ? ` (via ${k.it.work})` : ""}`);
+      try {
+        r = await runPrepared(k.opts, c, cwd, k.pre!);
+        if (!r.report.trim() && !o.dryRun) why = r.reason ?? (r.exitCode ? `the run stopped (exit ${r.exitCode})` : "no report was made");
+      } catch (e) {
+        why = (e as Error).message;
+      }
+    }
+    if (why) {
+      why = why.split("\n")[0].slice(0, 300);
+      log.warn(`${k.it.feature} not analysed: ${why}`);
+      sections.push(`${heading}\n\n> ⚠️ not analysed: ${why}`);
+      exitCode = Math.max(exitCode, r?.exitCode || 1);
+      allOk = false;
+      skipped = false;
+    } else {
+      sections.push(`${heading}\n\n${r!.report.trim()}`);
+      exitCode = Math.max(exitCode, r!.exitCode);
+      skipped = skipped && r!.skipped;
+      if (r!.exitCode !== 0) allOk = false;
+    }
+    try {
+      const txt = fs.readFileSync(path.join(k.dir, "qa-regression.txt"), "utf8");
+      selections.push(txt.trim() ? txt.split("\n").filter(Boolean) : "all");
+    } catch {
+      // This story had test-relevant changes but made no valid selection: its tests are unknown, so the whole suite runs.
+      selections.push("all");
+    }
+  }
+  const body = [`### QA impact · ${kids.length} stories in this merge request`, ...named.notes.map((n) => `\n> ⚠️ ${n}`), "", sections.join("\n\n---\n\n"), ""].join("\n");
+  const report = previousHead && head ? `${updatedLine(head, previousHead)}\n\n${body}` : body;
   fs.writeFileSync(out, report);
-  if (regression.length) fs.writeFileSync(path.join(path.dirname(out), "qa-regression.txt"), regression.includes("all") ? "" : [...new Set(regression.flat())].join("\n") + "\n");
-  const mr = gitlabMrFromEnv();
-  if (o.post && !o.dryRun && c.reporting.targets.includes("gitlab-mr")) await publish(c, { report, service: o.service, mr, targets: ["gitlab-mr"] });
+  if (!o.dryRun) fs.writeFileSync(path.join(path.dirname(out), "qa-regression.txt"), selections.includes("all") ? "" : [...new Set(selections.flat())].join("\n") + "\n");
+  // The stamp goes on only when every story was analysed: a failed or refused one must be tried again on the next push.
+  if (o.post && !o.dryRun && c.reporting.targets.includes("gitlab-mr")) await publish(c, { report, service: o.service, mr, targets: ["gitlab-mr"], ...(allOk && combined && head ? { stamp: stampOf(combined, head) } : {}) });
   return { report, skipped, exitCode };
 }
 
 async function gapReportPrepare(o: GapReportOptions, c: ReturnType<typeof loadConfig>, cwd: string): Promise<{ done?: GapResult; s?: Prepared }> {
   const mr = gitlabMrFromEnv();
-  // One gap report per dev MR, when the author marks it ready for review: a draft is still changing.
-  if (!o.story && !o.evenIfDraft && !o.dryRun && c.automation.gapReport.when === "ready" && mr.mrIid && (await mrIsDraft(gitlabContext(c.ci.gitlabUrl), mr.project, mr.mrIid, mr.title))) {
-    const out = path.resolve(cwd, o.out ?? "qa-gap-report.md");
-    const report = `### QA impact · waiting\n**Verdict:** this merge request is a draft. The gap report is made once it is marked ready for review (automation.gapReport.when: ready; --even-if-draft overrides).\n`;
-    fs.writeFileSync(out, report);
-    // Say so on the MR: marking it ready does not start a pipeline by itself, and nobody should think a report exists.
-    const gl = o.post && c.reporting.targets.includes("gitlab-mr") ? gitlabContext(c.ci.gitlabUrl) : undefined;
-    if (gl && mr.project) await upsertMrNote(gl, mr.project, mr.mrIid, report).catch((e) => log.warn(`could not post the waiting note: ${(e as Error).message}`));
-    log.ok("merge request is a draft; the gap report waits until it is ready for review");
-    return { done: { report, skipped: true, exitCode: 0 } };
-  }
   let service: ServiceConfig, repo: string, cs: ChangeSet, relevant: string[];
   let parts: StoryPart[] | undefined;
   if (o.story) {
@@ -185,7 +281,7 @@ async function gapReportPrepare(o: GapReportOptions, c: ReturnType<typeof loadCo
     sp.notes.forEach((n) => log.warn(n));
     if (!sp.parts.length) throw new Error(`No service changes found for ${o.story}: no branch or commit message mentions it in the service repos`);
     parts = sp.parts;
-    for (const p of parts) atLeast(p.repo, p.cs.head, Boolean(o.checkout), cwd);
+    for (const p of parts) for (const h of p.heads) atLeast(p.repo, h, Boolean(o.checkout), cwd);
     ({ service, cs, relevant } = combinedChange(o.story, parts));
     repo = parts[0].repo;
     log.step(`story ${o.story}: ${parts.map((p) => `${p.service.name} (${p.relevant.length} file(s)${p.merged ? "" : ", not merged"})`).join(", ")}`);
@@ -218,24 +314,26 @@ async function gapReportPrepare(o: GapReportOptions, c: ReturnType<typeof loadCo
     storyFile: o.storyFile,
     mr: { title: mr.title, description: mr.description, url: mr.url, sourceBranch: mr.sourceBranch },
     keyHints: o.story ? [o.story] : [mr.sourceBranch, ...commitMessages(repo, cs.base, cs.head)],
+    hasCode: true,
     ...(o.forKey ? { storyKey: o.forKey } : {}),
+    ...(o.resolved ? { resolved: o.resolved } : {}),
+    ...(o.issueCache ? { cache: o.issueCache } : {}),
   });
   if (o.notes?.length) req.resolveNote = [req.resolveNote, ...o.notes].filter(Boolean).join("; ");
   // One comment per MR, refreshed only when the code that matters (or the ACs, the expected behaviour, the scope) changed since the report on it.
   let fp: string | undefined;
   let previousHead: string | undefined;
-  if (!o.story && !o.noMrNote) {
+  if (!o.story) {
     const range = `${cs.base}...${cs.head}`;
     const digest = relevantDiffDigest((f) => { try { return git(repo, ["-c", "core.quotePath=false", "diff", "--relative", "--binary", "--full-index", range, "--", f]); } catch { return ""; } }, relevant);
     let expectedText = "";
     if (req.storyKey) try { expectedText = fs.readFileSync(path.join(cwd, expectedPath(expectedDirOf(c.tests.expectedDir), req.storyKey.toUpperCase())), "utf8"); } catch { /* none yet */ }
     fp = gapFingerprint(digest, req.acceptanceCriteria.map((a) => `${a.id}:${acHash(a.text)}`), [expectedText, JSON.stringify(req.scopeItems ?? []), JSON.stringify(req.outOfScope ?? [])]);
   }
-  if (fp && o.post && !o.dryRun && !o.refresh && c.reporting.targets.includes("gitlab-mr") && mr.project && mr.mrIid) {
-    const gl = gitlabContext(c.ci.gitlabUrl);
-    const last = gl ? parseStamp(await getMrNoteBody(gl, mr.project, mr.mrIid).catch(() => undefined)) : undefined;
+  if (fp) {
+    const last = await lastStamp(c, o, mr);
     if (last?.fp === fp) {
-      const report = `### QA impact · unchanged\n**Verdict:** nothing the gap report depends on changed since the report for ${last.head.slice(0, 8)} (the diff of the relevant files, the acceptance criteria, the expected behaviour and the scope are the same). The comment on the merge request still stands; --refresh makes a new one.\n`;
+      const report = unchangedReport(last.head);
       fs.writeFileSync(out, report);
       log.ok(`nothing changed since the report for ${last.head.slice(0, 8)}; no new gap report`);
       return { done: { report, skipped: true, exitCode: 0 } };
@@ -335,13 +433,15 @@ async function gapReportBody(o: GapReportOptions, wrap: (e: AgentEngine) => Agen
     const featureServices: string[] = [];
     if (req.storyKey && !o.story) {
       try {
-        const m = await assembleFeature({ c, cwd, story: req.storyKey, gitlab: c.workspace.services.some((x) => x.gitlabProject) ? gitlabContext(c.ci.gitlabUrl) : undefined });
+        const m = await assembleFeature({ c, cwd, story: req.storyKey, gitlab: c.workspace.services.some((x) => x.gitlabProject) ? gitlabContext(c.ci.gitlabUrl) : undefined, scanCache: o.scanCache });
         const others = m.parts.filter((p) => p.service !== service.name);
         featureServices.push(...new Set(others.map((p) => p.service)));
         if (others.length) {
           featureLine = `**Feature ${req.storyKey} also changes:** ${others.map((p) => `${p.service} (${p.mr ? `[!${p.mr.iid}](${p.mr.url}), ` : ""}${p.merged ? "merged" : "not merged yet"})`).join(", ")}. Acceptance criteria that need several services are checked with \`qa-sentinel feature ${req.storyKey}\` once every part is deployed.`;
           report = report.replace(footer, `${featureLine}\n\n${footer}`);
         }
+        // Facts about the lookup itself (a scan that was cut off) change how far "also changes" can be trusted.
+        if (m.notes.length) report = report.replace(footer, `${m.notes.map((n) => `> ℹ️ ${n}`).join("\n")}\n\n${footer}`);
       } catch (e) {
         log.dim(`feature lookup skipped: ${(e as Error).message}`);
       }

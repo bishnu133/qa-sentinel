@@ -1,4 +1,4 @@
-import { isGitRepo, repoPrefix } from "../git.js";
+import { git, isGitRepo, repoPrefix } from "../git.js";
 import fs from "node:fs";
 import path from "node:path";
 import YAML from "yaml";
@@ -441,9 +441,26 @@ export function ensureGitignore(cwd: string) {
   const file = path.join(cwd, ".gitignore");
   const wanted = [".qa-sentinel/runs/", ".qa-sentinel/", "qa-stories.md", "qa-post-deploy.md", "qa-sentinel-summary.md", "qa-gap-report.md", "qa-regression.txt", "qa-suite.md", "qa-suite.txt", "qa-feature-*", "qa-showcase.md", "qa-showcase/", "qa-verify.md", "qa-healed.md", "qa-healed.json", "qa-story-review.md", "qa-story-check.md", "qa-metrics.md", "qa-lessons.md", ".qa-data/", "qa-contract-check.md", "qa-coverage.md", "qa-coverage.json", "qa-services.draft.*", "test-results/", "playwright-report/", "node_modules/", ".env", ".DS_Store", "Thumbs.db"];
   const current = fs.existsSync(file) ? fs.readFileSync(file, "utf8") : "";
-  const have = new Set(current.split(/\r?\n/).map((l) => l.trim()));
-  const missing = wanted.filter((l) => !have.has(l));
+  // `.qa-sentinel`, `/.qa-sentinel` and `.qa-sentinel/` say the same thing: an equivalent spelling (or a folder that already covers the line) is not added again.
+  const norm = (l: string) => l.trim().replace(/^\/+/, "").replace(/\/+$/, "");
+  const have = [...new Set(current.split(/\r?\n/).map(norm).filter((l) => l && !l.startsWith("#") && !/[*?[!]/.test(l)))];
+  const haveAll = new Set(current.split(/\r?\n/).map(norm));
+  const missing = wanted.filter((l) => !haveAll.has(norm(l)) && !have.some((h) => norm(l).startsWith(`${h}/`)));
   if (missing.length) fs.writeFileSync(file, current + (current && !current.endsWith("\n") ? "\n" : "") + missing.join("\n") + "\n");
+}
+
+/** Jira-derived files qa-sentinel writes (story records, the stories list, the post-deploy list): they must not be in git. */
+export const JIRA_DERIVED_PATHS = [".qa-sentinel", "qa-stories.md", "qa-post-deploy.md"];
+
+/** Of those, the ones git already tracks (an older project that committed them before they were ignored). */
+export function trackedJiraFiles(cwd: string): string[] {
+  if (!isGitRepo(cwd)) return [];
+  try {
+    const tracked = git(cwd, ["ls-files", "--", ...JIRA_DERIVED_PATHS]).split("\n").filter(Boolean);
+    return JIRA_DERIVED_PATHS.filter((p) => tracked.some((f) => f === p || f.startsWith(`${p}/`)));
+  } catch {
+    return [];
+  }
 }
 
 export const MOBILE_DEV_DEPENDENCIES: Record<string, string> = {
@@ -659,6 +676,11 @@ export function upgradeCommand(o: { cwd: string }): number {
     write(`ci/qa-sentinel/${f}`, render(readTemplate(`${ciDir}/${f}`), vars), true);
   }
   ensureGitignore(cwd);
+  const tracked = trackedJiraFiles(cwd);
+  if (tracked.length) {
+    log.warn(`${tracked.join(", ")} ${tracked.length === 1 ? "is" : "are"} already tracked by git, so .gitignore does not hide ${tracked.length === 1 ? "it" : "them"}, and they hold data from Jira. Stop tracking ${tracked.length === 1 ? "it" : "them"} (the files stay on disk):`);
+    log.info(`  git rm -r --cached -- ${tracked.join(" ")}`);
+  }
   if (!changed.length) log.ok("everything qa-sentinel owns is up to date");
   else {
     changed.forEach((x) => log.dim(`  ${x}`));

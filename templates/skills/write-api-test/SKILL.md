@@ -28,6 +28,7 @@ These conventions ship with the qa-sentinel Playwright scaffold. Change them her
   that file. `@ac:` lists the acceptance criteria the test proves (comma-separated, `@ac:AC-1,AC-2`), using the ids from the story.
   Use `@ac:none` for a test that deliberately goes beyond the ACs (e.g. contract-only behaviour). Only tag ACs the
   test really proves: an unrelated setup call doesn't count (an independent reviewer checks this).
+  When `story.md` has a "Work card" section (a bug or task of the story), the tests written for that card also carry `@bug:<CARD>`: `@story:SHOP-12 @bug:SHOP-210`.
   qa-sentinel builds the requirement → test matrix in the MR from these tags, so a test without them is invisible
   to traceability. qa-sentinel reads tags statically: write them as literal text, a string constant (`const tags = "…"`),
   or a one-line helper (`const tags = (ac: string) => \`… @ac:${ac}\``) in the same file, nothing more dynamic. Use the endpoint exactly as in test-map.yaml

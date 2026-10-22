@@ -3,7 +3,7 @@ import { z } from "zod";
 import type { Config } from "./config.js";
 import { type GitLabContext, mergeRequestsForCommit } from "./scm/gitlab.js";
 import { fetchIssue, isJiraNotFound, jiraContext } from "./scm/jira.js";
-import { resolveKeysCached } from "./stories/resolve.js";
+import { type IssueCache, type KeyResolution, resolveKeysCached } from "./stories/resolve.js";
 import { type ParsedStory, type TemplateSection, parseStory } from "./storyTemplate.js";
 
 /**
@@ -159,6 +159,16 @@ export interface ResolveOptions {
   keyHints?: (string | undefined)[];
   /** Resolve this key (one of the keys the MR names) instead of the first one found. Used when an MR names several. */
   storyKey?: string;
+  /**
+   * Opt in: the caller has code that names this card (gap-report, generate), so a bug, task or sub-task is attached to its
+   * feature (stories/resolve.ts). Without it the key is used as it is, like before linking: review-story, spec and the
+   * expected-behaviour check read the card they were given.
+   */
+  hasCode?: boolean;
+  /** Already resolved by the caller (a merge request that names several stories): the first is the card to resolve, the others are more cards of the same feature. No Jira read for these. */
+  resolved?: KeyResolution[];
+  /** The Jira reads of this run (see resolveKeysCached). */
+  cache?: IssueCache;
   env?: NodeJS.ProcessEnv;
 }
 
@@ -196,10 +206,10 @@ export async function resolveRequirements(c: Config, o: ResolveOptions): Promise
     const jctx = jiraContext(c.requirements.jira.baseUrl, env);
     if (key && jctx) {
       const branch = o.mr?.sourceBranch ?? looked?.source_branch;
-      const fields = [c.requirements.jira.acceptanceCriteriaField, ...c.requirements.jira.scopeFields.map((f) => f.field)].filter(Boolean) as string[];
       try {
         // A bug, task or sub-task is tested and reported under its feature (fixed rules, see stories/resolve.ts). The card's own text stays as evidence.
-        const [r] = c.requirements.jira.featureIssueTypes.length ? await resolveKeysCached(c, jctx, [key], { hasCode: true }) : [undefined];
+        const given = o.resolved?.find((x) => x.work.toLowerCase() === key.toLowerCase());
+        const [r] = given ? [given] : o.hasCode && c.requirements.jira.featureIssueTypes.length ? await resolveKeysCached(c, jctx, [key], { hasCode: true, cache: o.cache }) : [undefined];
         if (r?.notFound) throw Object.assign(new Error(r.explain), { notFound: true });
         const featureKey = r?.feature ?? key;
         const issue = r?.featureIssue ?? r?.workIssue ?? (await fetchIssue(jctx, featureKey, c.requirements.jira.acceptanceCriteriaField, c.requirements.jira.scopeFields.map((f) => f.field)));
@@ -216,12 +226,15 @@ export async function resolveRequirements(c: Config, o: ResolveOptions): Promise
           ...(moved ? { workKey: key, resolvedVia: r!.via as "parent" | "link" } : {}),
           ...(r && r.via !== "self" ? { resolveNote: r.explain } : {}),
         });
-        const withWork = moved ? { ...snap, context: [...snap.context, { name: `Work card ${key}`, text: jiraIssueText(c, r!.workIssue!) }] } : snap;
+        // Every card of the feature the merge request names is evidence, not only the first.
+        const cards = moved ? [{ key, issue: r!.workIssue! }] : [];
+        for (const x of o.resolved ?? []) if (x.work.toLowerCase() !== key.toLowerCase() && x.work.toLowerCase() !== issue.key.toLowerCase() && x.workIssue && !cards.some((k) => k.key.toLowerCase() === x.work.toLowerCase())) cards.push({ key: x.work, issue: x.workIssue });
+        const withWork = cards.length ? { ...snap, context: [...snap.context, ...cards.map((k) => ({ name: `Work card ${k.key}`, text: jiraIssueText(c, k.issue) }))] } : snap;
         const approved = c.requirements.jira.approvedStatuses.some((s) => s.toLowerCase() === issue.status.toLowerCase());
         return { ...withWork, approvalStatus: snap.rawText.trim() ? (approved ? "approved" : "unverified") : "missing" };
       } catch (e) {
         // A key that is not in Jira (a typo) is said so, never guessed at; the MR text below is used as before.
-        if ((e as { notFound?: boolean }).notFound || isJiraNotFound(e)) note = `${key} is not in Jira (check the key); requirements are taken from the merge request text`;
+        if ((e as { notFound?: boolean }).notFound || isJiraNotFound(e)) note = `${key} is not in Jira or not visible to this user (check the key); requirements are taken from the merge request text`;
         else throw e;
       }
     }

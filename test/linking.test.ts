@@ -267,7 +267,7 @@ describe("resolving a bug to its story", () => {
     try {
       const c = config(j.url);
       const env = { JIRA_PAT: "x" };
-      const req = await resolveRequirements(c, { env, mr: { title: "SHOP-210 stop the 4th order" } });
+      const req = await resolveRequirements(c, { env, hasCode: true, mr: { title: "SHOP-210 stop the 4th order" } });
       expect(req).toMatchObject({ source: "jira", storyKey: "SHOP-12", issueType: "Story", workKey: "SHOP-210", resolvedVia: "parent" });
       expect(req.acceptanceCriteria.map((a) => a.text)).toEqual(["A slot takes at most 3 orders."]);
       expect(req.context.find((x) => x.name === "Work card SHOP-210")?.text).toContain("book four orders");
@@ -284,7 +284,7 @@ describe("resolving a bug to its story", () => {
       const own = await resolveRequirements(config(j.url), { env, mr: { title: "SHOP-12 slots" } });
       expect(own).toMatchObject({ storyKey: "SHOP-12" });
       expect(own.workKey).toBeUndefined();
-      const flat = await resolveRequirements(config(j.url, { requirements: { source: "jira", jira: { baseUrl: j.url, projectKeys: ["SHOP"] } } }), { env, mr: { title: "SHOP-210 fix" } });
+      const flat = await resolveRequirements(config(j.url, { requirements: { source: "jira", jira: { baseUrl: j.url, projectKeys: ["SHOP"] } } }), { env, hasCode: true, mr: { title: "SHOP-210 fix" } });
       expect(flat.storyKey).toBe("SHOP-210");
       expect(flat.workKey).toBeUndefined();
     } finally {

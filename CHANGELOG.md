@@ -9,6 +9,9 @@
 - In local git, every branch that names the story is its own part (a branch is found even when its commits do not name the story).
 - Tests can carry `@bug:KEY` (indexed as `bugs`).
 - **Jira data stays out of git.** `init` and `upgrade` now add `.qa-sentinel/` (story records hold Jira statuses and titles), `qa-stories.md` and `qa-post-deploy.md` to `.gitignore`.
+- **The joined comment of a multi-story merge request is stamped** like a one-story report: a push that changes nothing the reports depend on (the diff, any story's ACs, expected behaviour, scope) makes no AI run; `--refresh` forces it. A draft merge request gets the waiting note (and the report file) before any Jira read. A story that fails or is refused by a budget is shown as "not analysed: why" and the comment is still posted; the regression list is the whole suite when a story made no valid selection. Every bug of a story is kept as a work card, and each Jira card and recent-MR scan is read once per run.
+- Only `gap-report` and `generate` link a bug to its story; `review-story`, `spec` and the expected-behaviour check read the card they are given. A change made for a bug is written with `@story:` and `@bug:` tags.
+- Story mode makes one range per service (the merged work and each open branch, from where it left the main branch), so unrelated work on the main branch is no longer analysed. A change that was reverted and then landed again is not "reverted".
 - Try it: [docs/TRY-PR1.md](docs/TRY-PR1.md).
 
 ## Unreleased — hotfixes, release tags, environment-aware runs (phase 5)
