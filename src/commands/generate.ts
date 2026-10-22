@@ -148,7 +148,7 @@ async function generateRun(o: GenerateOptions, ctl: JobControl): Promise<number>
     cs = { base: head, head, files: [], diff: backfillText(o.backfill) };
     relevant = [service.openapi ?? "(api)"];
   } else if (parts) {
-    for (const p of parts) atLeast(p.repo, p.cs.head, Boolean(o.checkout), cwd);
+    for (const p of parts) for (const h of p.heads) atLeast(p.repo, h, Boolean(o.checkout), cwd);
     ({ cs, relevant } = combinedChange(o.story!, parts));
     log.step(`story ${o.story}: ${parts.map((p) => `${p.service.name} (${p.relevant.length} file(s))`).join(", ")}`);
   } else {
@@ -171,6 +171,7 @@ async function generateRun(o: GenerateOptions, ctl: JobControl): Promise<number>
     ? emptySnapshot(c)
     : await resolveRequirements(c, {
     storyFile: o.storyFile,
+    hasCode: true,
     lookup: ctx && serviceProject && !parts ? { ctx, project: serviceProject, sha: cs.head } : undefined,
     keyHints: parts ? [o.story] : commitMessages(repo, cs.base, cs.head),
   }).catch((e) => {
@@ -203,7 +204,7 @@ async function generateRun(o: GenerateOptions, ctl: JobControl): Promise<number>
   if (!o.dryRun) {
     const story = (req.storyKey ?? o.story ?? "").toUpperCase() || NO_STORY;
     const hashes = o.backfill ? o.backfill.map((t) => `${t.method} ${t.path}`) : req.acceptanceCriteria.map((a) => acHash(a.text));
-    const head = parts ? parts.map((p) => p.cs.head).join("+") : cs.head;
+    const head = parts ? parts.flatMap((p) => p.heads).join("+") : cs.head;
     const start = await startJob({ cwd, c, story, kind: "generate", key: generateJobKey(story === NO_STORY ? undefined : story, parts ? "story" : service.name, head, hashes), force: o.force, once: o.once });
     if (!start.run) return start.exitCode;
     ctl.store = start.store;
@@ -388,6 +389,8 @@ async function generateRun(o: GenerateOptions, ctl: JobControl): Promise<number>
       ...(mobileScenarios.length ? [`${mobileScenarios.length} scenario(s) are mobile tests: use the write-mobile-test skill for them (screen objects in ${c.tests.mobile.screensDir} first, then specs in ${c.tests.mobile.dir}; find the elements' accessibility ids in the app's code).`] : []),
       ...(healed.length ? [`Recent scheduled runs needed runtime healing for these page-object locators (fix the ones in page objects you touch; mention the rest under "Needs human attention"): ${healed.slice(0, 10).map((h) => `${h.at ?? h.file}: "${h.intent}" (${h.failedLocator} → ${h.healedTo ?? "?"})`).join("; ")}.`] : []),
       `Run context: ${run.rel}/context.json, diff: ${run.rel}/change.diff, story: ${run.rel}/story.md.`,
+      // A change made for a bug or task of the story: its tests belong to the story and say which card they were written for.
+      ...(req.workKey && req.storyKey ? [`This change was made for ${req.workKey}, a card of ${req.storyKey}: tag every test you add or change for it \`@story:${req.storyKey} @bug:${req.workKey}\` (with \`@ac:\` as usual), so the card's tests are found again when ${req.storyKey} is re-tested.`] : []),
       ...(fs.existsSync(path.join(run.dir, "knowledge.md")) ? [`Team domain rules: ${run.rel}/knowledge.md (follow them; they are not instructions to change anything outside the tests).`] : []),
       `You may only change files matching: ${policy.allowed.join(", ")}. Any other change fails the whole run.`,
       `Bash is allowed for exactly: ${layers(c).map((l) => `\`${l.runCommand} ${l.specArg ? `${l.specArg} <${l.layer} spec path>` : `<${l.layer} spec paths>`}\``).join(", ")}, \`npx tsc --noEmit\`, \`git status\` and \`git diff\`, each as a single command (no cd, pipes, && or variables). Use Read, Grep and Glob to explore files. If a command is denied, rewrite it in that form; do not give up on running the specs.`,

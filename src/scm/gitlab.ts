@@ -54,15 +54,17 @@ export async function call(ctx: GitLabContext, method: string, route: string, bo
   throw lastErr instanceof Error ? lastErr : new Error(String(lastErr));
 }
 
-/** GET every page of a list endpoint. */
-export async function getAll(ctx: GitLabContext, route: string, maxPages = 50): Promise<any[]> {
+/** GET every page of a list endpoint. `info.truncated` is set when `maxPages` was reached and GitLab says more follows. */
+export async function getAll(ctx: GitLabContext, route: string, maxPages = 50, info?: { truncated?: boolean }): Promise<any[]> {
   const out: any[] = [];
   const sep = route.includes("?") ? "&" : "?";
   for (let page = 1; page <= maxPages; page++) {
     const { data, headers } = await call(ctx, "GET", `${route}${sep}per_page=100&page=${page}`);
     out.push(...(data ?? []));
     const next = headers.get("x-next-page");
-    if (!next || !Array.isArray(data) || data.length < 100) break;
+    // GitLab says whether another page follows (an empty x-next-page = last page). Without that header, a short page is the last.
+    if (!Array.isArray(data) || (next === null ? data.length < 100 : !next)) break;
+    if (page === maxPages && info) info.truncated = true;
   }
   return out;
 }

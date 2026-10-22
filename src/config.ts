@@ -183,6 +183,10 @@ export const ConfigSchema = z.object({
       /** When true, generation refuses to run without requirements (gap reports still run and say so). */
       required: z.boolean().default(false),
       storyKeyPattern: z.string().default("[A-Z][A-Z0-9]+-\\d+"),
+      /** A merge request that names several stories: each (the stories it leads to) gets its own gap report, or only the first one counts. */
+      multiKey: z.enum(["each", "first"]).default("each"),
+      /** At most this many stories are analysed for one merge request (each costs one AI run). */
+      maxKeysPerMr: z.number().int().min(1).max(5).default(3),
       /**
        * How your team writes stories: which headings hold the acceptance criteria, what is in scope (items IS-1, TS-1,
        * ER-1 … checked for "is it built?" and traced like ACs), what is out of scope (never planned or raised as bugs),
@@ -261,6 +265,8 @@ export const ConfigSchema = z.object({
               /** Your own JQL instead of the built one (it should be ordered; maxStories still applies). */
               jql: z.string().optional(),
               lookbackDays: z.number().int().min(1).max(365).default(30),
+              /** Finding a story's merge requests also looks at MRs updated in the last N days whose source branch names the story (the GitLab text search only reads titles and descriptions). */
+              mrLookbackDays: z.number().int().min(1).max(365).default(30),
               maxStories: z.number().int().min(1).max(500).default(50),
               /** Stories with one of these labels are left alone (QA opts a story out by adding it). */
               skipLabels: z.array(z.string()).default(["qa-skip"]),

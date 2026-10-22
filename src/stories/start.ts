@@ -19,7 +19,7 @@ export function openStore(cwd: string, c: Config, env: NodeJS.ProcessEnv = proce
 /** Exit code for a job that was not started because of its limits (a budget, too many failures): not an error in the code, but it needs a person. */
 export const EXIT_LIMIT = 4;
 
-export type JobStart = { run: true; store: RecordStore; handle: JobHandle } | { run: false; exitCode: number };
+export type JobStart = { run: true; store: RecordStore; handle: JobHandle } | { run: false; exitCode: number; /** Why it did not start (shown by callers that run several jobs). */ message?: string };
 
 export interface StartJobOptions {
   cwd: string;
@@ -52,10 +52,10 @@ export async function startJob(o: StartJobOptions): Promise<JobStart> {
   }
   if (r.reason === "done" || r.reason === "running") {
     log.ok(`skipped: ${r.message}`);
-    return { run: false, exitCode: 0 };
+    return { run: false, exitCode: 0, message: r.message };
   }
   log.fail(r.message);
-  return { run: false, exitCode: EXIT_LIMIT };
+  return { run: false, exitCode: EXIT_LIMIT, message: r.message };
 }
 
 /** A handle for a run that has no usable record: counts cost, limits nothing. */
@@ -84,14 +84,14 @@ export { endJob };
  */
 export async function withSpend<T>(
   o: { cwd: string; c: Config; story?: string; label: string; skip?: boolean; env?: NodeJS.ProcessEnv },
-  refused: (exitCode: number) => T,
+  refused: (exitCode: number, message?: string) => T,
   run: (wrap: (e: AgentEngine) => AgentEngine, handle?: JobHandle) => Promise<T>,
   exitCodeOf: (t: T) => number,
 ): Promise<T> {
   if (o.skip) return run((e) => e);
   const story = (o.story ?? "").toUpperCase() || NO_STORY;
   const start = await startJob({ cwd: o.cwd, c: o.c, story, kind: "other", key: `other:${o.label}:${Date.now().toString(36)}-${process.pid}`, env: o.env });
-  if (!start.run) return refused(start.exitCode);
+  if (!start.run) return refused(start.exitCode, start.message);
   try {
     const result = await run((e) => budgetedEngine(e, start.handle), start.handle);
     await endJob(start.store, start.handle, { state: exitCodeOf(result) === 0 ? "done" : "failed", outcome: `${o.label} exit ${exitCodeOf(result)}` });

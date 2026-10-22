@@ -3,7 +3,7 @@ import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { loadConfig } from "../config.js";
 import { indexTests } from "../analysis/testIndex.js";
-import { assembleFeature, type FeatureManifest } from "../feature/manifest.js";
+import { activeParts, assembleFeature, revertedParts, type FeatureManifest } from "../feature/manifest.js";
 import { inRef, safeRef } from "../release/git.js";
 import { gitlabContext } from "../scm/gitlab.js";
 import { runCommandsFor } from "../layers.js";
@@ -35,22 +35,24 @@ export interface StoryVerdict {
  */
 export function judgeStory(m: FeatureManifest, tag: { ref: string; inRef: (service: string, sha: string) => boolean | undefined } | undefined): StoryVerdict {
   const story = m.story;
+  // A change that was reverted and then landed again counts as landed.
+  const gone = revertedParts(m.parts);
+  const parts = activeParts(m.parts);
   if (!m.parts.length) return { story, state: "unknown", why: "no service change found for this story: treated as established" };
-  const gone = m.parts.filter((p) => p.reverted);
   if (gone.length) return { story, state: "held-back", why: `reverted in ${gone.map((p) => p.service).join(", ")}` };
   if (tag) {
-    const states = m.parts.map((p) => ({ p, in: p.sha ? tag.inRef(p.service, p.sha) : undefined }));
+    const states = parts.map((p) => ({ p, in: p.sha ? tag.inRef(p.service, p.sha) : undefined }));
     const missing = states.filter((x) => x.in === false);
     if (missing.length) return { story, state: "held-back", why: `not in ${tag.ref}: ${missing.map((x) => x.p.service).join(", ")}` };
     if (states.some((x) => x.in === undefined)) return { story, state: "unknown", why: `cannot tell if ${tag.ref} contains it (the tag or commit is not in this clone)` };
     return { story, state: "included", why: `in ${tag.ref}` };
   }
   // A hotfix runs on its environment before it is on the main branch, so what is deployed decides, not "merged".
-  const open = m.parts.filter((p) => !p.merged && p.deployed?.includesChange !== true);
+  const open = parts.filter((p) => !p.merged && p.deployed?.includesChange !== true);
   if (open.length) return { story, state: "held-back", why: `not merged yet in ${open.map((p) => p.service).join(", ")}` };
-  const behind = m.parts.filter((p) => p.deployed?.includesChange === false);
+  const behind = parts.filter((p) => p.deployed?.includesChange === false);
   if (behind.length) return { story, state: "held-back", why: `not deployed on ${m.environment}: ${behind.map((p) => p.service).join(", ")}` };
-  if (m.parts.some((p) => p.deployed?.includesChange === undefined)) return { story, state: "unknown", why: `cannot tell if ${m.environment} has it${m.parts.find((p) => p.deployed?.error)?.deployed?.error ? ` (${m.parts.find((p) => p.deployed?.error)!.deployed!.error})` : ""}` };
+  if (parts.some((p) => p.deployed?.includesChange === undefined)) return { story, state: "unknown", why: `cannot tell if ${m.environment} has it${parts.find((p) => p.deployed?.error)?.deployed?.error ? ` (${parts.find((p) => p.deployed?.error)!.deployed!.error})` : ""}` };
   return { story, state: "included", why: `deployed on ${m.environment}` };
 }
 

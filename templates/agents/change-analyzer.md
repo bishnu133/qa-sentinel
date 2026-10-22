@@ -41,7 +41,7 @@ When the service has an OpenAPI spec (see `qa-sentinel.config.yaml`), compare sp
 
 ### Oracle: what is the expected behaviour?
 Use this order of authority. Code shows what the system *does*; it is never by itself proof of what it *should* do.
-1. Acceptance criteria in `story.md` (current and specific)
+1. Acceptance criteria in `story.md` (current and specific). A "Work card" section in `story.md` (a bug or task of the story) is evidence only and never sets an expected value; if it contradicts an AC, raise that as a question for the product owner.
 2. The API contract for interface guarantees: the agreed spec (`agreedSpecs`) when there is one, else the service's OpenAPI spec
 3. Documented domain rules (`CLAUDE.md`, `.claude/qa-sentinel.md`, any `kb/` docs)
 4. Existing tests: supporting evidence, not unquestionable truth

@@ -35,6 +35,8 @@ export interface IndexedTest {
   /** Web tests: the pages they open, "/orders/:id" (tag @page:/orders/:id). */
   pages: string[];
   stories: string[];
+  /** Bug cards this test belongs to (tag @bug:SHOP-210): a test written for a fix, run again when the bug's feature is re-tested. */
+  bugs: string[];
   acs: string[]; // "AC-2"
   tags: string[]; // other bare tags, e.g. "smoke"
   assertions: number;
@@ -59,8 +61,8 @@ export const endpointTag = (e: string) => e.trim().replace(/^([A-Z]+)\s+/, "$1_"
 /** "/orders/{id}/", "orders/:orderId" → "/orders/:id": one spelling per route so tags, plans and maps compare. */
 export const normPage = (p: string) => ("/" + p.trim().replace(/^\/+/, "").replace(/\/+$/, "")).replace(/\{[^}]*\}|:[A-Za-z_]\w*/g, ":id");
 
-export function parseTags(raw: string): Pick<IndexedTest, "services" | "endpoints" | "pages" | "stories" | "acs" | "tags"> & { title: string } {
-  const out = { services: [] as string[], endpoints: [] as string[], pages: [] as string[], stories: [] as string[], acs: [] as string[], tags: [] as string[] };
+export function parseTags(raw: string): Pick<IndexedTest, "services" | "endpoints" | "pages" | "stories" | "bugs" | "acs" | "tags"> & { title: string } {
+  const out = { services: [] as string[], endpoints: [] as string[], pages: [] as string[], stories: [] as string[], bugs: [] as string[], acs: [] as string[], tags: [] as string[] };
   const title = raw.replace(/\s*@([\w-]+)(?::(\S+))?/g, (_m, k: string, v?: string) => {
     const vals = (v ?? "").split(",").filter(Boolean);
     if (k === "service") out.services.push(...vals);
@@ -68,6 +70,7 @@ export function parseTags(raw: string): Pick<IndexedTest, "services" | "endpoint
     // Mobile tests tag the screen (@screen:orders/new); it is indexed like a page (same matching and screens map).
     else if (k === "page" || k === "screen") out.pages.push(...vals.map(normPage));
     else if (k === "story") out.stories.push(...vals);
+    else if (k === "bug") out.bugs.push(...vals);
     else if (k === "ac") {
       // "@ac:none" says on purpose that no acceptance criterion covers this test (e.g. contract-only behaviour).
       if (vals.some((a) => /^(none|-)$/i.test(a))) out.tags.push("ac:none");

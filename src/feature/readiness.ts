@@ -1,5 +1,5 @@
 import type { ExpectedFile } from "../expected/format.js";
-import type { FeatureManifest } from "./manifest.js";
+import { activeParts, type FeatureManifest } from "./manifest.js";
 
 /**
  * Per-AC readiness for the end-to-end tests. A story's ACs often touch different services, so one slow service must
@@ -22,17 +22,19 @@ export function acReadiness(m: FeatureManifest, expected: ExpectedFile | undefin
   const namedBy = new Map((expected?.acs ?? []).map((a) => [a.id, a.services]));
   return acIds.map((ac) => {
     const named = namedBy.get(ac) ?? [];
-    const parts = named.length ? m.parts.filter((p) => named.some((n) => n.toLowerCase() === p.service.toLowerCase())) : m.parts;
-    const services = parts.map((p) => p.service);
+    // A service can have several parts (one per merge request): it counts as merged only when none of them is still open.
+    const live = activeParts(m.parts);
+    const parts = named.length ? live.filter((p) => named.some((n) => n.toLowerCase() === p.service.toLowerCase())) : live;
+    const services = [...new Set(parts.map((p) => p.service))];
     // A named service the story did not change has nothing to wait for; it is said so rather than dropped silently.
-    const ignored = named.filter((n) => !m.parts.some((p) => p.service.toLowerCase() === n.toLowerCase()));
+    const ignored = named.filter((n) => !live.some((p) => p.service.toLowerCase() === n.toLowerCase()));
     const note = ignored.length && parts.length ? ` (${ignored.join(", ")} named by the AC, not changed in this story: not waited for)` : "";
     const done = (state: AcState, reason: string): AcReadiness => ({ ac, state, services, reason: reason + note });
     if (!parts.length) return done("undetermined", named.length ? `the story has no change in ${named.join(", ")}, which this AC names (check "Services" for ${ac} in the expected-behaviour file)` : "no service change found for the story");
     const gone = parts.filter((p) => p.reverted);
     if (gone.length) return done("reverted", `reverted: ${gone.map((p) => `${p.service} (by ${p.reverted!.slice(0, 8)})`).join(", ")}`);
     const open = parts.filter((p) => !p.merged);
-    if (open.length) return done("not-merged", `not merged yet: ${open.map((p) => p.service).join(", ")}`);
+    if (open.length) return done("not-merged", `not merged yet: ${[...new Set(open.map((p) => `${p.service}${p.mr ? ` !${p.mr.iid}` : p.branch ? ` (${p.branch})` : ""}`))].join(", ")}`);
     if (jiraReady === false) return done("waiting-for-status", "the Jira card is not in a ready status yet");
     if (!m.environment) return done("undetermined", "merged; pass --env to check what is deployed");
     const behind = parts.filter((p) => p.deployed?.includesChange === false);
