@@ -1,11 +1,12 @@
 import fs from "node:fs";
 import path from "node:path";
 import type { Config } from "../config.js";
-import { mrToPart } from "../feature/manifest.js";
-import { jiraKeyPattern, extractStoryKeys } from "../requirements.js";
-import { getAll, type GitLabContext } from "../scm/gitlab.js";
+import { mrToPart, type ServicePart } from "../feature/manifest.js";
+import { jiraKeyPattern, extractMrKeys } from "../requirements.js";
+import { call, getAll, type GitLabContext } from "../scm/gitlab.js";
 import type { JiraContext, JiraIssue } from "../scm/jira.js";
 import { log } from "../log.js";
+import { isFeatureType } from "./resolve.js";
 import { partToInput, storyBasis, upsertPart } from "./parts.js";
 import { type RecordPart, type RecordStore, type StoryRecord, SAFE_KEY, SWEEP_FILE, emptyRecord, recordsDir } from "./record.js";
 import { type IssueCache, resolveKeysCached } from "./resolve.js";
@@ -28,6 +29,10 @@ export interface SweepResult {
   mrs: number;
   /** False when a call failed: the next sweep then starts from the same time again. */
   complete: boolean;
+  /** A listing hit the page cap: some merge requests were not looked at. The next sweep resumes from `resumeAt`. */
+  truncated?: boolean;
+  /** Where the next sweep may start when `truncated` (the newest update among the merge requests looked at, oldest repository first). */
+  resumeAt?: string;
   since: string;
 }
 
@@ -60,6 +65,22 @@ export function sweepSince(cwd: string, c: Config, now: Date, o: { rebuild?: boo
   return new Date(Date.parse(last) - c.automation.sweep.overlapHours * 3_600_000).toISOString();
 }
 
+/**
+ * GitLab's list endpoint has no diff_refs. A merged MR with no merge or squash commit (rebase or fast-forward) is
+ * found again later only through its diff base, so it is read once on its own here and the base is kept in the record.
+ */
+async function withDiffBase(gitlab: GitLabContext, project: string, part: ServicePart): Promise<ServicePart> {
+  if (!part.mr || !part.merged || part.mergeSha || part.squashSha || part.diffRefs) return part;
+  try {
+    const { data } = await call(gitlab, "GET", `/projects/${encodeURIComponent(project)}/merge_requests/${part.mr.iid}`, undefined, 2);
+    const d = data?.diff_refs;
+    if (d?.base_sha && d?.head_sha) return { ...part, diffRefs: { base: d.base_sha, head: d.head_sha, start: d.start_sha ?? d.base_sha } };
+  } catch {
+    // the commit scan on the local clone is the fallback
+  }
+  return part;
+}
+
 export async function sweepMrs(
   c: Config,
   gitlab: GitLabContext,
@@ -78,7 +99,15 @@ export async function sweepMrs(
     if (!s.gitlabProject) continue;
     let mrs: any[];
     try {
-      mrs = await getAll(gitlab, `/projects/${encodeURIComponent(s.gitlabProject)}/merge_requests?state=all&updated_after=${encodeURIComponent(o.since)}&order_by=updated_at&sort=desc`, c.automation.sweep.maxPages);
+      // Oldest first: when the page cap cuts the list, what was read is a prefix in time and the next sweep can resume after it.
+      const info: { truncated?: boolean } = {};
+      mrs = await getAll(gitlab, `/projects/${encodeURIComponent(s.gitlabProject)}/merge_requests?state=all&updated_after=${encodeURIComponent(o.since)}&order_by=updated_at&sort=asc`, c.automation.sweep.maxPages, info);
+      if (info.truncated) {
+        result.truncated = true;
+        const last = mrs.map((m) => String(m.updated_at ?? "")).filter(Boolean).sort().at(-1) ?? o.since;
+        if (!result.resumeAt || last < result.resumeAt) result.resumeAt = last;
+        result.notes.push(`${s.name}: only the oldest ${mrs.length} merge requests since ${o.since.slice(0, 16)}Z were looked at (automation.sweep.maxPages); the next run goes on from there`);
+      }
     } catch (e) {
       result.complete = false;
       result.notes.push(`${s.name}: could not list merge requests (${(e as Error).message.split("\n")[0].slice(0, 160)})`);
@@ -86,7 +115,7 @@ export async function sweepMrs(
     }
     for (const m of mrs) {
       result.mrs++;
-      const keys = extractStoryKeys(pattern, m.title, m.source_branch, m.description);
+      const keys = extractMrKeys(pattern, m, c.requirements.jira.projectKeys);
       if (!keys.length) {
         result.noKey.push({ service: s.name, iid: m.iid, title: String(m.title ?? ""), ...(m.web_url ? { url: m.web_url } : {}) });
         continue;
@@ -99,15 +128,16 @@ export async function sweepMrs(
             result.complete = false;
             result.notes.push(`${s.name} !${m.iid}: ${r.explain}`);
           } else {
-            // A card that reaches no feature (or two) is kept under its own key, as the gap report does.
-            const feature = r.feature ?? r.work;
+            // A card that reaches no feature (or two) and is not a feature itself (a loose bug) is not a story: nothing to record.
+            const feature = r.feature ?? (isFeatureType(c, r.workIssue?.issueType) ? r.work : undefined);
+            if (!feature) continue;
             if (!targets.some((t) => t.feature.toLowerCase() === feature.toLowerCase())) targets.push({ feature, work: r.work, ...(r.via === "parent" || r.via === "link" ? { via: r.via } : {}), issueType: r.workIssue?.issueType });
           }
         }
       } else for (const k of keys) targets.push({ feature: k, work: k });
       for (const t of targets) {
         const slot = byFeature.get(t.feature) ?? { parts: [], linked: [] };
-        const input = partToInput(mrToPart(s.name, m, pattern));
+        const input = partToInput(await withDiffBase(gitlab, s.gitlabProject!, mrToPart(s.name, m, pattern, c.requirements.jira.projectKeys)));
         slot.parts.push({ ...input, ...(t.via ? { workKey: t.work } : {}) });
         if (t.via) slot.linked.push({ key: t.work, ...(t.issueType ? { issueType: t.issueType } : {}), via: t.via, at });
         byFeature.set(t.feature, slot);

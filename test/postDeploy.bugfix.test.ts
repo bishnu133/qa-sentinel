@@ -103,6 +103,42 @@ describe("a deployed bug fix re-runs its feature's tests", () => {
     }
   });
 
+  it("a key with no tests is 'no tests tagged' at once: no polling while undeployed, and it does not make the run exit 75", async () => {
+    const s = await setup();
+    try {
+      commit(s.svc, "fix.js", "1", "SHOP-310 fix slot overflow"); // never deployed
+      const t0 = Date.now();
+      const code = await postDeployCommand({ cwd: s.qa, env: "sit", stories: ["SHOP-310"], waitMinutes: 5, pollMs: 4000 });
+      expect(code).toBe(0);
+      expect(Date.now() - t0).toBeLessThan(3000);
+      expect(report(s.qa)).toContain("## SHOP-310: ⬜ no tests tagged");
+    } finally {
+      await s.version.close();
+    }
+  });
+
+  it("a deployed bug fix re-runs the bug's test and the feature's tests even while the feature has another MR open", async () => {
+    const jira = await jiraMock(ISSUES);
+    const s = await setup({ jiraUrl: jira.url });
+    try {
+      vi.stubEnv("JIRA_PAT", "x");
+      g(s.svc, "checkout", "-q", "-b", "feature/SHOP-12-more");
+      commit(s.svc, "more.js", "1", "SHOP-12: more slots (not merged yet)");
+      g(s.svc, "checkout", "-q", "main");
+      const fix = commit(s.svc, "fix.js", "1", "SHOP-210 fix slot overflow");
+      s.deploy(fix);
+      const code = await postDeployCommand({ cwd: s.qa, env: "sit", service: "orders", sha: fix, before: s.feature, waitMinutes: 0 });
+      expect(code).toBe(0);
+      expect(report(s.qa)).toContain("## SHOP-12: ✅ tests passed");
+      expect(report(s.qa)).not.toContain("not merged yet\n");
+      expect(ran(s.qa)).toContain("bug.spec.ts");
+      expect(ran(s.qa)).toContain("slots.spec.ts");
+    } finally {
+      await jira.close();
+      await s.version.close();
+    }
+  });
+
   it("without Jira a fix key still runs the tests tagged @bug:KEY", async () => {
     const s = await setup();
     try {

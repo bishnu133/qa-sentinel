@@ -60,11 +60,11 @@ describe("story range: every MR is its own range", () => {
     commit(orders, "b.js", "1", "SHOP-5: b");
     commit(orders, "u.js", "1", "other");
     commit(orders, "c.js", "1", "SHOP-5: c");
-    commit(orders, "c.js", "2", 'Revert "SHOP-5: c"');
+    g(orders, "revert", "--no-edit", "HEAD");
+    // The reverted range ("This reverts commit <sha>") is not story work any more.
     const ranges = storyRanges(orders, "SHOP-5", "main");
-    expect(ranges).toHaveLength(2);
-    expect(g(orders, "diff", "--name-only", `${ranges[0].base}..${ranges[0].head}`)).toBe("c.js");
-    expect(g(orders, "diff", "--name-only", `${ranges[1].base}..${ranges[1].head}`).split("\n").sort()).toEqual(["a.js", "b.js"]);
+    expect(ranges).toHaveLength(1);
+    expect(g(orders, "diff", "--name-only", `${ranges[0].base}..${ranges[0].head}`).split("\n").sort()).toEqual(["a.js", "b.js"]);
   });
 
   it("storyRange (a tip only) gives the newest range for merged work", () => {

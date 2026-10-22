@@ -23,10 +23,10 @@ Steps 1 to 4 need **no AI, no Jira and no GitLab**. They use the ShopLite sandbo
 4. `echo more > followup.txt && git add followup.txt && git commit -m "SHOP-106 follow-up: footer text"`
 5. `cd ../qa-tests`
 6. `node $QAS/dist/cli.js gap-report --story SHOP-106 --dry-run`
-   It does not call the AI. It only prints what it would ask. Look for the line `story SHOP-106: notifications-service (1 file(s)), notifications-service (1 file(s))`: two parts.
+   It does not call the AI. It only prints what it would ask. Look for the line `story SHOP-106: notifications-service (2 file(s))`: one part for the service with the files of both merge requests.
 7. `grep -n "^# =====\|^diff --git" $(ls -d .qa-sentinel/runs/*gap-story-SHOP-106 | tail -1)/change.diff`
 
-Expect two lines starting with `# =====` and these files after them: `followup.txt` first, then `src/server.js`. There is no `unrelated.txt`. Before this change the follow-up commit made the first part disappear, or the unrelated work came in.
+Expect one line starting with `# =====` followed by two lines starting with `# -----` (one per merge request) and these files after them: `followup.txt` and `src/server.js` (in some order). There is no `unrelated.txt`. Before this change the follow-up commit made the first part disappear, or the unrelated work came in.
 
 ## 3. A bug fix is deployed: its feature's tests run again
 
@@ -66,3 +66,4 @@ With Jira connected the bug is looked up: if its parent is SHOP-106, the report 
 4. Run the same command again. Expect the log to start from about 24 hours before the first run (the file `.qa-sentinel/stories/_sweep.json` holds the time).
 5. `qa-sentinel stories --rebuild` fills the records again from the last 365 days.
 6. For the bug fix: run `qa-sentinel post-deploy --env <env> --service <service> --sha <deployed sha> --before <previous sha>` for a deployment that had only a bug fix. Expect `re-run: fix SHOP-… (Bug → SHOP-…) deployed` and the story's tests running.
+7. **Needs real Jira and GitLab (not in the sandbox):** a bug fix is deployed while its feature still has another merge request open. Pick a Story SHOP-A that has one merged MR and one open MR, and a Bug under it (parent = SHOP-A) with a `@bug:<BUG>` test. Run `post-deploy` for the bug's deployed commit. Expect `## SHOP-A: tests passed` with `re-run: fix <BUG> (Bug → SHOP-A) deployed`, not "not merged yet", and the bug's test and SHOP-A's tests in the run. A bug with no tests anywhere is shown as "no tests tagged" straight away, without waiting.

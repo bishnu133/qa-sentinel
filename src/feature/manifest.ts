@@ -3,7 +3,7 @@ import path from "node:path";
 import type { Config, ServiceConfig } from "../config.js";
 import { git, isGitRepo } from "../git.js";
 import { call, getAll, type GitLabContext } from "../scm/gitlab.js";
-import { extractStoryKeys, jiraKeyPattern } from "../requirements.js";
+import { extractMrKeys, extractStoryKeys, jiraKeyPattern } from "../requirements.js";
 import { findCherryPicks, findRevert } from "../release/git.js";
 
 /**
@@ -184,7 +184,7 @@ export function partFromGit(repo: string, s: ServiceConfig, story: string, targe
 }
 
 /** One GitLab merge request (as the API lists it) as a part of its service. */
-export function mrToPart(service: string, m: any, keyPattern = "[A-Z][A-Z0-9]+-\\d+"): ServicePart {
+export function mrToPart(service: string, m: any, keyPattern = "[A-Z][A-Z0-9]+-\\d+", projects: string[] = []): ServicePart {
   const merged = m.state === "merged";
   return {
     service,
@@ -193,7 +193,7 @@ export function mrToPart(service: string, m: any, keyPattern = "[A-Z][A-Z0-9]+-\
     branch: m.source_branch,
     sha: merged ? (m.merge_commit_sha ?? m.squash_commit_sha ?? m.sha) : m.sha,
     merged,
-    keys: extractStoryKeys(keyPattern, m.title, m.source_branch, m.description),
+    keys: extractMrKeys(keyPattern, m, projects),
     ...(m.merge_commit_sha ? { mergeSha: m.merge_commit_sha } : {}),
     ...(m.squash_commit_sha ? { squashSha: m.squash_commit_sha } : {}),
     ...(m.diff_refs?.base_sha && m.diff_refs?.head_sha ? { diffRefs: { base: m.diff_refs.base_sha, head: m.diff_refs.head_sha, start: m.diff_refs.start_sha ?? m.diff_refs.base_sha } } : {}),
@@ -219,7 +219,7 @@ export async function partsFromGitLab(
   ctx: GitLabContext,
   s: ServiceConfig,
   story: string,
-  o: { lookbackDays?: number; keyPattern?: string; now?: Date; scanCache?: MrScanCache; /** Facts the caller should show (a scan that was cut off). */ notes?: string[] } = {},
+  o: { lookbackDays?: number; keyPattern?: string; projectKeys?: string[]; now?: Date; scanCache?: MrScanCache; /** Facts the caller should show (a scan that was cut off). */ notes?: string[] } = {},
 ): Promise<ServicePart[]> {
   if (!s.gitlabProject) return [];
   const project = encodeURIComponent(s.gitlabProject);
@@ -247,7 +247,7 @@ export async function partsFromGitLab(
   }
   if (truncated) o.notes?.push(`${s.name}: only the newest ${MR_SCAN_PAGES * 100} merge requests updated in the last ${days} days were checked for a branch naming ${story}; an older one may be missing (requirements.jira.search.mrLookbackDays)`);
   const pattern = o.keyPattern ?? "[A-Z][A-Z0-9]+-\\d+";
-  const parts = [...found.values()].map((m) => mrToPart(s.name, m, pattern));
+  const parts = [...found.values()].map((m) => mrToPart(s.name, m, pattern, o.projectKeys));
   const rank = (p: ServicePart) => (p.dropped ? 2 : p.merged ? 1 : 0);
   return parts.sort((a, b) => rank(a) - rank(b) || String(b.mergedAt ?? "").localeCompare(String(a.mergedAt ?? "")) || (b.mr?.iid ?? 0) - (a.mr?.iid ?? 0));
 }
@@ -353,7 +353,7 @@ export async function assembleFeature(i: {
     const repo = path.resolve(i.cwd, s.path);
     let found: ServicePart[] = [];
     try {
-      if (i.gitlab && s.gitlabProject) found = await partsFromGitLab(i.gitlab, s, i.story, { lookbackDays: i.c.requirements.jira.search.mrLookbackDays, keyPattern: jiraKeyPattern(i.c), scanCache: i.scanCache, notes });
+      if (i.gitlab && s.gitlabProject) found = await partsFromGitLab(i.gitlab, s, i.story, { lookbackDays: i.c.requirements.jira.search.mrLookbackDays, keyPattern: jiraKeyPattern(i.c), projectKeys: i.c.requirements.jira.projectKeys, scanCache: i.scanCache, notes });
       else if (fs.existsSync(repo)) found = partsFromGit(repo, s, i.story, i.c.ci.targetBranch);
     } catch (e) {
       notes.push(`${s.name}: could not look for ${i.story}: ${(e as Error).message}`);

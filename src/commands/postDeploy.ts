@@ -176,23 +176,26 @@ export async function postDeployCommand(o: PostDeployOptions): Promise<number> {
   const outcomes: StoryOutcome[] = [];
 
   for (const story of stories) {
-    let manifest = await assembleFeature({ c, cwd, story, gitlab: gl, environment, baseUrl });
-    while (manifest.status === "waiting-for-deployment" && Date.now() + poll <= deadline) {
-      log.dim(`  ${story}: waiting for deployment (${manifest.parts.filter((p) => p.merged && !p.deployed?.includesChange).map((p) => p.service).join(", ")}); checking again in ${Math.round(poll / 1000)} s`);
-      await sleep(poll);
-      manifest = await assembleFeature({ c, cwd, story, gitlab: gl, environment, baseUrl });
-    }
     const target = targetOf.get(story)!;
     // A key can be the bug fix itself: its own @bug:KEY tests count, with or without Jira.
     const bugKeys = [story, ...target.bugs.map((b) => b.key)];
     const reason = target.bugs.length ? `re-run: fix ${target.bugs.map((b) => `${b.key}${b.issueType ? ` (${b.issueType} → ${story})` : ""}`).join(", ")} deployed` : undefined;
     const tests = index.filter((t) => (t.stories.includes(story) || t.bugs.some((b) => bugKeys.includes(b))) && t.status === "active" && !t.bdd);
     const bddOnly = !tests.length && index.some((t) => t.stories.includes(story) && t.status === "active" && t.bdd);
-    if (manifest.status === "waiting-for-deployment") outcomes.push({ story, status: "waiting", manifest, reason });
-    else if (manifest.status === "in-development") outcomes.push({ story, status: "not-merged", manifest, reason });
+    let manifest = await assembleFeature({ c, cwd, story, gitlab: gl, environment, baseUrl });
+    // Waiting for deployment only matters when there is something to run afterwards.
+    while (tests.length && manifest.status === "waiting-for-deployment" && Date.now() + poll <= deadline) {
+      log.dim(`  ${story}: waiting for deployment (${manifest.parts.filter((p) => p.merged && !p.deployed?.includesChange).map((p) => p.service).join(", ")}); checking again in ${Math.round(poll / 1000)} s`);
+      await sleep(poll);
+      manifest = await assembleFeature({ c, cwd, story, gitlab: gl, environment, baseUrl });
+    }
+    // A deployed bug fix is checked even while its feature has another MR open: the fix itself is deployed.
+    const fixDeployed = target.bugs.length > 0 && manifest.status === "in-development";
+    if (!tests.length && !bddOnly) outcomes.push({ story, status: "no-tests", manifest, reason });
+    else if (manifest.status === "waiting-for-deployment") outcomes.push({ story, status: "waiting", manifest, reason });
+    else if (manifest.status === "in-development" && !fixDeployed) outcomes.push({ story, status: "not-merged", manifest, reason });
     else if (manifest.status === "reverted") outcomes.push({ story, status: "reverted", manifest, reason });
     else if (bddOnly) outcomes.push({ story, status: "bdd-only", manifest, reason });
-    else if (!tests.length) outcomes.push({ story, status: "no-tests", manifest, reason });
     else {
       log.step(`${story}: every part is deployed on ${environment}; running ${tests.length} test(s)`);
       const run = createRunDir(cwd, `post-deploy-${story}`);

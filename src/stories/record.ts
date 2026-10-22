@@ -43,6 +43,9 @@ export type Job = z.infer<typeof JobSchema>;
 export const LedgerEntrySchema = z.object({ at: z.string(), job: z.string(), kind: JobKind, costUsd: z.number().min(0) });
 export type LedgerEntry = z.infer<typeof LedgerEntrySchema>;
 
+/** A commit id: hex only (it ends up in git arguments); anything else in a stored record is dropped on read. */
+const Sha = z.string().regex(/^[0-9a-fA-F]{4,64}$/).optional().catch(undefined);
+
 export const RecordPartSchema = z.object({
   service: z.string(),
   source: z.enum(["gitlab-mr", "git"]),
@@ -51,17 +54,17 @@ export const RecordPartSchema = z.object({
   state: z.enum(["opened", "merged", "closed", "reverted"]),
   branch: z.string().optional(),
   title: z.string().optional(),
-  headSha: z.string().optional(),
-  mergeSha: z.string().optional(),
-  squashSha: z.string().optional(),
+  headSha: Sha,
+  mergeSha: Sha,
+  squashSha: Sha,
   /** GitLab diff_refs base: where a rebased or fast-forwarded MR's own change starts. */
-  diffBase: z.string().optional(),
+  diffBase: Sha,
   mergedAt: z.string().optional(),
   keys: z.array(z.string()).default([]),
   workKey: z.string().optional(),
   firstSeenAt: z.string(),
   lastSeenAt: z.string(),
-  revertedBy: z.string().optional(),
+  revertedBy: Sha,
 });
 export type RecordPart = z.infer<typeof RecordPartSchema>;
 

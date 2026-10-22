@@ -9,8 +9,9 @@ const sameMr = (a: RecordPart, b: PartInput) => a.service === b.service && (b.ii
 
 /**
  * Add a part to the record, or update the one already there (same service and MR number; a part from plain git has
- * no number, so it is matched on its branch). The time it was first seen never changes. A part that was reverted
- * stays reverted unless the new part says otherwise.
+ * no number, so it is matched on its branch or head). The time it was first seen never changes. A listing cannot
+ * know about reverts, so a part recorded as reverted stays reverted when it is listed as merged again without
+ * naming a reverting commit; any other new state (opened, closed, or merged with `revertedBy`) replaces it.
  */
 export function upsertPart(rec: StoryRecord, part: PartInput, now = new Date()): StoryRecord {
   const at = now.toISOString();

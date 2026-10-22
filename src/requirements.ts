@@ -65,6 +65,25 @@ export function extractStoryKeys(pattern: string, ...texts: (string | undefined)
   return out;
 }
 
+/**
+ * The keys of a merge request: its title and description by whole key; its branch name the way PR 1's branch scan reads it
+ * (case-insensitive for the configured projects, a key may be followed by anything but a digit: feature/shop-106-x, SHOP-106_notice), uppercased.
+ */
+export function extractMrKeys(pattern: string, m: { title?: string; source_branch?: string; description?: string }, projects: string[] = []): string[] {
+  const out = extractStoryKeys(pattern, m.title);
+  const add = (k: string) => {
+    if (!out.includes(k)) out.push(k);
+  };
+  // A lower-case key counts only for a known project ("work-3" in a branch name is not a card).
+  const known = new Set(projects.map((p) => p.toUpperCase()));
+  for (const x of (m.source_branch ?? "").matchAll(new RegExp(`(?:^|[^A-Za-z0-9])(${pattern})(?![0-9])`, "gi"))) {
+    const exact = x[1] === x[1].toUpperCase();
+    if (exact || known.has(x[1].replace(/-\d+$/, "").toUpperCase())) add(x[1].toUpperCase());
+  }
+  for (const k of extractStoryKeys(pattern, m.description)) add(k);
+  return out;
+}
+
 /** Pull the first story key (e.g. SHOP-42) out of any of the given strings. */
 export function extractStoryKey(pattern: string, ...texts: (string | undefined)[]): string | undefined {
   return extractStoryKeys(pattern, ...texts)[0];

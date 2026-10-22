@@ -89,6 +89,7 @@ async function storiesRun(o: StoriesOptions): Promise<number> {
 
   // First the merge requests: one paged call per repository (no clones, no AI). They fill the story records and tell which stories to look at.
   let touched: string[] = [];
+  let sweepMark: string | undefined;
   if (!o.storiesDir && !o.noSweep && !o.noRecord && c.automation.sweep.enabled && gitlab && c.workspace.services.some((x) => x.gitlabProject)) {
     try {
       const since = sweepSince(cwd, c, now, { rebuild: o.rebuild });
@@ -97,7 +98,10 @@ async function storiesRun(o: StoriesOptions): Promise<number> {
       touched = sw.touched;
       sw.notes.forEach((n) => log.warn(n));
       if (sw.noKey.length) log.warn(`MRs with no story key: ${sw.noKey.map((m) => `!${m.iid} ${m.service}`).join(", ")}`);
-      if (sw.complete) writeSweepState(cwd, { lastAt: now.toISOString() });
+      // The check time moves only once the story check below has its stories (a run that stops with "Nothing to check" leaves it).
+      // A listing cut by the page cap moves it only as far as the merge requests that were looked at.
+      if (sw.complete) sweepMark = sw.truncated && sw.resumeAt ? sw.resumeAt : now.toISOString();
+      if (store.kind === "jira") log.warn(`the merge request check time is kept in the local records folder on this runner (the records themselves are in Jira): cache that folder between runs, or each run looks back ${c.requirements.jira.search.mrLookbackDays} days`);
     } catch (e) {
       log.warn(`merge request sweep failed (${(e as Error).message.split("\n")[0]}); the story check goes on without it`);
     }
@@ -114,8 +118,16 @@ async function storiesRun(o: StoriesOptions): Promise<number> {
     inputs = await inputsFromJira(c, ctx, { keys: o.story });
     // Stories whose merge requests changed since the last check are looked at even when the search did not list them.
     const more = o.story?.length ? [] : touched.filter((k) => !inputs.some((x) => x.key.toLowerCase() === k.toLowerCase()));
-    if (more.length) inputs.push(...(await inputsFromJira(c, ctx, { keys: more }).catch((e) => (log.warn(`stories from merge requests not read: ${(e as Error).message}`), []))).filter((x) => !inputs.some((y) => y.key === x.key)));
+    // One key at a time: a card that cannot be read leaves the others alone.
+    for (const k of more) {
+      try {
+        inputs.push(...(await inputsFromJira(c, ctx, { keys: [k] })).filter((x) => !inputs.some((y) => y.key === x.key)));
+      } catch (e) {
+        log.warn(`${k} (from a merge request) not read: ${(e as Error).message.split("\n")[0]}`);
+      }
+    }
   } else throw new Error('Nothing to check: set requirements.source: jira (and the Jira settings), pass --story KEY, or pass --stories-dir <folder> to read story files.');
+  if (sweepMark) writeSweepState(cwd, { lastAt: sweepMark });
   if (!inputs.length) {
     log.ok("no stories found");
     return 0;
