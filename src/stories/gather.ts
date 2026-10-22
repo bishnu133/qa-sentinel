@@ -2,7 +2,9 @@ import fs from "node:fs";
 import path from "node:path";
 import type { Config } from "../config.js";
 import { type IndexedTest, indexTests, traceStory } from "../analysis/testIndex.js";
-import { assembleFeature } from "../feature/manifest.js";
+import { assembleFeature, type ServicePart } from "../feature/manifest.js";
+import { acWriteReadiness } from "../feature/readiness.js";
+import { crossWritten } from "../generation/storyScope.js";
 import { expectedDirOf } from "../expected/lock.js";
 import { acHash, readExpected } from "../expected/format.js";
 import { acsNeedingProposal } from "../expected/spec.js";
@@ -107,14 +109,14 @@ export function jiraFor(c: Config, env: NodeJS.ProcessEnv = process.env): JiraCo
   return ctx;
 }
 
-async function codeState(c: Config, cwd: string, key: string, gitlab: GitLabContext | undefined): Promise<CodeState> {
+async function codeState(c: Config, cwd: string, key: string, gitlab: GitLabContext | undefined): Promise<{ code: CodeState; parts: ServicePart[] }> {
   const reachable = c.workspace.services.some((s) => fs.existsSync(path.resolve(cwd, s.path)) || (gitlab && s.gitlabProject));
-  if (!reachable) return "unknown";
+  if (!reachable) return { code: "unknown", parts: [] };
   try {
     const m = await assembleFeature({ c, cwd, story: key, gitlab });
-    return m.status === "no-changes-found" ? "none" : m.status === "in-development" || m.status === "reverted" ? "unmerged" : "merged";
+    return { code: m.status === "no-changes-found" ? "none" : m.status === "in-development" || m.status === "reverted" ? "unmerged" : "merged", parts: m.parts };
   } catch {
-    return "unknown";
+    return { code: "unknown", parts: [] };
   }
 }
 
@@ -152,7 +154,7 @@ export async function gatherFacts(g: GatherContext, input: StoryInput, shared: {
     expected = { error: (e as Error).message };
   }
   const trace = traceStory(shared.index, key, acs, shared.manual).acs;
-  const code = await codeState(c, cwd, key, g.gitlab);
+  const { code, parts } = await codeState(c, cwd, key, g.gitlab);
 
   // What would stop an AI step from starting: its own job, or the budget.
   const rec = g.records.find((r) => r.key === key) ?? (await g.store.load(key));
@@ -171,8 +173,17 @@ export async function gatherFacts(g: GatherContext, input: StoryInput, shared: {
   const failed = gens.find((j) => j.state === "failed" && j.attempts >= g.policy.maxAttempts);
   if (failed) limits.generate = `${failed.key} failed ${failed.attempts} times (last: ${failed.outcome ?? failed.error ?? "unknown"}); fix the cause or run with --force`;
   limits.generate ??= bs("generate");
+  // Which ACs can get their tests written now (fixed rules), and which of the cross-service ones have none written for the current commits.
+  let writeReadiness: StoryFacts["writeReadiness"];
+  let crossReady: string[] | undefined;
+  if (c.generation.scope === "story" && !expected.error && parts.length) {
+    const rows = acWriteReadiness(parts, expected.file, acs.map((a) => a.id), { jiraReady: input.ready, mode: c.generation.crossService, components: servicesFromComponents(c, input.components).services, overrides: rec?.overrides });
+    writeReadiness = rows.map((r) => ({ ac: r.ac, kind: r.kind, state: r.state, reason: r.reason }));
+    const text = new Map(acs.map((a) => [a.id, a.text]));
+    crossReady = rows.filter((r) => r.kind === "cross" && r.state === "ready" && !crossWritten(rec, r, parts, text.get(r.ac) ?? "", acHash)).map((r) => r.ac);
+  }
   const generateSettled = gens.some((j) => j.state === "done" && j.outcome === "no-changes-needed");
-  return { ...base, expected, trace, code, limits: Object.fromEntries(Object.entries(limits).filter(([, v]) => v)), generateSettled };
+  return { ...base, expected, trace, code, limits: Object.fromEntries(Object.entries(limits).filter(([, v]) => v)), generateSettled, ...(writeReadiness ? { writeReadiness } : {}), ...(crossReady?.length ? { crossReady } : {}) };
 }
 
 export function sharedFacts(cwd: string, c: Config) {

@@ -310,13 +310,26 @@ describe("operating levels and usage", () => {
   it("maintenance level writes the generation pipeline", async () => {
     const root = tmp();
     await initCommand({ cwd: root, yes: true, mode: "scratch", ci: "gitlab", workspace: root, level: "maintenance" });
-    expect(fs.readFileSync(path.join(root, "ci/qa-sentinel/tests.gitlab-ci.yml"), "utf8")).toContain("qa-generate:");
+    const maint = fs.readFileSync(path.join(root, "ci/qa-sentinel/tests.gitlab-ci.yml"), "utf8");
+    expect(maint).toContain("qa-generate:");
+    // The background check that starts due AI steps: scheduled, limit exit code (4) is not a failure, git identity set.
+    expect(maint).toMatch(/qa-stories:[\s\S]*QA_STORIES == "true"[\s\S]*exit_codes: \[4\][\s\S]*git config user.name[\s\S]*qa-sentinel stories --act/);
     const intel = tmp();
     await initCommand({ cwd: intel, yes: true, mode: "scratch", ci: "gitlab", workspace: intel });
     const y = fs.readFileSync(path.join(intel, "ci/qa-sentinel/tests.gitlab-ci.yml"), "utf8");
     expect(y).not.toContain("qa-generate:");
+    expect(y).not.toContain("qa-stories:");
     expect(y).toContain("qa-agent-mr-checks:");
     expect(fs.readFileSync(path.join(intel, "ci/qa-sentinel/service.gitlab-ci.yml"), "utf8")).not.toContain("qa-trigger-generation");
+  });
+  it("maintenance level adds a guarded stories stage to the Jenkins template (not proven on a real server)", async () => {
+    const root = tmp();
+    await initCommand({ cwd: root, yes: true, mode: "scratch", ci: "jenkins", workspace: root, level: "maintenance" });
+    const f = fs.readdirSync(root, { recursive: true }).map(String).find((x) => x.endsWith("Jenkinsfile.tests"))!;
+    const j = fs.readFileSync(path.join(root, f), "utf8");
+    expect(j).toContain("qa-sentinel stories --act");
+    expect(j).toContain("params.QA_STORIES");
+    expect(j).not.toContain("{{");
   });
   it("sums usage across plan, repair and author runs", () => {
     expect(addUsage({ ok: true, status: "ok", result: "", turns: 3, costUsd: 0.1, durationMs: 1000 }, { ok: true, status: "ok", result: "", turns: 2, costUsd: 0.05, durationMs: 500 })).toEqual({ turns: 5, costUsd: 0.15000000000000002, durationMs: 1500 });

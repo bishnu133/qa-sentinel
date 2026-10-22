@@ -44,6 +44,8 @@ export const RequirementSnapshotSchema = z.object({
   rawText: z.string(),
   /** Tracker status at capture time (Jira). */
   trackerStatus: z.string().optional(),
+  /** The Jira card's components (mapped to services by requirements.jira.components). */
+  components: z.array(z.string()).optional(),
   /** The card the MR or commits named when it is not the feature itself (a bug, task or sub-task). Its text is in `context`, as evidence only. */
   workKey: z.string().optional(),
   /** How the work card reached the feature. */
@@ -239,6 +241,7 @@ export async function resolveRequirements(c: Config, o: ResolveOptions): Promise
           revision: issue.updated,
           title: issue.summary,
           trackerStatus: issue.status,
+          ...(issue.components?.length ? { components: issue.components } : {}),
           storyKey: issue.key,
           ...(issue.issueType ? { issueType: issue.issueType } : {}),
           ...(branch ? { sourceBranch: branch } : {}),

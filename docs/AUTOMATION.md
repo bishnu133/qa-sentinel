@@ -18,12 +18,13 @@ For each story it works out one state and the next step, using fixed rules (no A
 | needs-attention | no acceptance criteria, or the `expected/` file can't be read | a person fixes the story or file |
 | needs-expectations | some ACs have no current expected behaviour | `spec` (AI) |
 | needs-tests | expectations ready, ACs without tests | `generate` (AI), or wait if the code isn't merged |
+| needs-cross-service-tests | an AC that needs several services has all of them merged (and, by default, a ready Jira status) but no end-to-end tests yet | `generate --story KEY --acs AC-1` (AI) |
 | needs-triage | tests exist but are `fixme`/`skip` | QA decides |
 | covered | every AC has a test, a known defect, or is untestable | nothing |
 
 The to-do list says who acts (ai / qa / po / dev), the command, and why a step is **blocked** (budget reached, job
 already ran, too many failed attempts). Questions for the PO never block. Output: `qa-stories.md`, and one record
-per story under `.qa-sentinel/stories/`. `stories` never starts an AI step; a scheduler or a person runs the command it names.
+per story under `.qa-sentinel/stories/`. Without `--act`, `stories` never starts an AI step; a scheduler or a person runs the command it names. With `--act` it starts the AI steps that are due (see "One test merge request per story").
 With GitLab it first runs the merge-request sweep (below).
 
 Jira settings (`requirements.jira.search`): `jql` (own query), `lookbackDays` 30, `maxStories` 50, `skipLabels`
@@ -55,6 +56,35 @@ The gap report also records its own merge request the first time it sees it, so 
 **The story's change** (`gap-report --story`, `generate --story`) is the union of what each merge request changed, not everything since the first story commit: a merge commit gives `M^1..M`, a squash commit `S^..S`, a rebased or fast-forwarded MR its `diff_refs` range (the list call has none, so the sweep asks GitLab for the single MR once and keeps the base in the record; without it the commit messages on the target branch are read and the note says so), an open MR the range from the merge base of the target branch to its head (fetched from `refs/merge-requests/<n>/head`, with the token only on the command line, never in `.git/config`). Without a record or GitLab it walks the last 500 commits of the target branch and takes every commit (or merge) that names the story, as its own range, so unrelated work merged in between stays out, and a branch that merged main into itself does not bring main's commits. A part whose commit is not in the local clone is skipped with a note ("fetch the target branch"). The merge requests of one service are one part (all their ranges, with one sub-header per range in the diff). The parts come from GitLab or the local clones; the story record adds the merge requests it knows (matched on service and MR number), so a commit the record does not list is still included. A part, or a range found in the commit messages, that a later "This reverts commit <sha>" commit reverted is left out with a note; this needs the revert to be in the local clone of the target branch.
 
 **After a deployment** (`post-deploy`) every story key in the deployed commits counts, not only keys that already have tests. Each key goes to its feature (a bug or task fix runs its story's tests again), and the tests run are the feature's `@story:` tests plus the tests tagged `@bug:<KEY>` for the deployed fix. The report says why ("re-run: fix SHOP-210 (Bug → SHOP-12) deployed"). A feature with no tests is reported as "no tests tagged" at once (no waiting for deployment, and it does not count toward exit 75). A deployed bug fix is checked even while its feature has another MR open. A commit with no key (a squash titled without it) is matched through the recorded merge requests, then through GitLab's "merge requests of a commit". Without Jira the keys are used as they are. The result is written to the story record.
+
+## One test merge request per story
+
+Setting: `generation.scope: story` (the default) | `service`.
+
+**What happens.** When a service change is merged and its commits or merge request name a story, qa-sentinel does not open a new test merge request for that merge. It adds the tests to one long-lived branch for the story, `qa-sentinel/story-KEY` (`generation.branchPrefix`), and one merge request for it. A change with no story key keeps its own branch, `qa-sentinel/<service>-<sha>`.
+
+**What waits, and why.** Each acceptance criterion needs one or more services (the "Services" line of its entry in `expected/KEY.md`; if it is empty, the services of the card's Jira components plus every service that has a change in the story).
+- An AC that needs **one** service gets its tests when that service merges.
+- An AC that needs **several** services waits until every one of them is merged. By default (`generation.crossService: when-ready-status`) it also waits for the Jira card to be in a ready status (`requirements.jira.workflow.readyStatuses`); `when-ac-complete` does not look at the status. A story file with no Jira status counts as ready.
+- A service with no change found yet, an open merge request, a revert: the AC waits. The merge request description lists the waiting ACs and what each waits for. A person can mark an AC ready with an override (it never skips an open merge request).
+- At most `generation.maxAcsPerRun` (5) ACs are planned in one run; the rest wait for the next run.
+- The planner is told which ACs to plan (`acScope`) and which wait (`heldAcs`). A plan that cites a waiting AC is rejected, and a waiting AC needs no scenario.
+
+**The branch is built on, never rebuilt.** Each run takes the branch from the server, merges the main branch into it, adds its commit and pushes. The push uses `--force-with-lease` with the commit the run started from, so a commit a reviewer pushed meanwhile is never overwritten: it is fetched, merged in, and the push tried once more. A plain `--force` is never used on a story branch. The planner and the author work on the branch, so they see the tests already there and do not write them twice. `expected/KEY.md` is read from the branch too: a reviewer's edits to it are the reviewed version, and the expectation lock protects them.
+
+**A conflict with main stops the run.** The merge is aborted, nothing is pushed, no AI is called, the job is marked failed (it counts as an attempt) and the merge request gets a note. A person merges main into the story branch and pushes. The AI never resolves conflicts.
+
+**A closed or merged story merge request is not reopened.** The next run starts a new branch from main with the same name and a new merge request; its description links the old one. The rejected tests are not on main, so the planner does not see them.
+
+**No duplicate runs.** The job key of a merge is the story, the service, the merge commit and the AC texts. The key of a run that writes cross-service ACs is the story, those ACs, the merged commits of the services they need, and the AC texts, however the run was started (a merge pipeline, `generate --story KEY --acs AC-1`, `stories --act`). The same state gives the same key, so the second run is skipped. A cross-service AC that was written for the same commits and AC text (`crossService` in the story record) is not written again. Only one generate job of a story runs at a time, because two would write the same branch. Budgets apply as always.
+
+**`generation.scope: service`** keeps the per-merge branches and merge requests. Before planning, the open merge requests labelled `qa-agent` in the test repo are listed with the spec files they add (`run/open-agent-mrs.md`); the planner is told, and a `create` decision whose `targetFile` another open agent merge request adds is rejected.
+
+**`generate --story KEY`** plans the story's ready ACs (a story whose changes were all reverted is left alone: "nothing to generate"). `--acs AC-1,AC-3` plans only those; a waiting AC is refused unless `--force`.
+
+### `stories --act`
+
+`qa-sentinel stories --act` runs the background check and then starts the AI steps that are due, at most `automation.act.maxJobsPerCheck` (3) per run, one after the other, through the normal job keys, locks and budgets. Exit code 0: every started job ended done (or nothing was due); 4: a limit stopped a job (a budget, too many failed attempts, a job already running); 1: a job failed. `--act --dry-run` prints what it would start. For a story whose expected behaviour is due and whose code is merged, the story's generate run does the requirements pass itself and commits the file on the story branch (so it is reviewed in the story merge request); with no merged code yet it runs `spec`, which writes the file in the working tree only. The GitLab template has a `qa-stories` job (schedule with `QA_STORIES=true`); the Jenkins stage is a template, not proven.
 
 ## Job keys: the same work isn't done twice
 
@@ -90,6 +120,8 @@ A person reviews and merges: that is the gate. A test that failed for another re
 ## Limits
 
 - Day and month budgets count the records this machine/cache has; separate runners without a shared cache each count their own.
+- The story branch is not reopened after its merge request is closed or merged, and a story branch is only rebuilt from main when its merge request is closed or merged.
+- The AC "implemented in merged code" is not a gate in code (it needs an AI judgement). The gate is merged code and the status (or an override); what the plan said about each AC is stored in the record (`acEvidence`).
 - The Jira record has no compare-and-set: two runners starting the same job at the same moment can both run.
 - The sweep reads only merge requests GitLab lists as updated since the last check (and at most `maxPages` pages per repository). A key that only appears in a commit message, not in the MR's title, branch or description, is found by the story's own lookup (`feature`, `gap-report --story`) but not by the sweep.
 - A repository that is not checked out is left out of a story's change, with a note.

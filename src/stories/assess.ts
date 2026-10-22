@@ -45,9 +45,13 @@ export interface StoryFacts {
   unmappedComponents?: string[];
   /** How the story was reached when it was asked for through a bug, task or sub-task ("SHOP-210 (Bug) → SHOP-12 via parent"). */
   resolvedFrom?: string;
+  /** Write-time readiness per AC: which ACs' tests can be written now. */
+  writeReadiness?: { ac: string; kind: "single" | "cross"; state: string; reason: string }[];
+  /** Cross-service ACs that are ready to get their end-to-end tests and have none written for the current commits. */
+  crossReady?: string[];
 }
 
-export type StoryState = "skipped" | "needs-attention" | "needs-expectations" | "needs-tests" | "needs-triage" | "covered";
+export type StoryState = "skipped" | "needs-attention" | "needs-expectations" | "needs-tests" | "needs-cross-service-tests" | "needs-triage" | "covered";
 export type Next = "none" | "wait" | "spec" | "generate" | "triage" | "fix";
 
 export interface Todo {
@@ -86,6 +90,7 @@ export interface Assessment {
   services?: string[];
   unmappedComponents?: string[];
   resolvedFrom?: string;
+  writeReadiness?: StoryFacts["writeReadiness"];
 }
 
 const isTriage = (t: IndexedTest) => t.status === "fixme" || t.status === "skip";
@@ -204,6 +209,13 @@ export function assessStory(f: StoryFacts): Assessment {
     return done("needs-tests", "wait", `waiting for merged code; ${missing.length} of ${f.acs.length} AC(s) have no test`);
   }
 
+  // 4b. AI step 3: end-to-end tests for ACs that need several services, once all of them are merged (and the Jira status says so).
+  if (f.crossReady?.length && f.code !== "none") {
+    reasons.push(`every service ${f.crossReady.join(", ")} needs is merged: its end-to-end tests are not written yet`);
+    todo.unshift({ who: "ai", what: `write the end-to-end tests for ${f.crossReady.join(", ")}`, command: `qa-sentinel generate --story ${f.key} --acs ${f.crossReady.join(",")}`, ...(f.limits.generate ? { blocked: f.limits.generate } : {}) });
+    return done("needs-cross-service-tests", "generate", `${f.crossReady.join(", ")} can get end-to-end tests now`);
+  }
+
   // 5. People.
   if (waiting.length) {
     reasons.push(`${waiting.length} test(s) are fixme/skip and wait for QA`);
@@ -216,7 +228,7 @@ export function assessStory(f: StoryFacts): Assessment {
   return done("covered", "none", counts.knownDefects ? `covered (${counts.knownDefects} known defect(s))` : "covered");
 }
 
-const ICON: Record<StoryState, string> = { skipped: "⏭️", "needs-attention": "🛑", "needs-expectations": "📝", "needs-tests": "🧪", "needs-triage": "🔎", covered: "✅" };
+const ICON: Record<StoryState, string> = { skipped: "⏭️", "needs-attention": "🛑", "needs-expectations": "📝", "needs-tests": "🧪", "needs-cross-service-tests": "🔗", "needs-triage": "🔎", covered: "✅" };
 const WHO: Record<Todo["who"], string> = { ai: "AI", qa: "QA", po: "PO", dev: "Dev" };
 
 export function stateIcon(s: StoryState): string {

@@ -30,6 +30,8 @@ export interface StartJobOptions {
   force?: boolean;
   once?: boolean;
   env?: NodeJS.ProcessEnv;
+  /** See BeginOptions.exclusive. */
+  exclusive?: boolean;
 }
 
 /**
@@ -40,7 +42,7 @@ export async function startJob(o: StartJobOptions): Promise<JobStart> {
   const store = openStore(o.cwd, o.c, o.env);
   let r;
   try {
-    r = await beginJob(store, { story: o.story, kind: o.kind, key: o.key, policy: jobPolicy(o.c, { force: o.force, once: o.once }, o.env), budgets: o.c.automation.budgets });
+    r = await beginJob(store, { story: o.story, kind: o.kind, key: o.key, policy: jobPolicy(o.c, { force: o.force, once: o.once }, o.env), budgets: o.c.automation.budgets, ...(o.exclusive ? { exclusive: true } : {}) });
   } catch (e) {
     // The record is a cache: if it can't be read or written, the work still runs, without job history and limits.
     log.warn(`story record unavailable (${(e as Error).message}); running without job keys and budgets`);
