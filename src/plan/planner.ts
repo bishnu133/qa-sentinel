@@ -45,6 +45,11 @@ export interface PlanInput {
   expected?: ExpectedFile;
   /** Story mode: every service part of the story (service/repo/cs above are the combined view). */
   parts?: StoryPart[];
+  /** Story-scoped generation: the ACs to plan now, and the ones that wait (with what they wait for). */
+  acScope?: string[];
+  heldAcs?: Map<string, string>;
+  /** Spec files that open QA agent merge requests add (path → "!12"). */
+  addedByOpenMrs?: Map<string, string>;
 }
 
 export const oracleOf = (req: RequirementSnapshot): "provided" | "ambiguous" | "missing" =>
@@ -143,6 +148,8 @@ export async function planChange(i: PlanInput): Promise<PlanOutcome> {
         testData: c.testData,
         ...(c.tests.hooks.length ? { testHooks: c.tests.hooks } : {}),
         acceptanceCriteriaIds: i.req.acceptanceCriteria.map((a) => a.id),
+        ...(i.acScope ? { acScope: i.acScope } : {}),
+        ...(i.heldAcs?.size ? { heldAcs: Object.fromEntries(i.heldAcs) } : {}),
         scopeItemIds: (i.req.scopeItems ?? []).map((x) => x.id),
         contractDiff: `${run.rel}/contract-diff.md`,
         // Spec-first: the agreed spec is the source of truth for the API; contract-check.md lists where the code differs.
@@ -185,6 +192,8 @@ export async function planChange(i: PlanInput): Promise<PlanOutcome> {
       "Use the qa-plan skill.",
       `Run context: ${run.rel}/context.json, diff: ${run.rel}/change.diff, story: ${run.rel}/story.md, computed contract diff: ${run.rel}/contract-diff.md.`,
       ...(i.expected && typeof i.context?.expectedBehaviour === "string" ? [`Expected behaviour (written from the story alone, before the code was read; QA reviews it in the merge request; the oracle for values): ${i.context.expectedBehaviour}. Plan scenarios for its ready behaviours and cite them in behaviourIds.`] : []),
+      ...(i.acScope ? [`Plan only for the ACs in acScope (context.json). ACs in heldAcs wait for other services or for their status: give them no scenario and no requirementStatus, and do not cite them anywhere.`] : []),
+      ...(typeof i.context?.openAgentMrs === "string" ? [`Other open QA agent merge requests already add tests: ${i.context.openAgentMrs}. Do not plan the same tests again; for a "create" decision name the new spec file in targetFile.`] : []),
       ...(knowledge ? [`Team domain rules: ${knowledge}. They rank after the story and the API contract as an oracle; cite them as evidence source "domain-rule".`] : []),
       `Write the plan as JSON to ${planRel}. That is the only file you may write. Then answer "done".`,
     ].join("\n"),
@@ -207,6 +216,9 @@ export async function planChange(i: PlanInput): Promise<PlanOutcome> {
     expected: i.expected,
     requireAcCoverage: i.context?.kind !== "backfill" && i.req.acceptanceCriteria.length > 0 && isFeature(c, i.req),
     storyMode: (i.parts?.length ?? 0) > 0,
+    ...(i.acScope ? { acScope: i.acScope } : {}),
+    ...(i.heldAcs ? { heldAcs: i.heldAcs } : {}),
+    ...(i.addedByOpenMrs ? { addedByOpenMrs: i.addedByOpenMrs } : {}),
   };
   const read = () => {
     try {

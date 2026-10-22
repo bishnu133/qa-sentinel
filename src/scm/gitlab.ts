@@ -133,6 +133,42 @@ export async function createOrUpdateMergeRequest(
   return { web_url: data.web_url, iid: data.iid, action: "created" };
 }
 
+/**
+ * The merge request that says what happened to a source branch: an OPEN one if there is any (work is going on, whatever
+ * else was closed or merged before), else the newest by creation time (not by last update: a late comment on an old
+ * closed one must not make the branch look closed). Undefined when the branch has no merge request.
+ */
+export async function latestMrForBranch(ctx: GitLabContext, project: string | number, source: string, target?: string): Promise<{ iid: number; web_url: string; state: string; title?: string } | undefined> {
+  const { data } = await call(ctx, "GET", `/projects/${enc(project)}/merge_requests?state=all&source_branch=${enc(source)}${target ? `&target_branch=${enc(target)}` : ""}&order_by=created_at&sort=desc&per_page=100`);
+  if (!Array.isArray(data) || !data.length) return undefined;
+  const open = data.find((m: any) => m.state === "opened");
+  if (open) return open;
+  const stamp = (m: any) => (typeof m.created_at === "string" ? Date.parse(m.created_at) : NaN);
+  return [...data].sort((a: any, b: any) => (Number.isNaN(stamp(b)) || Number.isNaN(stamp(a)) ? 0 : stamp(b) - stamp(a)))[0];
+}
+
+/** Open merge requests carrying a label (the QA agent's own: `qa-agent`). */
+export async function openMrsWithLabel(ctx: GitLabContext, project: string | number, label: string): Promise<{ iid: number; web_url: string; source_branch: string; title: string }[]> {
+  return getAll(ctx, `/projects/${enc(project)}/merge_requests?state=opened&labels=${enc(label)}`, 5);
+}
+
+/**
+ * One note on an MR, found by its own marker line and edited in place (the token's own notes only): a schedule that
+ * finds the same problem again changes nothing instead of piling up notes. Returns whether it wrote anything.
+ */
+export async function upsertMarkedNote(ctx: GitLabContext, project: string | number, mrIid: string | number, marker: string, body: string): Promise<"created" | "updated" | "same"> {
+  const base = `/projects/${enc(project)}/merge_requests/${enc(mrIid)}/notes`;
+  const existing = (await ownNotes(ctx, await getAll(ctx, `${base}?sort=asc`))).find((n) => typeof n.body === "string" && n.body.includes(marker));
+  const full = `${marker}\n${body}`;
+  if (existing) {
+    if (existing.body === full) return "same";
+    await call(ctx, "PUT", `${base}/${existing.id}`, { body: full });
+    return "updated";
+  }
+  await call(ctx, "POST", base, { body: full });
+  return "created";
+}
+
 /** MRs that contain a commit (used after merge to recover the story/AC the dev wrote). */
 export async function mergeRequestsForCommit(ctx: GitLabContext, project: string, sha: string): Promise<any[]> {
   const { data } = await call(ctx, "GET", `/projects/${enc(project)}/repository/commits/${enc(sha)}/merge_requests`);

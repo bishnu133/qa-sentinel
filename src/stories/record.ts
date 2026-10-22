@@ -93,6 +93,8 @@ export const StoryRecordSchema = z.object({
   agentMr: z.object({ branch: z.string(), iid: z.number().optional(), url: z.string().optional(), state: z.enum(["opened", "merged", "closed"]), headSha: z.string().optional(), updatedAt: z.string() }).optional(),
   /** Cross-service tests per AC: written, or held and why. */
   crossService: z.record(z.object({ state: z.enum(["written", "held"]), heads: z.string(), acHash: z.string(), at: z.string(), reason: z.string().optional() })).default({}),
+  /** The same for ACs that one service builds: written (for these commits and this AC text) on the story's test branch. Cleared when that branch's merge request is closed. */
+  singleService: z.record(z.object({ state: z.enum(["written", "held"]), heads: z.string(), acHash: z.string(), at: z.string(), reason: z.string().optional() })).default({}),
   /** What the last plan said about each AC (built or not), with the run. */
   acEvidence: z.record(z.object({ status: z.string(), at: z.string(), runId: z.string().optional() })).default({}),
   /** Test results per environment (post-deploy). */
@@ -106,7 +108,7 @@ export const StoryRecordSchema = z.object({
 });
 export type StoryRecord = z.infer<typeof StoryRecordSchema>;
 
-export const emptyRecord = (key: string, now = new Date()): StoryRecord => ({ version: RECORD_VERSION, key, updatedAt: now.toISOString(), acs: [], jobs: {}, ledger: [], totalCostUsd: 0, parts: [], linked: [], crossService: {}, acEvidence: {}, results: [], notified: [], overrides: [] });
+export const emptyRecord = (key: string, now = new Date()): StoryRecord => ({ version: RECORD_VERSION, key, updatedAt: now.toISOString(), acs: [], jobs: {}, ledger: [], totalCostUsd: 0, parts: [], linked: [], crossService: {}, singleService: {}, acEvidence: {}, results: [], notified: [], overrides: [] });
 
 /** A story key becomes a file name: keep it to plain characters, so no key can point outside the records folder. */
 export const SAFE_KEY = /^[A-Za-z0-9_][A-Za-z0-9_.-]{0,63}$/;

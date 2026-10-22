@@ -19,15 +19,22 @@ import { publish } from "../reporting/publish.js";
 import { reviewMarkdown, reviewTests, type ReviewOutcome } from "../review/reviewer.js";
 import { TEST_FILE, addedLines } from "../guardrails.js";
 import { indexTests, changedTests, checkNewTests, checkTestMap, readTestMap, traceMarkdown, traceStory } from "../analysis/testIndex.js";
-import { createOrUpdateMergeRequest, gitlabContext, pushUrl } from "../scm/gitlab.js";
+import { createOrUpdateMergeRequest, gitlabContext, latestMrForBranch, pushUrl, upsertMarkedNote } from "../scm/gitlab.js";
 import { engineFor } from "../engines/ClaudeCodeEngine.js";
 import { ClaudeAccessError } from "../claude.js";
-import { budgetedEngine, endStateOf, generateJobKey } from "../stories/jobs.js";
-import { NO_STORY } from "../stories/record.js";
+import { budgetedEngine, crossServiceJobKey, endStateOf, generateJobKey } from "../stories/jobs.js";
+import { NO_STORY, SAFE_KEY, emptyRecord } from "../stories/record.js";
 import { type JobHandle } from "../stories/jobs.js";
 import { type RecordStore } from "../stories/record.js";
 import { endJob, openStore, startJob } from "../stories/start.js";
-import { acHash } from "../expected/format.js";
+import { acHash, parseExpected } from "../expected/format.js";
+import { isReadyStatus, servicesFromComponents } from "../stories/resolve.js";
+import { prepareStoryBranch, pushStoryBranch, remoteFor, storyBranchName, type PrepareResult } from "../generation/storyBranch.js";
+import { storyBranchView, storyExpected, type StoryBranchView } from "../generation/storyView.js";
+import { headsDigest, storyScope, type StoryScope } from "../generation/storyScope.js";
+import { addedFiles, listOpenAgentMrs, writeOpenAgentMrs } from "../generation/openAgentMrs.js";
+import { checkDuplicateFiles } from "../guardrails.js";
+import type { ServicePart } from "../feature/manifest.js";
 import { type AgentResult, addUsage } from "../engines/AgentEngine.js";
 import { planChange } from "../plan/planner.js";
 import { actionable } from "../plan/validate.js";
@@ -56,6 +63,12 @@ export interface GenerateOptions {
   storyFile?: string;
   /** Story mode: tests for everything this story changed, across all its service repos (one branch, one MR). */
   story?: string;
+  /** Story mode: plan only these ACs (comma list from the CLI). An AC that is still waiting is refused unless `force`. */
+  acs?: string[];
+  /** The environment this run reads (CI, GitLab token, project ids). Default: the process environment. Tests pass their own. */
+  processEnv?: NodeJS.ProcessEnv;
+  /** Called once the job is claimed and AI work is about to start (not for a skipped, blocked or empty run): `stories --act` counts only these against its limit. */
+  onStarted?: () => void;
   /** Run even if the same job (same story, ACs and commit) already finished, failed too often or looks to be running. Budgets still apply. */
   force?: boolean;
   /** Skip a job that already finished with the same inputs, also outside CI. */
@@ -111,20 +124,34 @@ interface JobControl {
 async function generateRun(o: GenerateOptions, ctl: JobControl): Promise<number> {
   const cwd = path.resolve(o.cwd);
   const c = loadConfig(cwd);
+  const penv = o.processEnv ?? process.env;
+  const gated = c.generation.scope === "story";
   if (c.level === "intelligence") {
     throw new Error('This project runs at level "intelligence" (read-only analysis). Set level: maintenance in qa-sentinel.config.yaml to enable test generation.');
   }
   let service: ServiceConfig, repo: string;
   let parts: StoryPart[] | undefined;
+  /** The story's parts as the manifest found them (all services, merged or not). */
+  let manifestParts: ServicePart[] = [];
+  let storyRec: Awaited<ReturnType<RecordStore["load"]>>;
   if (o.story && o.backfill) throw new Error("backfill and story mode can't be combined");
+  if (o.story && (!SAFE_KEY.test(o.story) || o.story.includes(".."))) throw new Error(`"${o.story}" is not a story key (letters, digits, - _ . only)`);
+  if (o.acs?.length && !o.story) throw new Error("--acs needs --story: it names the ACs of one story");
   if (o.story) {
-    const record = await openStore(cwd, c).load(o.story).catch(() => undefined);
-    const sp = await storyParts({ c, cwd, story: o.story, gitlab: c.workspace.services.some((x) => x.gitlabProject) ? gitlabContext(c.ci.gitlabUrl) : undefined, record });
+    const record = await openStore(cwd, c, penv).load(o.story).catch(() => undefined);
+    storyRec = record;
+    const sp = await storyParts({ c, cwd, story: o.story, gitlab: c.workspace.services.some((x) => x.gitlabProject) ? gitlabContext(c.ci.gitlabUrl, penv) : undefined, record });
     sp.notes.forEach((n) => log.warn(n));
+    manifestParts = sp.manifest.parts.filter((p) => !p.dropped);
+    const live = manifestParts;
+    if (!sp.parts.length && live.length && live.every((p) => p.reverted)) {
+      log.ok("nothing to generate: the story's changes were reverted on the main branch (tests come back when the work lands again)");
+      return 0;
+    }
     if (!sp.parts.length) throw new Error(`No service changes found for ${o.story}: no branch or commit message mentions it in the service repos`);
     parts = sp.parts;
     const unmerged = parts.filter((p) => !p.merged).map((p) => p.service.name);
-    if (unmerged.length) log.warn(`not merged yet: ${unmerged.join(", ")}. Tests will be written against the branch code; run again after the merge.`);
+    if (unmerged.length && c.generation.scope === "service") log.warn(`not merged yet: ${unmerged.join(", ")}. Tests will be written against the branch code; run again after the merge.`);
     service = combinedChange(o.story, parts).service;
     repo = parts[0].repo;
   } else {
@@ -149,7 +176,7 @@ async function generateRun(o: GenerateOptions, ctl: JobControl): Promise<number>
     cs = { base: head, head, files: [], diff: backfillText(o.backfill) };
     relevant = [service.openapi ?? "(api)"];
   } else if (parts) {
-    for (const p of parts) for (const h of p.heads) atLeast(p.repo, h, Boolean(o.checkout), cwd);
+    for (const p of parts) if (p.merged || !gated) for (const h of p.heads) atLeast(p.repo, h, Boolean(o.checkout), cwd);
     ({ cs, relevant } = combinedChange(o.story!, parts));
     log.step(`story ${o.story}: ${parts.map((p) => `${p.service.name} (${p.relevant.length} file(s))`).join(", ")}`);
   } else {
@@ -166,8 +193,8 @@ async function generateRun(o: GenerateOptions, ctl: JobControl): Promise<number>
   }
 
   // Requirements: explicit file → Jira (key from branch/commits) → the MR that introduced this commit.
-  const ctx = gitlabContext(c.ci.gitlabUrl);
-  const serviceProject = service.gitlabProject ?? process.env.QA_SERVICE_PROJECT;
+  const ctx = gitlabContext(c.ci.gitlabUrl, penv);
+  const serviceProject = service.gitlabProject ?? penv.QA_SERVICE_PROJECT;
   const req = o.backfill
     ? emptySnapshot(c)
     : await resolveRequirements(c, {
@@ -192,6 +219,92 @@ async function generateRun(o: GenerateOptions, ctl: JobControl): Promise<number>
     log.ok(`${pipelineBranch} is a hotfix branch (ci.hotfixBranches): no test generation here; tests are written when the change reaches ${c.ci.targetBranch}`);
     return 0;
   }
+  // Story scope: one test branch and merge request per story, built on after every merge. Which ACs are written now is decided here, from facts.
+  const ownHead = cs.head;
+  let storyKey: string | undefined = o.story?.toUpperCase();
+  let triggerService: string | undefined;
+  let scope: StoryScope | undefined;
+  const genv = o.processEnv ? { ...process.env, ...o.processEnv } : undefined;
+  const testProject = c.ci.testRepoProject ?? penv.CI_PROJECT_ID;
+  if (!o.backfill && !parts && gated && req.storyKey && SAFE_KEY.test(req.storyKey) && isFeature(c, req)) {
+    storyKey = req.storyKey.toUpperCase();
+    triggerService = service.name;
+  }
+  if (storyKey && !o.backfill) {
+    const key = storyKey;
+    storyRec ??= await openStore(cwd, c, penv).load(key).catch(() => undefined);
+    let sp: Awaited<ReturnType<typeof storyParts>> | undefined;
+    if (triggerService) {
+      try {
+        sp = await storyParts({ c, cwd, story: key, gitlab: ctx, record: storyRec });
+        sp.notes.forEach((n) => log.warn(n));
+      } catch (e) {
+        log.warn(`could not look for the story's other changes: ${(e as Error).message.split("\n")[0]}`);
+      }
+      manifestParts = (sp?.manifest.parts ?? []).filter((p) => !p.dropped);
+      // The merge that started this run is merged by definition, even when nothing links it to the story but the commit message.
+      if (!manifestParts.some((p) => p.service === triggerService && p.merged)) manifestParts.push({ service: triggerService, source: "git", sha: ownHead, merged: true, keys: [key] });
+    }
+    if (gated) {
+      // The story's test branch as `stories` reads it: its expected file and records only count while its merge request is open.
+      const view = await storyBranchView(cwd, c, key, { gitlab: ctx, project: testProject, env: genv });
+      view.notes.forEach((n) => log.info(n));
+      if (view.branchGone) log.warn(`merge request !${view.mr!.iid} is open, but its branch ${view.branch} is gone`);
+      const expectedNow = storyExpected(cwd, c, key, view).file;
+      // Records of what was written belong to a branch that no longer counts (closed or merged merge request, deleted branch): start from none.
+      const recNow = storyRec && !view.live ? { ...storyRec, crossService: {}, singleService: {} } : storyRec;
+      if (storyRec && !view.live && (Object.keys(storyRec.crossService).length || Object.keys(storyRec.singleService).length)) log.info(`${view.branch} is not live (${view.mr ? `its merge request !${view.mr.iid} is ${view.mr.state}` : "no such branch"}): what was written before is written again on a new branch`);
+      // A story with no acceptance criteria that qa-sentinel can read has no per-AC scope: the change itself is planned, on the story branch.
+      if (!req.acceptanceCriteria.length) {
+        if (o.acs?.length) throw new Error(`${key} has no acceptance criteria to choose from (--acs ${o.acs.join(",")})`);
+        log.info(`${key}: no acceptance criteria found; planning from the change itself, on the story branch`);
+      } else {
+        scope = storyScope(
+          {
+            c,
+            acs: req.acceptanceCriteria.map((a) => ({ id: a.id, text: a.text })),
+            expected: expectedNow,
+            parts: manifestParts,
+            rec: recNow,
+            service: triggerService,
+            jiraReady: req.source === "jira" ? isReadyStatus(c, key, req.trackerStatus) : undefined,
+            components: servicesFromComponents(c, req.components).services,
+            only: o.acs,
+            force: o.force,
+          },
+          acHash,
+        );
+        if (scope.unknown.length) throw new Error(`${scope.unknown.join(", ")} ${scope.unknown.length === 1 ? "is" : "are"} not in ${key} (its ACs: ${req.acceptanceCriteria.map((a) => a.id).join(", ")})`);
+        if (scope.refused.length) throw new Error(`${scope.refused.join(", ")} cannot be planned yet: ${scope.refused.map((id) => `${id} waits for ${scope!.heldAcs.get(id)}`).join("; ")}. Use --force to plan it anyway.`);
+        for (const ac of scope.alreadyWritten) if (o.acs?.some((x) => x.toLowerCase() === ac.toLowerCase())) log.info(`${ac} is already written for these commits (use --force to plan it again)`);
+        for (const [ac, why] of scope.heldAcs) log.info(`${ac} waits for ${why}`);
+        if (!scope.acScope.length) {
+          log.ok(`${key}: no acceptance criterion is ready to get tests now; nothing to generate`);
+          return 0;
+        }
+        log.step(`${key}: planning ${scope.acScope.join(", ")}${scope.crossInScope.length ? ` (${scope.crossInScope.join(", ")} need several services)` : ""}`);
+      }
+    }
+    // The parts this run plans against: the merge itself, plus the other merged services when a cross-service AC is written.
+    if (triggerService) {
+      const own: StoryPart = { service, repo, cs, heads: [cs.head], relevant, merged: true, label: `${service.name} ${cs.head.slice(0, 8)} merged` };
+      const mine = sp?.parts.find((p) => p.service.name === triggerService && p.heads.includes(cs.head)) ?? own;
+      parts = [mine, ...(scope?.crossInScope.length ? (sp?.parts ?? []).filter((p) => p.merged && p.service.name !== triggerService) : [])];
+    } else if (parts && gated) {
+      parts = parts.filter((p) => p.merged);
+    }
+    if (parts) {
+      if (!parts.length) {
+        log.ok("nothing to generate: no merged change to write tests against");
+        return 0;
+      }
+      for (const p of parts) for (const h of p.heads) atLeast(p.repo, h, Boolean(o.checkout), cwd);
+      const combined = combinedChange(key, parts);
+      ({ cs, relevant } = combined);
+      service = combined.service;
+      repo = parts[0].repo;
+    }
+  }
   if (o.backfill) {
     log.step(`backfill: ${o.backfill.length} endpoint(s) of ${service.name}, the API contract is the oracle`);
   } else if (req.source === "none") {
@@ -205,23 +318,72 @@ async function generateRun(o: GenerateOptions, ctl: JobControl): Promise<number>
   if (!o.dryRun) {
     const story = (req.storyKey ?? o.story ?? "").toUpperCase() || NO_STORY;
     const hashes = o.backfill ? o.backfill.map((t) => `${t.method} ${t.path}`) : req.acceptanceCriteria.map((a) => acHash(a.text));
-    const head = parts ? parts.flatMap((p) => p.heads).join("+") : cs.head;
-    const start = await startJob({ cwd, c, story, kind: "generate", key: generateJobKey(story === NO_STORY ? undefined : story, parts ? "story" : service.name, head, hashes), force: o.force, once: o.once });
+    const head = triggerService ? ownHead : parts ? parts.flatMap((p) => p.heads).join("+") : cs.head;
+    // Story scope: the key is the ACs planned and the commits they are written against, however the run was started (a merge, --acs, stories --act).
+    // Cross-service ACs in scope make it theirs alone; otherwise it is the single-service ACs'. One service, no story scope: the merge.
+    const jobKey =
+      scope && storyKey
+        ? crossServiceJobKey(storyKey, scope.crossInScope.length ? scope.crossInScope : scope.acScope, scope.crossInScope.length ? scope.heads : scope.allHeads, hashes)
+        : generateJobKey(story === NO_STORY ? undefined : story, triggerService ?? (parts ? "story" : service.name), head, hashes);
+    // Two generate jobs of one story write the same test branch: only one runs at a time.
+    const start = await startJob({ cwd, c, story, kind: "generate", key: jobKey, force: o.force, once: o.once, env: penv, exclusive: Boolean(storyKey && parts) });
     if (!start.run) return start.exitCode;
     ctl.store = start.store;
     ctl.handle = start.handle;
+    o.onStarted?.();
   }
 
-  const sha8 = parts ? o.story! : cs.head.slice(0, 8);
+  const storyMode = Boolean(parts && storyKey);
+  // The story's test branch: continue from the server's copy, merge the main branch into it. Never rebuilt, never force-pushed.
+  let sb: Extract<PrepareResult, { ok: true }> | undefined;
+  if (storyMode && !o.dryRun) {
+    const prep = await prepareStoryBranch(cwd, c, storyKey!, { gitlab: ctx, env: o.processEnv, project: testProject });
+    if (!prep.ok) {
+      log.fail(prep.message);
+      ctl.outcome = `blocked-${prep.reason}`;
+      if (ctx && testProject !== undefined) {
+        try {
+          const mr = await latestMrForBranch(ctx, testProject, prep.branch, c.ci.targetBranch);
+          if (mr?.state === "opened") await upsertMarkedNote(ctx, testProject, mr.iid, "<!-- qa-sentinel:story-branch-blocked -->", `**QA agent: blocked.** ${prep.message}`);
+        } catch (e) {
+          log.warn(`could not leave a note on the merge request: ${(e as Error).message.split("\n")[0]}`);
+        }
+      }
+      return 1;
+    }
+    prep.notes.forEach((n) => log.warn(n));
+    // A new branch (the earlier merge request was closed or merged, or the branch was gone) starts with no record of tests written: they are written again.
+    if ((!prep.existing || prep.previousMr) && ctl.store) await resetWrittenRecords(ctl.store, storyKey!);
+    if (prep.mergedMain) log.info(`merged ${c.ci.targetBranch} into ${prep.branch}`);
+    log.step(`${prep.branch}: ${prep.existing ? "building on the existing branch" : `new branch from ${c.ci.targetBranch}`}`);
+    sb = prep;
+  }
+  // Per-merge branches: other open QA agent merge requests already add tests the planner cannot see on the main branch.
+  let openMrFiles: Map<string, string> | undefined;
+  let openMrsPath: string | undefined;
+  const sha8 = triggerService ? ownHead.slice(0, 8) : parts ? storyKey! : cs.head.slice(0, 8);
   const backfillId = o.backfill ? `${new Date().toISOString().slice(0, 10)}-${backfillHash(o.backfill)}` : "";
-  const branch = parts ? `qa-sentinel/story-${o.story}` : o.backfill ? `qa-sentinel/backfill-${service.name}-${backfillId}` : `qa-sentinel/${service.name}-${sha8}`;
-  const subject = parts
-    ? `story ${o.story} (${parts.map((p) => p.service.name).join(", ")})`
+  const branch = storyMode ? storyBranchName(c, storyKey!) : o.backfill ? `qa-sentinel/backfill-${service.name}-${backfillId}` : `qa-sentinel/${service.name}-${sha8}`;
+  const subject = storyMode
+    ? `story ${storyKey}`
     : o.backfill
       ? `backfill ${service.name} (${o.backfill.length} endpoint${o.backfill.length === 1 ? "" : "s"})`
       : `${service.name}@${sha8}`;
   const policy = generatePolicy(c);
   const run = createRunDir(cwd, `gen-${service.name}`);
+  if (!o.backfill && ctx && testProject !== undefined) {
+    try {
+      const open = await listOpenAgentMrs(cwd, c, { gitlab: ctx, project: testProject, ownBranch: branch, env: penv });
+      writeOpenAgentMrs(run.dir, open);
+      if (open.length) {
+        openMrFiles = addedFiles(open);
+        openMrsPath = `${run.rel}/open-agent-mrs.md`;
+        log.info(`${open.length} open QA agent merge request(s) already add tests: ${open.map((m) => `!${m.iid}`).join(", ")} (the planner is told)`);
+      }
+    } catch (e) {
+      log.warn(`could not list the open QA agent merge requests: ${(e as Error).message.split("\n")[0]}`);
+    }
+  }
   fs.writeFileSync(path.join(run.dir, "change.diff"), cs.diff);
   fs.writeFileSync(path.join(run.dir, "story.md"), storyMarkdown(req));
   fs.writeFileSync(path.join(run.dir, "requirements.json"), JSON.stringify(req, null, 2));
@@ -322,9 +484,12 @@ async function generateRun(o: GenerateOptions, ctl: JobControl): Promise<number>
       maxFixAttempts: c.agent.maxFixAttempts,
       ...(expectedForPlan ? { expectedBehaviour: expectedForPlan } : {}),
       ...(o.backfill ? { backfill: o.backfill } : {}),
+      ...(openMrsPath ? { openAgentMrs: openMrsPath } : {}),
     },
     parts,
     expected: expectedFile,
+    ...(scope ? { acScope: scope.acScope, heldAcs: scope.heldAcs } : {}),
+    ...(openMrFiles ? { addedByOpenMrs: openMrFiles } : {}),
   });
   runs.push(...planned.runs);
   manifest.plan = { status: planned.status, risk: planned.risked?.overall, corrections: planned.validation?.corrections.length ?? 0 };
@@ -337,7 +502,22 @@ async function generateRun(o: GenerateOptions, ctl: JobControl): Promise<number>
   planned.validation?.corrections.forEach((x) => log.warn(`correction: ${x}`));
   const todo = actionable(plan);
   log.step(`plan: ${planned.risked.overall} risk · ${plan.decisions.map((d) => `${d.changeId}=${d.decision}`).join(", ") || "no decisions"}`);
-  if (todo.length === 0 && pendingExpected) {
+  if (todo.length === 0 && pendingExpected && sb) {
+    // Story branch: the proposal is committed on it (its own commit) and pushed, so QA reviews it in the story's merge request.
+    fs.mkdirSync(path.dirname(path.join(cwd, pendingExpected.rel)), { recursive: true });
+    fs.writeFileSync(path.join(cwd, pendingExpected.rel), pendingExpected.text);
+    git(cwd, ["add", "--", pendingExpected.rel]);
+    git(cwd, ["commit", "-q", "-m", expectedCommitMessage(req.storyKey!, req.acceptanceCriteria, VERSION, run.id)]);
+    log.ok(`expected behaviour committed on ${branch}: ${pendingExpected.rel}`);
+    if (o.push) {
+      const pushed = pushStoryBranch(cwd, { branch, remote: remoteFor(c, penv), expect: sb.remoteSha, env: o.processEnv });
+      log.ok(`pushed ${branch}${pushed.retried ? " (after merging what a reviewer pushed meanwhile)" : ""}`);
+      if (ctx && testProject !== undefined) {
+        const mr = await createOrUpdateMergeRequest(ctx, testProject, { source: branch, target: c.ci.targetBranch, title: `QA agent: tests for ${subject}`, description: `## QA agent: ${subject}\n\nExpected behaviour proposed for review (${pendingExpected.rel}). No test changes were needed yet.\n\n${plan.verdict}`, labels: ["qa-agent", `story::${storyKey}`] });
+        log.ok(`merge request ${mr.action}: ${mr.web_url}`);
+      }
+    }
+  } else if (todo.length === 0 && pendingExpected) {
     // No branch is made for no test changes: the proposal goes to the working tree for QA to review and commit.
     fs.mkdirSync(path.dirname(path.join(cwd, pendingExpected.rel)), { recursive: true });
     fs.writeFileSync(path.join(cwd, pendingExpected.rel), pendingExpected.text);
@@ -348,6 +528,8 @@ async function generateRun(o: GenerateOptions, ctl: JobControl): Promise<number>
     fs.writeFileSync(path.join(run.dir, "summary.md"), summary);
     fs.writeFileSync(path.join(cwd, "qa-sentinel-summary.md"), summary);
     log.ok("every decision is reuse or skip: existing tests are enough");
+    // The ACs were planned and need nothing new: written, as far as the story is concerned (so `stories` stops listing them as ready).
+    if (storyMode && storyKey && scope && ctl.store) await recordStoryRun(ctl.store, storyKey, { scope, parts: manifestParts, acs: req.acceptanceCriteria, plan, runId: run.id, branch });
     return finish("no-changes-needed", 0);
   }
 
@@ -367,7 +549,7 @@ async function generateRun(o: GenerateOptions, ctl: JobControl): Promise<number>
   const healed = readHealed(cwd);
 
   // Phase 2: author only what the validated plan says, with scoped writes.
-  git(cwd, ["checkout", "-q", "-B", branch]);
+  if (!sb) git(cwd, ["checkout", "-q", "-B", branch]);
   const startShaBefore = startSha;
   // The expected behaviour goes in as its own commit, before the author runs: the lock then protects it from the
   // author too, and QA reviews it on its own in the merge request.
@@ -428,6 +610,8 @@ async function generateRun(o: GenerateOptions, ctl: JobControl): Promise<number>
     }),
     ...before.flatMap((b) => checkServiceUntouched(b.repo, b.name, b.snap)),
     ...checkKnownDefectMarkers(changes, cwd, startSha),
+    // Files another open QA agent merge request already adds (also other stories', and per-merge ones).
+    ...checkDuplicateFiles(changes, openMrFiles),
     // The tests assert the expected values (named by @b: tags), not the code's.
     ...(expectedFile ? checkExpectedValues({ repo: cwd, ref: startSha, changes, expected: expectedFile, plannedBehaviours: [...new Set(todo.flatMap((d) => d.proposedScenarios.flatMap((s) => s.behaviourIds)))] }) : []),
     // Expected values follow the story, never the code: an AI run may not change them unless the AC changed.
@@ -493,7 +677,7 @@ async function generateRun(o: GenerateOptions, ctl: JobControl): Promise<number>
   log[verification.status === "VERIFIED" ? "ok" : "warn"](`verification: ${verification.status} – ${verification.checks.map((x) => `${x.name} ${x.status}`).join(", ")}`);
 
   const usage = formatUsage(addUsage(...runs));
-  const description = mrDescription({
+  const baseDescription = mrDescription({
     environment,
     service: service.name,
     sha: cs.head,
@@ -511,6 +695,12 @@ async function generateRun(o: GenerateOptions, ctl: JobControl): Promise<number>
     runId: run.id,
     plan: { plan, risked: planned.risked, contract: planned.contract, specPath: service.openapi, corrections: planned.validation?.corrections ?? [] },
   });
+  // The story's merge request is rewritten after every run: it also says which ACs still wait, and what the closed one was.
+  const extra = [
+    ...(scope && scope.heldAcs.size ? ["", "### Waiting ACs", "", "These get their tests in a later run, when they are ready:", ...[...scope.heldAcs].map(([ac, why]) => `- ${ac}: waits for ${why}`)] : []),
+    ...(sb?.previousMr ? ["", `Previous test merge request [!${sb.previousMr.iid}](${sb.previousMr.url}) was ${sb.previousMr.state}; this branch started again from ${c.ci.targetBranch}.`] : []),
+  ];
+  const description = extra.length ? `${baseDescription}\n${extra.join("\n")}\n` : baseDescription;
   fs.writeFileSync(path.join(run.dir, "summary.md"), description);
   fs.writeFileSync(path.join(cwd, "qa-sentinel-summary.md"), description);
 
@@ -530,6 +720,11 @@ async function generateRun(o: GenerateOptions, ctl: JobControl): Promise<number>
     `test(${service.name}): QA agent ${o.backfill ? `backfill (${o.backfill.map((b) => b.endpoint).join(", ")})` : `updates for ${sha8}`}\n\nGenerated by qa-sentinel ${VERSION} from ${parts ? parts.map((p) => `${p.service.name}@${p.cs.head}`).join(", ") : `${service.name}@${cs.head}`}.\nRisk: ${planned.risked.overall}. Verification: ${verification.status}. Run: ${run.id}${trailer ? `\n\n${trailer}` : ""}`,
   ]);
   log.ok(`committed ${paths.length} file(s) on ${branch}`);
+  // The story record says "written" only once the tests are really on the server's branch (after the push below), or on the local one when this run does not push.
+  const recordWritten = async () => {
+    if (storyMode && storyKey && scope && ctl.store) await recordStoryRun(ctl.store, storyKey, { scope, parts: manifestParts, acs: req.acceptanceCriteria, plan, runId: run.id, branch });
+  };
+  if (!o.push) await recordWritten();
 
   // Bug cards (bugs.mode): requirements the product doesn't meet, seen failing by the author and written as fixme.
   if (c.bugs.mode !== "off" && req.storyKey && discrepancies.length && !o.dryRun) {
@@ -548,11 +743,18 @@ async function generateRun(o: GenerateOptions, ctl: JobControl): Promise<number>
   }
   if (o.push) {
     // Push with a one-off URL so the token never sits in .git/config where an agent could read it.
-    const projectPath = c.ci.testRepoProject && !/^\d+$/.test(c.ci.testRepoProject) ? c.ci.testRepoProject : process.env.CI_PROJECT_PATH;
-    const url = pushUrl(c.ci.gitlabUrl, projectPath);
-    // The branch is owned by qa-sentinel and named after the source SHA, so a rerun may overwrite it.
-    git(cwd, ["push", "--force", url ?? "origin", `HEAD:refs/heads/${branch}`]);
-    const project = c.ci.testRepoProject ?? process.env.CI_PROJECT_ID;
+    if (sb) {
+      // The story branch is built on, never rebuilt: pushed only if nobody pushed to it since this run started (a reviewer's commits are merged in and kept).
+      const pushed = pushStoryBranch(cwd, { branch, remote: remoteFor(c, penv), expect: sb.remoteSha, env: o.processEnv });
+      if (pushed.retried) log.info(`${branch}: a reviewer pushed meanwhile; their commits were merged in`);
+    } else {
+      const projectPath = c.ci.testRepoProject && !/^\d+$/.test(c.ci.testRepoProject) ? c.ci.testRepoProject : penv.CI_PROJECT_PATH;
+      const url = pushUrl(c.ci.gitlabUrl, projectPath, penv);
+      // A per-merge branch is owned by qa-sentinel and named after the source SHA, so a rerun may overwrite it.
+      git(cwd, ["push", "--force", url ?? "origin", `HEAD:refs/heads/${branch}`]);
+    }
+    await recordWritten();
+    const project = testProject;
     if (!ctx || !project) {
       log.warn("pushed; set QA_SENTINEL_GITLAB_TOKEN and ci.testRepoProject to open the MR automatically");
     } else {
@@ -564,7 +766,7 @@ async function generateRun(o: GenerateOptions, ctl: JobControl): Promise<number>
         description,
         labels: [
           "qa-agent",
-          ...(parts ? [`story::${o.story}`, ...parts.map((p) => `service::${p.service.name}`)] : [`service::${service.name}`]),
+          ...(storyMode ? [`story::${storyKey}`, ...[...new Set([...manifestParts.filter((p) => p.merged).map((p) => p.service), ...(parts ?? []).map((p) => p.service.name)])].map((n) => `service::${n}`)] : parts ? [`story::${o.story}`, ...parts.map((p) => `service::${p.service.name}`)] : [`service::${service.name}`]),
           ...(o.backfill ? ["qa-sentinel::backfill"] : []),
           `qa-sentinel::${verification.status.toLowerCase()}`,
           `risk::${planned.risked.overall}`,
@@ -573,6 +775,7 @@ async function generateRun(o: GenerateOptions, ctl: JobControl): Promise<number>
         ],
       });
       log.ok(`merge request ${mr.action}: ${mr.web_url}`);
+      if (storyMode && storyKey && ctl.store) await recordAgentMr(ctl.store, storyKey, { branch, iid: mr.iid, url: mr.web_url, headSha: git(cwd, ["rev-parse", "HEAD"]) });
       if (c.reporting.targets.includes("jira")) {
         const acText = new Map(requirementItems(req).map((a) => [a.id, a.text]));
         const jiraSummary = generationSummary({
@@ -614,3 +817,58 @@ const backfillHash = (targets: BackfillTarget[]) => {
   for (const ch of targets.map((t) => t.endpoint).join("|")) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
   return h.toString(36).slice(0, 6);
 };
+
+/** What a story-scoped run leaves in the story record: the cross-service ACs it wrote (or still holds), and what the plan said about each AC. A cache; losing it only repeats work the job key would have skipped. */
+async function recordStoryRun(store: RecordStore, story: string, i: { scope: StoryScope; parts: ServicePart[]; acs: { id: string; text: string }[]; plan: { requirementStatus: { id: string; status: string }[] }; runId: string; branch: string }): Promise<void> {
+  const at = new Date().toISOString();
+  try {
+    await store.locked(story, async () => {
+      const rec = (await store.load(story)) ?? emptyRecord(story);
+      const text = new Map(i.acs.map((a) => [a.id, a.text]));
+      for (const r of i.scope.readiness) {
+        const map = r.kind === "cross" ? rec.crossService : rec.singleService;
+        const heads = headsDigest(i.parts, r.services);
+        const hash = acHash(text.get(r.ac) ?? "");
+        if (i.scope.acScope.includes(r.ac)) map[r.ac] = { state: "written", heads, acHash: hash, at };
+        // Only the cross-service ACs keep a "held" note (what they wait for); a single-service AC that waits has nothing written to remember.
+        else if (r.kind === "cross" && (map[r.ac]?.state !== "written" || map[r.ac].acHash !== hash)) map[r.ac] = { state: "held", heads, acHash: hash, at, reason: i.scope.heldAcs.get(r.ac) ?? r.reason };
+      }
+      for (const st of i.plan.requirementStatus) if (i.scope.acScope.includes(st.id)) rec.acEvidence[st.id] = { status: st.status, at, runId: i.runId };
+      rec.updatedAt = at;
+      await store.save(rec);
+    });
+  } catch (e) {
+    log.warn(`could not update the story record for ${story}: ${(e as Error).message}`);
+  }
+}
+
+/** The story's test branch starts again: what the record says was written on the old one no longer holds. */
+async function resetWrittenRecords(store: RecordStore, story: string): Promise<void> {
+  try {
+    await store.locked(story, async () => {
+      const rec = await store.load(story);
+      if (!rec || (!Object.keys(rec.crossService).length && !Object.keys(rec.singleService).length && !rec.agentMr)) return;
+      rec.crossService = {};
+      rec.singleService = {};
+      delete rec.agentMr;
+      rec.updatedAt = new Date().toISOString();
+      await store.save(rec);
+    });
+  } catch (e) {
+    log.warn(`could not reset the story record for ${story}: ${(e as Error).message}`);
+  }
+}
+
+async function recordAgentMr(store: RecordStore, story: string, mr: { branch: string; iid: number; url: string; headSha: string }): Promise<void> {
+  const at = new Date().toISOString();
+  try {
+    await store.locked(story, async () => {
+      const rec = (await store.load(story)) ?? emptyRecord(story);
+      rec.agentMr = { branch: mr.branch, iid: mr.iid, url: mr.url, state: "opened", headSha: mr.headSha, updatedAt: at };
+      rec.updatedAt = at;
+      await store.save(rec);
+    });
+  } catch (e) {
+    log.warn(`could not update the story record for ${story}: ${(e as Error).message}`);
+  }
+}

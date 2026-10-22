@@ -11,7 +11,12 @@ import { acHash } from "../expected/format.js";
 import { gitlabContext } from "../scm/gitlab.js";
 import { jiraContext } from "../scm/jira.js";
 import { storyBasis } from "../stories/parts.js";
+import { cloneServices } from "../stories/cloneServices.js";
 import { sweepMrs, sweepSince, writeSweepState } from "../stories/sweep.js";
+import { generateCommand, type GenerateOptions } from "./generate.js";
+import { specCommand, type SpecOptions } from "./spec.js";
+import { git } from "../git.js";
+import { EXIT_LIMIT } from "../stories/start.js";
 
 export interface StoriesOptions {
   cwd: string;
@@ -30,9 +35,110 @@ export interface StoriesOptions {
   noSweep?: boolean;
   /** Fill the story records again from GitLab and Jira: the sweep looks back 365 days. */
   rebuild?: boolean;
+  /** Start the AI steps that are due (expected behaviour, tests, end-to-end tests): at most automation.act.maxJobsPerCheck, each through the normal job keys, locks and budgets. */
+  act?: boolean;
+  /** With `act`: say what would be started and start nothing. */
+  dryRun?: boolean;
+  /** Clone the service repositories that are not here yet (workspace.services[].gitlabProject) before looking at the code: a CI job starts with the test repo only. */
+  cloneServices?: boolean;
+  /** The commands `act` runs (replaced in tests). */
+  runners?: { spec: (o: SpecOptions) => Promise<number>; generate: (o: GenerateOptions) => Promise<number> };
   env?: NodeJS.ProcessEnv;
   now?: Date;
 }
+
+/** What `stories --act` does for one story: the command to run in-process. Undefined: nothing to start. */
+export interface ActJob {
+  key: string;
+  what: "spec" | "generate";
+  acs?: string[];
+  describe: string;
+}
+
+export function actJobs(list: Assessment[], crossReady: Map<string, string[]>): ActJob[] {
+  const out: ActJob[] = [];
+  for (const a of list) {
+    const t = a.todo[0];
+    if (!t || t.who !== "ai" || t.blocked) continue;
+    if (a.next === "spec") {
+      // With merged code the story's generate run does the requirements pass itself and commits it on the story branch; before that the file can only be written locally.
+      if (a.code === "merged" || a.code === "unknown") out.push({ key: a.key, what: "generate", describe: `generate --story ${a.key} --push --once (the expected behaviour first, then the tests, on the story branch)` });
+      else out.push({ key: a.key, what: "spec", describe: `spec --story ${a.key} --once` });
+    } else if (a.next === "generate") {
+      const acs = a.state === "needs-cross-service-tests" ? crossReady.get(a.key) : undefined;
+      out.push({ key: a.key, what: "generate", ...(acs?.length ? { acs } : {}), describe: `generate --story ${a.key}${acs?.length ? ` --acs ${acs.join(",")}` : ""} --push --once` });
+    }
+  }
+  return out;
+}
+
+/**
+ * Run the due jobs one after the other. A job that turns out to be nothing to do (the same work is done or running,
+ * nothing is ready) does not use up `automation.act.maxJobsPerCheck`: only jobs that really started AI work count.
+ * Exit code: 0 all done (or none), 1 if any failed, 4 if a limit (budget, too many failures) stopped one.
+ */
+async function act(o: StoriesOptions, c: ReturnType<typeof loadConfig>, cwd: string, jobs: ActJob[], env: NodeJS.ProcessEnv, recordKind: string): Promise<number> {
+  const max = c.automation.act.maxJobsPerCheck;
+  if (!jobs.length) {
+    log.ok("nothing to start");
+    return 0;
+  }
+  if (o.dryRun) {
+    for (const j of jobs.slice(0, max)) log.info(`would start: qa-sentinel ${j.describe}`);
+    if (jobs.length > max) log.info(`${jobs.length - max} more are due; at most ${max} start per check (automation.act.maxJobsPerCheck)`);
+    return 0;
+  }
+  const runners = o.runners ?? { spec: specCommand, generate: generateCommand };
+  if (recordKind !== "jira" && env.CI) log.warn("the story records are kept in files on this runner: cache the records folder between runs (when: always), or set automation.record: jira, or budgets and failure counts are lost after every check");
+  // Where the check started: a branch name, or the commit in a detached checkout (CI). Every story starts from there.
+  const home = (() => {
+    try {
+      return git(cwd, ["symbolic-ref", "-q", "--short", "HEAD"]);
+    } catch {
+      try {
+        return git(cwd, ["rev-parse", "HEAD"]);
+      } catch {
+        return undefined;
+      }
+    }
+  })();
+  let failed = 0;
+  let limited = 0;
+  let started = 0;
+  let skipped = 0;
+  for (const j of jobs) {
+    if (started >= max) break;
+    log.step(`starting: qa-sentinel ${j.describe}`);
+    let counted = false;
+    const onStarted = () => {
+      counted = true;
+    };
+    try {
+      const code = j.what === "spec" ? await runners.spec({ cwd, story: j.key, once: true, onStarted }) : await runners.generate({ cwd, service: "", story: j.key, ...(j.acs ? { acs: j.acs } : {}), push: true, once: true, processEnv: env, onStarted });
+      if (counted) started++;
+      else skipped++;
+      if (code === EXIT_LIMIT) limited++;
+      else if (code !== 0) failed++;
+      log[code === 0 ? "ok" : code === EXIT_LIMIT ? "warn" : "fail"](`${j.key}: ${code === 0 ? (counted ? "done" : "nothing to do") : code === EXIT_LIMIT ? "stopped by a limit (budget, or failed too often with these exact inputs)" : `exit ${code}`}`);
+    } catch (e) {
+      if (counted) started++;
+      failed++;
+      log.fail(`${j.key}: ${(e as Error).message.split("\n")[0]}`);
+    }
+    // A generate run leaves the test repo on the story's branch: back to where the check started, for the next story.
+    if (home) {
+      try {
+        git(cwd, ["checkout", "-q", home]);
+      } catch {
+        /* leave it */
+      }
+    }
+  }
+  const left = jobs.length - started - skipped - failed - limited;
+  if (started >= max && left > 0) log.warn(`${max} job(s) started (automation.act.maxJobsPerCheck); the rest wait for the next check.`);
+  return failed ? 1 : limited ? EXIT_LIMIT : 0;
+}
+
 
 /** What changed in the ACs since the record was last written, in words. */
 export function acChanges(prev: StoryRecord["acs"], now: { id: string; hash: string }[]): string[] {
@@ -68,6 +174,7 @@ async function remember(store: RecordStore, key: string, input: StoryInput, a: A
  * and no changes to the repo. A scheduled job can run it and act on `--json`; people read the table.
  */
 export async function storiesCommand(o: StoriesOptions): Promise<number> {
+  if (o.dryRun && !o.act) throw new Error("--dry-run goes with --act (it says what --act would start)");
   if (!o.json) return storiesRun(o);
   // JSON goes to stdout alone, so a pipeline can parse it; progress and warnings go to stderr.
   const out = console.log;
@@ -86,6 +193,11 @@ async function storiesRun(o: StoriesOptions): Promise<number> {
   const now = o.now ?? new Date();
   const store = openStore(cwd, c, env);
   const gitlab = gitlabContext(c.ci.gitlabUrl, env);
+  if (o.cloneServices) {
+    const r = cloneServices(c, cwd, env);
+    if (r.cloned.length) log.step(`cloned ${r.cloned.join(", ")}`);
+    r.failed.forEach((f) => log.warn(`could not clone ${f}`));
+  }
 
   // First the merge requests: one paged call per repository (no clones, no AI). They fill the story records and tell which stories to look at.
   let touched: string[] = [];
@@ -138,10 +250,12 @@ async function storiesRun(o: StoriesOptions): Promise<number> {
   const policy = jobPolicy(c, {}, env);
   const list: Assessment[] = [];
   const changes = new Map<string, string[]>();
+  const crossReady = new Map<string, string[]>();
   for (const input of inputs) {
-    const facts = await gatherFacts({ cwd, c, store, policy, budgets: c.automation.budgets, records, gitlab, now }, input, shared);
-    const a = { ...assessStory(facts), ...(facts.jiraReady !== undefined ? { jiraReady: facts.jiraReady } : {}), ...(facts.services ? { services: facts.services } : {}), ...(facts.unmappedComponents ? { unmappedComponents: facts.unmappedComponents } : {}), ...(facts.resolvedFrom ? { resolvedFrom: facts.resolvedFrom } : {}) };
+    const facts = await gatherFacts({ cwd, c, store, policy, budgets: c.automation.budgets, records, gitlab, now, env }, input, shared);
+    const a = { ...assessStory(facts), ...(facts.jiraReady !== undefined ? { jiraReady: facts.jiraReady } : {}), ...(facts.services ? { services: facts.services } : {}), ...(facts.unmappedComponents ? { unmappedComponents: facts.unmappedComponents } : {}), ...(facts.resolvedFrom ? { resolvedFrom: facts.resolvedFrom } : {}), ...(facts.writeReadiness ? { writeReadiness: facts.writeReadiness } : {}) };
     list.push(a);
+    if (facts.crossReady?.length) crossReady.set(a.key, facts.crossReady);
     const acs = facts.acs.map((x) => ({ id: x.id, hash: acHash(x.text) }));
     if (a.state !== "skipped") {
       changes.set(a.key, acChanges(records.find((r) => r.key === a.key)?.acs ?? [], acs));
@@ -155,12 +269,12 @@ async function storiesRun(o: StoriesOptions): Promise<number> {
   fs.writeFileSync(outFile, md + "\n");
   if (o.json) {
     process.stdout.write(JSON.stringify(shown.map((a) => ({ ...a, changes: changes.get(a.key) ?? [] })), null, 2) + "\n");
-    return 0;
+    return o.act ? act(o, c, cwd, actJobs(list, crossReady), env, store.kind) : 0;
   }
   log.title(`Stories: ${list.length} looked at${hidden ? `, ${hidden} left alone (--all lists them)` : ""}`);
   if (shown.length) log.info(storiesText(shown, changes));
   const count = (s: Assessment["state"]) => list.filter((a) => a.state === s).length;
-  log.info(`\n${count("covered")} covered · ${count("needs-expectations")} need expected behaviour · ${count("needs-tests")} need tests · ${count("needs-triage")} need QA triage · ${count("needs-attention")} need attention`);
+  log.info(`\n${count("covered")} covered · ${count("needs-expectations")} need expected behaviour · ${count("needs-tests")} need tests · ${count("needs-cross-service-tests")} need end-to-end tests · ${count("needs-triage")} need QA triage · ${count("needs-attention")} need attention`);
   log.dim(`written to ${path.relative(cwd, outFile)}${store.kind === "jira" || o.noRecord ? "" : `; story records in ${store.where}`}`);
-  return 0;
+  return o.act ? act(o, c, cwd, actJobs(list, crossReady), env, store.kind) : 0;
 }

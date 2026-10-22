@@ -308,6 +308,13 @@ export const ConfigSchema = z.object({
           maxPages: z.number().int().min(1).max(50).default(5),
         })
         .default({}),
+      /** `stories --act`: the background check starts the AI steps that are due. */
+      act: z
+        .object({
+          /** At most this many jobs are started by one check (each one costs money). */
+          maxJobsPerCheck: z.number().int().min(1).max(50).default(3),
+        })
+        .default({}),
       budgets: z
         .object({
           perStoryUsd: z.number().min(0).default(25),
@@ -315,6 +322,32 @@ export const ConfigSchema = z.object({
           perMonthUsd: z.number().min(0).default(1000),
         })
         .default({}),
+    })
+    .default({}),
+  /**
+   * Where generated tests go. story (default): one long-lived test branch and merge request per story, built on after
+   * every merge (only when a story key is found; a change with no story keeps its own branch). service: one branch and
+   * merge request per merge, as before.
+   */
+  generation: z
+    .object({
+      scope: z.enum(["story", "service"]).default("story"),
+      /**
+       * When the end-to-end tests of an acceptance criterion that needs several services are written:
+       * when-ready-status (default): every service it needs is merged AND the Jira card is in a ready status;
+       * when-ac-complete: as soon as every service it needs is merged (the status is not looked at).
+       */
+      crossService: z.enum(["when-ready-status", "when-ac-complete"]).default("when-ready-status"),
+      /** The story's test branch is `<branchPrefix><KEY>`. Kept configurable for repositories with branch naming rules. */
+      branchPrefix: z
+        .string()
+        .regex(/^[A-Za-z0-9._\-/]*$/, "letters, digits, . _ - / only")
+        .refine((v) => !v.startsWith("-") && !v.startsWith("/") && !v.includes(".."), "must not start with - or / and must not contain ..")
+        .default("qa-sentinel/story-"),
+      /** An open merge request that nobody has touched for this many days no longer holds back the ACs of its service (0: it always does). */
+      staleMrDays: z.number().int().min(0).max(3650).default(30),
+      /** At most this many acceptance criteria are planned in one run (the rest wait for the next one). */
+      maxAcsPerRun: z.number().int().min(1).max(50).default(5),
     })
     .default({}),
   /** Team knowledge base (domain rules, glossary, review lessons) read by every agent. */

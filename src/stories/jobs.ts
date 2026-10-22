@@ -38,6 +38,15 @@ export const specJobKey = (story: string, acHashes: string[]) => `spec:${story}:
 export const generateJobKey = (story: string | undefined, scope: string, head: string, acHashes: string[]) =>
   `generate:${story ?? "-"}:${scope}:${/^[0-9a-f]{7,40}$/i.test(head) ? head.slice(0, 12) : digest([head])}:${digest([...acHashes].sort())}`;
 
+/**
+ * The generate job of a story's test branch in story scope: these ACs, written against these commits of the services
+ * they need, for these AC texts (all of the story's, so the keys line up with the per-service ones). When cross-service
+ * ACs are planned the key is theirs alone; otherwise the single-service ACs planned. Two runs that see the same story
+ * state get the same key, however they were started (merge pipeline, --acs, stories --act).
+ */
+export const crossServiceJobKey = (story: string, acIds: string[], heads: string[], allAcHashes: string[]) =>
+  `generate:${story}:acs-${[...acIds].sort().join("+")}:${digest([...heads].sort())}:${digest([...allAcHashes].sort())}`;
+
 /** What a run must have left in the budget to be worth starting: a run cut short by the cap wastes what it spent. */
 export const MIN_USEFUL_USD: Record<JobKind, number> = { spec: 0.1, generate: 1, other: 0.25 };
 
@@ -122,6 +131,11 @@ export interface BeginOptions {
   policy: JobPolicy;
   budgets: Budgets;
   now?: Date;
+  /**
+   * Only one job of this kind may run on the story at a time, whatever its key (two generate jobs write the same
+   * test branch). Another running job of the same kind that is still alive makes this one wait; --force overrides.
+   */
+  exclusive?: boolean;
 }
 
 export type Gate = { ok: true; notes: string[]; expire?: boolean } | { ok: false; reason: "done" | "running" | "attempts"; message: string };
@@ -154,6 +168,10 @@ export async function beginJob(store: RecordStore, o: BeginOptions): Promise<Beg
     const prev = rec.jobs[o.key];
     const gate = jobGate(o.key, prev, o.policy, now);
     if (!gate.ok) return { run: false as const, reason: gate.reason, message: gate.message };
+    if (o.exclusive && !o.policy.force) {
+      const other = Object.values(rec.jobs).find((j) => j.key !== o.key && j.kind === o.kind && j.state === "running" && now.getTime() - Date.parse(j.startedAt) < o.policy.lockMinutes * 60_000 && ownerAlive(j.owner));
+      if (other) return { run: false as const, reason: "running" as const, message: `${other.key} is running on ${o.story} (started ${ago(other.startedAt, now)}${other.owner ? ` by ${other.owner}` : ""}) and writes the same test branch; this job waits for it. If that run died, wait ${o.policy.lockMinutes} min or use --force.` };
+    }
     if (gate.expire && prev) rec.jobs[o.key] = { ...prev, state: "aborted", finishedAt: now.toISOString(), error: "the run never finished (lock expired)" };
     const last = rec.jobs[o.key];
     const need = MIN_USEFUL_USD[o.kind];
@@ -260,6 +278,8 @@ export function jobPolicy(c: { automation: { jobs: { skipDone: "ci" | "always" |
  * verification was not VERIFIED (waiting for deployment, a failing check): the MR carries them, and generating the
  * same tests again would cost the same and change nothing.
  */
-export function endStateOf(code: number, outcome: string): "done" | "failed" {
+export function endStateOf(code: number, outcome: string): "done" | "failed" | "aborted" {
+  // Stopped before any AI work by something a person must fix (the story branch conflicts with main, was deleted, ...): not an attempt of the job, so fixing it needs no --force.
+  if (outcome.startsWith("blocked-")) return "aborted";
   return code === 0 || outcome === "dry-run" || outcome.startsWith("committed-") ? "done" : "failed";
 }

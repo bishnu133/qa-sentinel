@@ -125,6 +125,8 @@ export const DecisionSchema = z
     coverage: z.enum(COVERAGE),
     decision: z.enum(DECISIONS),
     existingTests: z.array(z.string()).default([]),
+    /** "create": the new spec file this decision adds (so it can be checked against what open QA agent merge requests already add). */
+    targetFile: opt(z.string()),
     proposedScenarios: z.array(ScenarioSchema).default([]),
     evidence: z.array(EvidenceSchema).default([]),
     reason: z.string().min(1),

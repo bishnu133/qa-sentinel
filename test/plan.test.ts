@@ -2,6 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import http from "node:http";
+import YAML from "yaml";
 import { describe, expect, it } from "vitest";
 import { validatePlan, actionable } from "../src/plan/validate.js";
 import { applyRisk, normaliseEndpoint, riskOf, riskOfChange } from "../src/plan/risk.js";
@@ -310,13 +311,43 @@ describe("operating levels and usage", () => {
   it("maintenance level writes the generation pipeline", async () => {
     const root = tmp();
     await initCommand({ cwd: root, yes: true, mode: "scratch", ci: "gitlab", workspace: root, level: "maintenance" });
-    expect(fs.readFileSync(path.join(root, "ci/qa-sentinel/tests.gitlab-ci.yml"), "utf8")).toContain("qa-generate:");
+    const maint = fs.readFileSync(path.join(root, "ci/qa-sentinel/tests.gitlab-ci.yml"), "utf8");
+    expect(maint).toContain("qa-generate:");
+    // The pipeline is parsed, not grepped: the jobs are what GitLab will read.
+    const ci = YAML.parse(maint, { customTags: [{ tag: "!reference", collection: "seq", resolve: (seq: unknown) => seq }], logLevel: "silent" }) as Record<string, any>;
+    const stories = ci["qa-stories"];
+    // The background check that starts due AI steps: scheduled only, the limit exit code (4) is not a failure, the git identity is set.
+    expect(stories.rules).toEqual([{ if: '$QA_STORIES == "true" && $CI_PIPELINE_SOURCE == "schedule"' }]);
+    expect(stories.allow_failure).toEqual({ exit_codes: [4] });
+    expect(stories.resource_group).toBe(ci["qa-generate"].resource_group);
+    const script = (stories.script as unknown[]).filter((x): x is string => typeof x === "string");
+    expect(script.some((l) => l.includes("git config user.name"))).toBe(true);
+    // It must find the service repos (the job starts with the test repo only): cloned by the command itself.
+    expect(script).toContain("qa-sentinel stories --act --clone-services");
+    // Up to three generate runs of 45 minutes each fit in the job's time.
+    expect(stories.timeout).toBe("3h");
+    // One records cache for both jobs, saved also when the job fails or stops on a limit, so spend and failure counts survive.
+    const cache = ci[".qa-records-cache"].cache;
+    expect(cache).toMatchObject({ key: "qa-sentinel-records", when: "always" });
+    expect(cache.paths[0]).toMatch(/\.qa-sentinel\/stories\/$/);
+    for (const job of ["qa-generate", "qa-stories"]) expect(ci[job].extends).toContain(".qa-records-cache");
+    expect(stories.cache).toBeUndefined();
     const intel = tmp();
     await initCommand({ cwd: intel, yes: true, mode: "scratch", ci: "gitlab", workspace: intel });
     const y = fs.readFileSync(path.join(intel, "ci/qa-sentinel/tests.gitlab-ci.yml"), "utf8");
     expect(y).not.toContain("qa-generate:");
+    expect(y).not.toContain("qa-stories:");
     expect(y).toContain("qa-agent-mr-checks:");
     expect(fs.readFileSync(path.join(intel, "ci/qa-sentinel/service.gitlab-ci.yml"), "utf8")).not.toContain("qa-trigger-generation");
+  });
+  it("maintenance level adds a guarded stories stage to the Jenkins template (not proven on a real server)", async () => {
+    const root = tmp();
+    await initCommand({ cwd: root, yes: true, mode: "scratch", ci: "jenkins", workspace: root, level: "maintenance" });
+    const f = fs.readdirSync(root, { recursive: true }).map(String).find((x) => x.endsWith("Jenkinsfile.tests"))!;
+    const j = fs.readFileSync(path.join(root, f), "utf8");
+    expect(j).toContain("qa-sentinel stories --act --clone-services");
+    expect(j).toContain("params.QA_STORIES");
+    expect(j).not.toContain("{{");
   });
   it("sums usage across plan, repair and author runs", () => {
     expect(addUsage({ ok: true, status: "ok", result: "", turns: 3, costUsd: 0.1, durationMs: 1000 }, { ok: true, status: "ok", result: "", turns: 2, costUsd: 0.05, durationMs: 500 })).toEqual({ turns: 5, costUsd: 0.15000000000000002, durationMs: 1500 });

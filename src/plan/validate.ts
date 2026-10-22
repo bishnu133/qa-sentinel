@@ -28,6 +28,15 @@ export interface PlanContext {
    * builds or touches are; the rest get a warning (another change may build them).
    */
   storyMode?: boolean;
+  /**
+   * Story-scoped generation: the ACs planned in this run. ACs outside it are held (they wait for other services, the
+   * Jira status or the next run) and are neither required nor allowed in the plan.
+   */
+  acScope?: string[];
+  /** ACs that wait, with why ("storefront has no change yet"). A held AC needs no scenario and no implementation status; a scenario citing one is an error. */
+  heldAcs?: Map<string, string>;
+  /** Spec files that open QA agent merge requests add (path → "!12"): a "create" for one of them would be a second copy of the same tests. */
+  addedByOpenMrs?: Map<string, string>;
 }
 
 export interface PlanValidation {
@@ -42,6 +51,9 @@ export interface PlanValidation {
   /** The decision-engine rule that applied to each change's decision (changeId → rule). */
   rules: Record<string, string>;
 }
+
+/** Why an AC is not planned in this run, or undefined when it is. ACs outside `acScope` count as held even if the caller gave no reason. */
+const heldReason = (ctx: PlanContext, id: string): string | undefined => ctx.heldAcs?.get(id) ?? (ctx.acScope && !ctx.acScope.includes(id) && ctx.acIds.includes(id) ? "a later run" : undefined);
 
 const exists = (root: string, f: string) => fs.existsSync(path.resolve(root, f));
 
@@ -139,6 +151,9 @@ export function validatePlan(raw: unknown, ctx: PlanContext): PlanValidation {
         if (!d.proposedScenarios.length) errors.push(`${where}: "update" needs at least one proposed scenario`);
         break;
       case "create":
+        if (d.targetFile && ctx.addedByOpenMrs?.has(path.posix.normalize(d.targetFile.replace(/\\/g, "/")))) {
+          errors.push(`${where}: ${d.targetFile} is already added by ${ctx.addedByOpenMrs.get(path.posix.normalize(d.targetFile.replace(/\\/g, "/")))}; update that merge request or wait for it to merge, do not create the same tests twice`);
+        }
         if (c.type === "internal") errors.push(`${where}: an internal change needs no new tests; use "reuse" (existing tests) or "skip"`);
         if (!d.proposedScenarios.length) errors.push(`${where}: "create" needs at least one proposed scenario`);
         break;
@@ -157,6 +172,10 @@ export function validatePlan(raw: unknown, ctx: PlanContext): PlanValidation {
     d.proposedScenarios.forEach((s, i) => {
       const at = `${where} scenario ${i + 1}`;
       checkReqIds(at, s.requirementIds);
+      for (const r of s.requirementIds) {
+        const why = heldReason(ctx, r);
+        if (why !== undefined) errors.push(`${at}: ${r} waits for ${why}; leave it out until it is ready`);
+      }
       // Workflow planner: the layer that proves it, its page, and its setup graph checked against the data policy.
       s.layer ??= ctx.defaultLayer ?? "api";
       if (!(ctx.layers ?? ["api"]).includes(s.layer)) errors.push(`${at}: layer "${s.layer}" is not enabled in this project (enabled: ${(ctx.layers ?? ["api"]).join(", ")})`);
@@ -207,6 +226,7 @@ export function validatePlan(raw: unknown, ctx: PlanContext): PlanValidation {
   if (!ctx.requirementsMissing) {
     for (const id of items) {
       const n = seen.get(id) ?? 0;
+      if (n === 0 && heldReason(ctx, id) !== undefined) continue;
       if (n === 0) errors.push(`requirementStatus: ${id} has no implementation status (implemented, partial, not-found, conflict, elsewhere or not-applicable)`);
       if (n > 1) errors.push(`requirementStatus: ${id} appears ${n} times; give exactly one`);
     }
@@ -252,7 +272,13 @@ function checkAcCoverage(plan: TestPlan, ctx: PlanContext, errors: string[], war
     plan.decisions.some((d) => ["reuse", "review"].includes(d.decision) && d.coverage === "covered" && plan.changes.find((c) => c.id === d.changeId)?.requirementIds.includes(ac) && d.existingTests.some((f) => taggedWith(f, ac)));
   const touched = new Set([...plan.changes.flatMap((c) => c.requirementIds), ...plan.requirementStatus.filter((r) => ["implemented", "partial", "conflict"].includes(r.status)).map((r) => r.id)]);
   const exempt: string[] = [];
+  const waiting: string[] = [];
   for (const ac of ctx.acIds) {
+    const hold = heldReason(ctx, ac);
+    if (hold !== undefined) {
+      waiting.push(`${ac} waits for ${hold}`);
+      continue;
+    }
     const e = live.find((a) => a.id === ac);
     const ready = (e?.behaviours ?? []).filter((b) => b.state === "ready");
     const r = status.get(ac);
@@ -279,6 +305,7 @@ function checkAcCoverage(plan: TestPlan, ctx: PlanContext, errors: string[], war
     );
   }
   if (exempt.length) warnings.push(`No tests yet for ${exempt.join("; ")}`);
+  for (const w of waiting) warnings.push(`${w}: not planned in this run`);
 }
 
 /** Decisions that require writing tests. */

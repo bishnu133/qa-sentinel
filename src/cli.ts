@@ -137,8 +137,11 @@ program
   .option("--no-record", "don't update the story records")
   .option("--no-sweep", "don't look at merge requests first (GitLab)")
   .option("--rebuild", "fill the story records again from GitLab and Jira (the merge request sweep looks back 365 days)")
+  .option("--act", "also start the AI steps that are due (expected behaviour, tests, end-to-end tests), at most automation.act.maxJobsPerCheck; exit 4 if a limit stopped one")
+  .option("--dry-run", "with --act: say what would be started and start nothing")
+  .option("--clone-services", "clone the service repositories (workspace.services[].gitlabProject) that are not at their path yet, using CI_JOB_TOKEN or the GitLab token (for a CI job that starts with the test repo only)")
   .option("-o, --out <file>", "markdown output", "qa-stories.md")
-  .action(wrap(async (o) => storiesCommand({ cwd: cwd(), story: o.story, storiesDir: o.storiesDir, all: o.all, json: o.json, noRecord: o.record === false, noSweep: o.sweep === false, rebuild: o.rebuild, out: o.out })));
+  .action(wrap(async (o) => storiesCommand({ cwd: cwd(), story: o.story, storiesDir: o.storiesDir, all: o.all, json: o.json, noRecord: o.record === false, noSweep: o.sweep === false, rebuild: o.rebuild, act: o.act, dryRun: o.dryRun, cloneServices: o.cloneServices, out: o.out })));
 
 program
   .command("known-defects")
@@ -318,6 +321,7 @@ program
   .description("Phase 2: add or update tests for a service change (or a whole story across services) and commit them on a branch")
   .option("-s, --service <name|path>", "service name from the config, or a path to its repo")
   .option("--story <key>", "story mode: one plan and one branch/MR for everything this story changed, across all its service repos")
+  .option("--acs <ids>", "with --story: plan only these acceptance criteria (comma list); one that still waits is refused unless --force")
   .option("--service-path <dir>", "override where the service repo is checked out (useful in CI)")
   .option("--base <ref>", "base ref in the service repo", "HEAD~1")
   .option("--head <ref>", "head ref in the service repo", "HEAD")
@@ -328,7 +332,7 @@ program
   .option("--dry-run", "do everything except call Claude and commit")
   .option("--force", "run even if the same job (same story, ACs and commit) finished, failed too often or looks to be running; budgets still apply")
   .option("--once", "skip the run if the same job already finished (the default in CI)")
-  .action(wrap(async (o) => generateCommand({ cwd: cwd(), ...needService(o) })));
+  .action(wrap(async (o) => generateCommand({ cwd: cwd(), ...needService(o), acs: typeof o.acs === "string" ? o.acs.split(",").map((x: string) => x.trim()).filter(Boolean) : undefined })));
 
 program
   .command("trace")

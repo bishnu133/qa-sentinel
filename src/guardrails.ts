@@ -8,7 +8,7 @@ import { type FileChange, showFile, workingChanges } from "./git.js";
 
 export interface Finding {
   level: "violation" | "warning";
-  rule: "blocked-path" | "outside-allowed" | "service-repo-modified" | "url-host" | "secret" | "assertion-removed" | "test-deleted" | "traceability" | "test-data" | "fixed-wait" | "expectation-changed" | "expectation-removed" | "expected-file-invalid" | "ac-test-disabled" | "expectation-override" | "known-defect-by-agent" | "expected-value-missing";
+  rule: "blocked-path" | "outside-allowed" | "service-repo-modified" | "url-host" | "secret" | "assertion-removed" | "test-deleted" | "traceability" | "test-data" | "fixed-wait" | "expectation-changed" | "expectation-removed" | "expected-file-invalid" | "ac-test-disabled" | "expectation-override" | "known-defect-by-agent" | "expected-value-missing" | "duplicate-test-file";
   file: string;
   message: string;
 }
@@ -50,6 +50,23 @@ export function learnPolicy(c?: Config): WritePolicy {
 }
 
 /** Path rules: blocked always wins; everything else must be allowed. Deletions and both sides of renames count. */
+/**
+ * A new file at a path that another open QA agent merge request already adds: the same tests would be written twice
+ * (and the second merge would conflict). Checked on what the author really wrote, not on what the plan said.
+ */
+export function checkDuplicateFiles(changes: FileChange[], addedByOpenMrs: Map<string, string> | undefined): Finding[] {
+  if (!addedByOpenMrs?.size) return [];
+  const out: Finding[] = [];
+  for (const ch of changes) {
+    if (ch.status !== "A" && ch.status !== "?" && ch.status !== "R" && ch.status !== "C") continue;
+    // Spec files only: two merge requests may both add a shared helper or fixture without writing the same tests twice.
+    if (!TEST_FILE.test(ch.path) && !ch.path.endsWith(".feature")) continue;
+    const mr = addedByOpenMrs.get(path.posix.normalize(ch.path.replace(/\\/g, "/")));
+    if (mr) out.push({ level: "violation", rule: "duplicate-test-file", file: ch.path, message: `${mr} already adds this file; update that merge request or wait for it to merge instead of writing the same tests twice` });
+  }
+  return out;
+}
+
 export function checkPaths(changes: FileChange[], policy: WritePolicy): Finding[] {
   const findings: Finding[] = [];
   const touched = changes.flatMap((c) => (c.from && c.status === "R" ? [c.path, c.from] : [c.path]));

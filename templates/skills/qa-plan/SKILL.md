@@ -136,6 +136,15 @@ change cites it (existing tests cover it); `automation` other than automated; st
 `requirementStatus` entry with the reason (e.g. "already proved by tests/api/orders/slots.spec.ts"). An AC that isn't
 built (`not-found`) still gets its scenario: the test is written to the requirement and reports the defect.
 
+### Held ACs (`acScope` and `heldAcs` in context.json)
+When context.json has `acScope`, the story's tests are written a few ACs at a time, as their services are merged. Plan only for the ACs in `acScope`.
+The ACs in `heldAcs` (id → what they wait for, e.g. "storefront") wait for another service or for the Jira status: give them **no** scenario and **no**
+`requirementStatus` entry, and do not cite them in `requirementIds` anywhere. A scenario that cites a held AC fails validation. They are planned in a later
+run, when they are ready. Without `acScope`, every AC is planned as usual.
+
+When the prompt lists other open QA agent merge requests, their tests are not on the main branch yet but will be. Do not plan the same tests again.
+For a `create` decision, set `"targetFile"` to the new spec file's path; a path that another open merge request already adds fails validation.
+
 ### Shapes of the list entries
 - `impactedTests[]`: `{ "file", "reason", "stillValid" }` (all three, nothing else)
 - `acMismatches[]`: `{ "requirementId"?, "requirement", "observed", "evidence": [Evidence] }`

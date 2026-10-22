@@ -132,7 +132,7 @@ function fetchMrHead(repo: string, c: Config, service: ServiceConfig, p: Service
 }
 
 /** The record's parts the manifest did not find, added (matched on service and MR number; a part without a number on its branch or commit). */
-function withRecordParts(m: FeatureManifest, rec: StoryRecord, c: Config, cwd: string): FeatureManifest {
+export function withRecordParts(m: FeatureManifest, rec: StoryRecord, c: Config, cwd: string): FeatureManifest {
   const parts = [...m.parts];
   const notes = [...m.notes];
   const dropped = [...(m.dropped ?? [])];

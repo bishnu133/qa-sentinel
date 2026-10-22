@@ -16,7 +16,7 @@ import { findCherryPicks, findRevert } from "../release/git.js";
 export interface ServicePart {
   service: string;
   source: "gitlab-mr" | "git";
-  mr?: { iid: number; url: string; state: string; title: string };
+  mr?: { iid: number; url: string; state: string; title: string; draft?: boolean; updatedAt?: string };
   branch?: string;
   /** The commit that carries the change on the target branch (merge commit) or the branch tip when not merged. */
   sha?: string;
@@ -189,7 +189,7 @@ export function mrToPart(service: string, m: any, keyPattern = "[A-Z][A-Z0-9]+-\
   return {
     service,
     source: "gitlab-mr",
-    mr: { iid: m.iid, url: m.web_url, state: m.state, title: m.title },
+    mr: { iid: m.iid, url: m.web_url, state: m.state, title: m.title, ...(typeof (m.draft ?? m.work_in_progress) === "boolean" ? { draft: Boolean(m.draft ?? m.work_in_progress) } : {}), ...(typeof m.updated_at === "string" ? { updatedAt: m.updated_at } : {}) },
     branch: m.source_branch,
     sha: merged ? (m.merge_commit_sha ?? m.squash_commit_sha ?? m.sha) : m.sha,
     merged,

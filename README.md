@@ -21,7 +21,7 @@ Choose with `init --level intelligence|maintenance` or `level:` in the config. M
 | Phase | Command | Trigger | Output |
 | --- | --- | --- | --- |
 | 1 · Gap report | `qa-sentinel gap-report` | dev merge request | one MR comment: impacted tests, coverage gaps, AC mismatches, spec drift |
-| 2 · API tests | `qa-sentinel generate` | dev MR merged | `qa-sentinel/<service>-<sha>` branch + MR with new/updated tests, **independently verified by qa-sentinel** |
+| 2 · API tests | `qa-sentinel generate` | dev MR merged | one test branch and MR per story (`qa-sentinel/story-KEY`), built on after every merge: single-service ACs on each merge, end-to-end tests of an AC once all its services are merged; **independently verified by qa-sentinel**. `generation.scope: service` keeps the old `qa-sentinel/<service>-<sha>` MR per merge |
 | Gate | `qa-sentinel verify` | MR touching tests | same policy, type-check and changed-spec checks; fails unless VERIFIED |
 | 0 · Story review | `qa-sentinel review-story` | story ready for dev | ambiguous ACs, missing negative/edge cases, scope without an AC (Jira comment) |
 | Story-wide | `gap-report --story` / `generate --story` | all of a story's MRs merged | one analysis and one test MR across every service the story changed |
@@ -131,9 +131,9 @@ Starting from nothing? `qa-sentinel init --mode scratch` scaffolds Playwright AP
 | `gap-report -s <service>` | Read-only, risk-ranked analysis. The run is discarded if anything changed in either repo. `--post` creates or updates a single MR comment. Skips the agent for docs- or config-only changes. |
 | `generate -s <service>` | Writes and updates tests on a branch. **Rejected with nothing committed** on any guardrail violation. Otherwise independently verified, then committed. `--push` opens or updates a GitLab MR (Draft unless VERIFIED). Exit code 0 only when VERIFIED. |
 | `verify [--policy] [--base <ref>]` | The same independent checks, for any branch. Use it as the blocking CI gate on agent MRs. |
-| `gap-report --story KEY` / `generate --story KEY` | Story mode: the story's changes in every service (from the story record, MRs, branches and commits naming the key) as one analysis and one test MR on `qa-sentinel/story-KEY`. Each merge request is its own range, so work merged in between by others is left out; reverted MRs are skipped. |
+| `gap-report --story KEY` / `generate --story KEY [--acs AC-1,AC-3]` | Story mode: the story's changes in every service (from the story record, MRs, branches and commits naming the key) as one analysis and one test MR on `qa-sentinel/story-KEY`. Each merge request is its own range, so work merged in between by others is left out; reverted MRs are skipped. |
 | `spec --story KEY [--story-file f] [--commit] [--dry-run]` | Writes or updates `expected/<STORY>.md` from the story alone (code-blind): what each AC means in testable terms; lists questions for the PO. `generate` does it as its first step. See [docs/EXPECTED-BEHAVIOUR.md](docs/EXPECTED-BEHAVIOUR.md) and [docs/GLOSSARY.md](docs/GLOSSARY.md). |
-| `stories [--stories-dir <dir>] [--no-sweep] [--rebuild]` | No AI. Background check of every story (Jira search or story files): state, next step, who acts, what blocks it. With GitLab it first sweeps the merge requests updated since the last check and keeps every MR of each story in the story record (`--no-sweep` skips that; `--rebuild` fills the records again from the last 365 days). Writes `qa-stories.md` and story records. `--json` for machines. See [docs/AUTOMATION.md](docs/AUTOMATION.md). |
+| `stories [--stories-dir <dir>] [--no-sweep] [--rebuild] [--act [--dry-run] [--clone-services]]` | No AI unless `--act`, which also starts the AI steps that are due (at most `automation.act.maxJobsPerCheck`, through job keys and budgets; exit 4 when a limit stopped one). Background check of every story (Jira search or story files): state, next step, who acts, what blocks it. With GitLab it first sweeps the merge requests updated since the last check and keeps every MR of each story in the story record (`--no-sweep` skips that; `--rebuild` fills the records again from the last 365 days). Writes `qa-stories.md` and story records. `--json` for machines. See [docs/AUTOMATION.md](docs/AUTOMATION.md). |
 | `known-defects [--apply] [--commit] [--push]` | No AI. After a test run: finds known defects (Playwright `test.fail`, Jest `test.failing`, Vitest `test.fails`) that now pass (bug fixed); `--apply` takes the marker and QA-BUG note off for review. |
 | `suite --env <name> \| --tag <ref> [--run]` | No AI. The tests that fit what an environment has deployed or a release contains; tests of features not there yet are left out with the reason. |
 | `release-features --tag <ref> [--from <ref>]` | No AI. The stories a release contains (story keys in commits, per service). |
@@ -268,6 +268,13 @@ showcase:
 automation:
   record: file                       # file | jira (also keep the story record in a Jira issue property)
   sweep: { enabled: true, overlapHours: 24, maxPages: 5 }   # `stories` first lists the merge requests updated since the last check (one paged GitLab call per repo, no AI); each is recorded on the stories it names
+  act: { maxJobsPerCheck: 3 }        # `stories --act` starts at most this many AI jobs per run (a job that turns out to be nothing to do is not counted)
+generation:
+  scope: story                       # story (one test branch and MR per story, built on after each merge) | service (one MR per merge, the old way)
+  crossService: when-ready-status    # when-ready-status | when-ac-complete: when the end-to-end tests of an AC that needs several services are written
+  branchPrefix: qa-sentinel/story-   # the story's test branch is <prefix><KEY>
+  maxAcsPerRun: 5                    # ACs planned in one run; the rest wait for the next
+  staleMrDays: 30                    # an open service merge request nobody touched for this long no longer holds back the ACs of its service (0: never)
 bugs: { mode: off, issueType: Bug, priority: Low, labels: [qa-sentinel], linkType: Relates, notBuilt: true }   # off | suggest | create
 ci: { platform: gitlab, testRepoProject: my-group/qa-tests, targetBranch: main }
 agent:

@@ -4,6 +4,9 @@ pipeline {
   options { timeout(time: 30, unit: 'MINUTES') }
   parameters {
     string(name: 'QA_TEST_ARGS', defaultValue: '', description: 'Extra arguments for the test command')
+{{#if isMaintenance}}
+    booleanParam(name: 'QA_STORIES', defaultValue: false, description: 'Background check: start the AI steps that are due (qa-sentinel stories --act). Template only: not proven on a real Jenkins server')
+{{/if}}
     booleanParam(name: 'CHANGED_ONLY', defaultValue: false, description: 'Run only specs changed vs {{targetBranch}} (agent MRs)')
   }
   environment {
@@ -37,6 +40,22 @@ pipeline {
         '''
       }
     }
+{{#if isMaintenance}}
+    stage('Stories (background check)') {
+      // Needs qa-sentinel and the claude CLI installed on the agent, plus the Jira / GitLab / model credentials. Exit 4 = a limit stopped a job (not a failure).
+      when { expression { params.QA_STORIES } }
+      steps {
+        sh '''
+          export PATH="$WORKSPACE/.npm-global/bin:$PATH"
+          git config user.name "qa-sentinel" && git config user.email "qa-sentinel@noreply.local"
+          code=0
+          qa-sentinel stories --act --clone-services || code=$?
+          if [ "$code" = "4" ]; then echo "A limit stopped a job (see qa-stories.md)"; exit 0; fi
+          exit $code
+        '''
+      }
+    }
+{{/if}}
     stage('Type-check') {
       when { expression { !params.CHANGED_ONLY } }
       steps { sh 'npx tsc --noEmit' }   // blocking: a type error fails the build
