@@ -131,10 +131,10 @@ export async function storyParts(i: { c: Config; cwd: string; story: string; git
   } else manifest = await assembleFeature({ c: i.c, cwd: i.cwd, story: i.story, gitlab: i.gitlab });
   const notes = [...manifest.notes];
   // One entry per service: the mainline range of each merged MR, and one range for each branch still open.
-  const byService = new Map<string, { service: ServiceConfig; repo: string; ranges: { base: string; head: string; merged: boolean }[] }>();
-  const add = (service: ServiceConfig, repo: string, r: StoryRangeRef, merged: boolean) => {
+  const byService = new Map<string, { service: ServiceConfig; repo: string; ranges: { base: string; head: string; merged: boolean; label: string }[] }>();
+  const add = (service: ServiceConfig, repo: string, r: StoryRangeRef, merged: boolean, label: string) => {
     const entry = byService.get(service.name) ?? { service, repo, ranges: [] };
-    if (!entry.ranges.some((x) => x.base === r.base && x.head === r.head)) entry.ranges.push({ base: r.base, head: r.head, merged });
+    if (!entry.ranges.some((x) => x.base === r.base && x.head === r.head)) entry.ranges.push({ base: r.base, head: r.head, merged, label });
     byService.set(service.name, entry);
   };
   for (const p of manifest.parts) {
@@ -155,13 +155,13 @@ export async function storyParts(i: { c: Config; cwd: string; story: string; git
     if (p.merged) {
       if (p.source === "gitlab-mr") {
         const sha = p.mergeSha ?? p.squashSha;
-        if (sha && known(repo, sha)) add(service, repo, { base: `${sha}^1`, head: sha }, true);
-        else if (!sha && p.diffRefs && known(repo, p.diffRefs.base) && known(repo, p.diffRefs.head)) add(service, repo, { base: p.diffRefs.base, head: p.diffRefs.head }, true);
+        if (sha && known(repo, sha)) add(service, repo, { base: `${sha}^1`, head: sha }, true, `${name} merged`);
+        else if (!sha && p.diffRefs && known(repo, p.diffRefs.base) && known(repo, p.diffRefs.head)) add(service, repo, { base: p.diffRefs.base, head: p.diffRefs.head }, true, `${name} merged`);
         else notes.push(`${name}: its commit is not in the clone of ${service.path} (fetch the target branch); skipped`);
       } else {
         const ranges = storyRanges(repo, i.story, target ?? p.sha ?? "HEAD");
         if (!ranges.length) notes.push(`${p.service}: no commit message on ${i.c.ci.targetBranch} mentions ${i.story}; skipped`);
-        for (const r of ranges) add(service, repo, r, true);
+        for (const r of ranges) add(service, repo, r, true, `${name} merged`);
       }
     } else {
       const head = fetchMrHead(repo, i.c, service, p);
@@ -170,7 +170,7 @@ export async function storyParts(i: { c: Config; cwd: string; story: string; git
         notes.push(`${name}: ${!head ? "its head commit is not in the clone" : `no common commit with ${i.c.ci.targetBranch}`}; skipped`);
         continue;
       }
-      add(service, repo, range, false);
+      add(service, repo, range, false, `${name} open`);
     }
   }
   const parts: StoryPart[] = [];
@@ -179,7 +179,7 @@ export async function storyParts(i: { c: Config; cwd: string; story: string; git
     const files = [...new Set(sets.flatMap((x) => x.files))];
     const diff = sets.length === 1 ? sets[0].diff : sets.map((x) => `# ----- ${x.base.slice(0, 8)}..${x.head.slice(0, 8)} -----\n${x.diff}`).join("\n");
     const cs: ChangeSet = { base: sets[0].base, head: sets[0].head, files, diff };
-    parts.push({ service, repo, cs, heads: sets.map((x) => x.head), relevant: files.filter((f) => !matchesAny(f, i.c.agent.skipPaths)), merged: ranges.every((r) => r.merged), label: `${service.name}${sets.length > 1 ? ` (${sets.length} changes)` : ""}` });
+    parts.push({ service, repo, cs, heads: sets.map((x) => x.head), relevant: files.filter((f) => !matchesAny(f, i.c.agent.skipPaths)), merged: ranges.every((r) => r.merged), label: ranges.length === 1 ? ranges[0].label : `${service.name} ${ranges.map((r) => r.label.slice(service.name.length).trim()).join(", ")}` });
   }
   return { parts, manifest, notes };
 }

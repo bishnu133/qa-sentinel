@@ -42,14 +42,15 @@ describe("story range: every MR is its own range", () => {
     commit(orders, "two.js", "2", "SHOP-106: follow-up (#2)");
 
     const { parts, notes } = await storyParts({ c, cwd: tests, story: "SHOP-106" });
-    expect(parts).toHaveLength(2);
-    expect(parts.map((p) => p.relevant.sort())).toEqual([["two.js"], ["one-b.js", "one.js"]]);
+    expect(parts).toHaveLength(1); // one part per service
+    expect(parts[0].heads).toHaveLength(2); // one range for each MR
+    expect(parts[0].relevant.sort()).toEqual(["one-b.js", "one.js", "two.js"]);
     expect(filesOf(parts)).toEqual(["one-b.js", "one.js", "two.js"]);
     const v = combinedChange("SHOP-106", parts);
     expect(v.cs.diff).toContain("one.js");
     expect(v.cs.diff).toContain("two.js");
     expect(v.cs.diff).not.toContain("unrelated.js");
-    expect(v.cs.diff.match(/# ===== service: orders/g)).toHaveLength(2);
+    expect(v.cs.diff.match(/# ----- /g)).toHaveLength(2); // a header for each range
     expect(notes).toEqual([]);
   });
 
@@ -125,11 +126,10 @@ describe("story range from the record", () => {
     rec = upsertPart(rec, partOf(5, { state: "closed" }), T);
 
     const { parts, notes } = await storyParts({ c, cwd: tests, story: "SHOP-106", record: rec });
-    expect(parts.map((p) => [p.label, p.relevant.sort()])).toEqual([
-      ["orders !1 merged", ["m1.js"]],
-      ["orders !2 merged", ["s2.js"]],
-      ["orders !3 merged", ["r3a.js", "r3b.js"]],
-    ]);
+    expect(parts).toHaveLength(1);
+    expect(parts[0].heads).toHaveLength(3);
+    expect(parts[0].label).toBe("orders !1 merged, !2 merged, !3 merged");
+    expect(parts[0].relevant.sort()).toEqual(["m1.js", "r3a.js", "r3b.js", "s2.js"]);
     expect(notes.join("\n")).toContain("!4 was reverted");
     expect(combinedChange("SHOP-106", parts).cs.diff).not.toContain("unrelated");
   });
