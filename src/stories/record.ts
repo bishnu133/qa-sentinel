@@ -43,6 +43,31 @@ export type Job = z.infer<typeof JobSchema>;
 export const LedgerEntrySchema = z.object({ at: z.string(), job: z.string(), kind: JobKind, costUsd: z.number().min(0) });
 export type LedgerEntry = z.infer<typeof LedgerEntrySchema>;
 
+/** A commit id: hex only (it ends up in git arguments); anything else in a stored record is dropped on read. */
+const Sha = z.string().regex(/^[0-9a-fA-F]{4,64}$/).optional().catch(undefined);
+
+export const RecordPartSchema = z.object({
+  service: z.string(),
+  source: z.enum(["gitlab-mr", "git"]),
+  iid: z.number().optional(),
+  url: z.string().optional(),
+  state: z.enum(["opened", "merged", "closed", "reverted"]),
+  branch: z.string().optional(),
+  title: z.string().optional(),
+  headSha: Sha,
+  mergeSha: Sha,
+  squashSha: Sha,
+  /** GitLab diff_refs base: where a rebased or fast-forwarded MR's own change starts. */
+  diffBase: Sha,
+  mergedAt: z.string().optional(),
+  keys: z.array(z.string()).default([]),
+  workKey: z.string().optional(),
+  firstSeenAt: z.string(),
+  lastSeenAt: z.string(),
+  revertedBy: Sha,
+});
+export type RecordPart = z.infer<typeof RecordPartSchema>;
+
 export const StoryRecordSchema = z.object({
   version: z.literal(RECORD_VERSION),
   key: z.string(),
@@ -60,10 +85,28 @@ export const StoryRecordSchema = z.object({
   ledger: z.array(LedgerEntrySchema).default([]),
   /** All AI spend on this story, USD (the ledger is trimmed; this is not). */
   totalCostUsd: z.number().min(0).default(0),
+  /** Every merge request (or branch) of the story, per service. A cache of what GitLab and git say: the sweep can rebuild it. */
+  parts: z.array(RecordPartSchema).default([]),
+  /** Bugs, tasks and sub-tasks that were reached from this story (card key, type, how it was reached). */
+  linked: z.array(z.object({ key: z.string(), issueType: z.string().optional(), via: z.enum(["parent", "link"]), at: z.string() })).default([]),
+  /** The agent's test merge request for this story (filled by story-scoped generation). */
+  agentMr: z.object({ branch: z.string(), iid: z.number().optional(), url: z.string().optional(), state: z.enum(["opened", "merged", "closed"]), headSha: z.string().optional(), updatedAt: z.string() }).optional(),
+  /** Cross-service tests per AC: written, or held and why. */
+  crossService: z.record(z.object({ state: z.enum(["written", "held"]), heads: z.string(), acHash: z.string(), at: z.string(), reason: z.string().optional() })).default({}),
+  /** What the last plan said about each AC (built or not), with the run. */
+  acEvidence: z.record(z.object({ status: z.string(), at: z.string(), runId: z.string().optional() })).default({}),
+  /** Test results per environment (post-deploy). */
+  results: z.array(z.object({ environment: z.string(), at: z.string(), basis: z.string(), status: z.string(), tests: z.number() })).default([]),
+  /** Digest of the merged heads and the AC hashes: when it changes, what was reported about the story is out of date. */
+  basis: z.string().optional(),
+  /** Notifications already sent, so a schedule does not repeat them. */
+  notified: z.array(z.object({ event: z.string(), key: z.string(), at: z.string() })).default([]),
+  /** ACs a person marked ready by hand (`/qa ready AC-1`). */
+  overrides: z.array(z.object({ ac: z.string(), by: z.string(), at: z.string(), commentId: z.string() })).default([]),
 });
 export type StoryRecord = z.infer<typeof StoryRecordSchema>;
 
-export const emptyRecord = (key: string, now = new Date()): StoryRecord => ({ version: RECORD_VERSION, key, updatedAt: now.toISOString(), acs: [], jobs: {}, ledger: [], totalCostUsd: 0 });
+export const emptyRecord = (key: string, now = new Date()): StoryRecord => ({ version: RECORD_VERSION, key, updatedAt: now.toISOString(), acs: [], jobs: {}, ledger: [], totalCostUsd: 0, parts: [], linked: [], crossService: {}, acEvidence: {}, results: [], notified: [], overrides: [] });
 
 /** A story key becomes a file name: keep it to plain characters, so no key can point outside the records folder. */
 export const SAFE_KEY = /^[A-Za-z0-9_][A-Za-z0-9_.-]{0,63}$/;
@@ -86,6 +129,9 @@ export interface RecordStore {
   /** Where records are kept, for messages. */
   where: string;
 }
+
+/** The sweep's own state file lives beside the records but is not a story. */
+export const SWEEP_FILE = "_sweep.json";
 
 export const recordsDir = (cwd: string) => path.join(cwd, ".qa-sentinel", "stories");
 
@@ -179,7 +225,7 @@ export function fileStore(cwd: string): RecordStore {
         return [];
       }
       return names
-        .filter((n) => n.endsWith(".json"))
+        .filter((n) => n.endsWith(".json") && n !== SWEEP_FILE)
         .map((n) => readRecordFile(path.join(dir, n), n.slice(0, -".json".length)))
         .filter((r): r is StoryRecord => Boolean(r));
     },
@@ -243,19 +289,43 @@ const dropOrder = (a: Job, b: Job) => {
   return rank(a) - rank(b) || (a.finishedAt ?? a.startedAt).localeCompare(b.finishedAt ?? b.startedAt);
 };
 
+const MAX_PARTS = 40;
+const MAX_RESULTS_PER_ENV = 5;
+const MAX_NOTIFIED = 50;
+
+/** Open parts always stay; of the others only the newest `keep`. */
+function trimParts(parts: RecordPart[], keep: number): RecordPart[] {
+  const open = parts.filter((p) => p.state === "opened");
+  const rest = parts.filter((p) => p.state !== "opened").sort((a, b) => (b.mergedAt ?? b.lastSeenAt).localeCompare(a.mergedAt ?? a.lastSeenAt));
+  if (open.length + rest.length <= open.length + keep) return parts;
+  const kept = new Set<RecordPart>([...open, ...rest.slice(0, keep)]);
+  return parts.filter((p) => kept.has(p));
+}
+
 export function trimRecord(rec: StoryRecord, now = new Date()): StoryRecord {
   const cutoff = new Date(now.getTime() - LEDGER_DAYS * 86_400_000).toISOString();
   const ledger = rec.ledger.filter((e) => e.at >= cutoff);
+  const perEnv = new Map<string, number>();
+  const results = [...rec.results]
+    .sort((a, b) => b.at.localeCompare(a.at))
+    .filter((r) => {
+      const n = (perEnv.get(r.environment) ?? 0) + 1;
+      perEnv.set(r.environment, n);
+      return n <= MAX_RESULTS_PER_ENV;
+    });
+  const base = { ...rec, ledger, parts: trimParts(rec.parts, MAX_PARTS), results, notified: rec.notified.length > MAX_NOTIFIED ? rec.notified.slice(-MAX_NOTIFIED) : rec.notified };
   const jobs = Object.values(rec.jobs);
-  if (jobs.length <= MAX_JOBS) return { ...rec, ledger };
+  if (jobs.length <= MAX_JOBS) return base;
   const keep = [...jobs].sort(dropOrder).slice(jobs.length - MAX_JOBS);
-  return { ...rec, ledger, jobs: Object.fromEntries(keep.map((j) => [j.key, j])) };
+  return { ...base, jobs: Object.fromEntries(keep.map((j) => [j.key, j])) };
 }
 
 /** Shrink a record until it fits a Jira issue property. */
 export function fitForJira(rec: StoryRecord): StoryRecord {
   let r = rec;
   const size = (x: StoryRecord) => Buffer.byteLength(JSON.stringify(x));
+  // Old parts go first, then ledger entries and jobs.
+  for (let keep = MAX_PARTS; size(r) > JIRA_MAX_BYTES && keep > 5; keep = Math.floor(keep / 2)) r = { ...r, parts: trimParts(r.parts, keep) };
   while (size(r) > JIRA_MAX_BYTES && (r.ledger.length > 10 || Object.keys(r.jobs).length > 5)) {
     const jobs = Object.values(r.jobs).sort(dropOrder);
     const dropJob = Object.keys(r.jobs).length > 5 && r.ledger.length <= Object.keys(r.jobs).length;

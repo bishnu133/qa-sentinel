@@ -298,6 +298,16 @@ export const ConfigSchema = z.object({
         .default({}),
       /** ready (default): the gap report on a dev MR is made once the MR is no longer a draft; always: on every pipeline run. */
       gapReport: z.object({ when: z.enum(["ready", "always"]).default("ready") }).default({}),
+      /** The merge-request sweep of `stories`: one paged list call per repository for MRs updated since the last check. */
+      sweep: z
+        .object({
+          enabled: z.boolean().default(true),
+          /** Look back this far before the last check, so an MR updated while the last check ran is not missed. */
+          overlapHours: z.number().int().min(1).max(720).default(24),
+          /** Pages of 100 merge requests read per repository. */
+          maxPages: z.number().int().min(1).max(50).default(5),
+        })
+        .default({}),
       budgets: z
         .object({
           perStoryUsd: z.number().min(0).default(25),

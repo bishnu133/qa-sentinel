@@ -135,8 +135,10 @@ program
   .option("--all", "also list the stories that are left alone (opted out, not approved, not a feature)")
   .option("--json", "print JSON (state, next step, tasks per story) for a pipeline to act on")
   .option("--no-record", "don't update the story records")
+  .option("--no-sweep", "don't look at merge requests first (GitLab)")
+  .option("--rebuild", "fill the story records again from GitLab and Jira (the merge request sweep looks back 365 days)")
   .option("-o, --out <file>", "markdown output", "qa-stories.md")
-  .action(wrap(async (o) => storiesCommand({ cwd: cwd(), story: o.story, storiesDir: o.storiesDir, all: o.all, json: o.json, noRecord: o.record === false, out: o.out })));
+  .action(wrap(async (o) => storiesCommand({ cwd: cwd(), story: o.story, storiesDir: o.storiesDir, all: o.all, json: o.json, noRecord: o.record === false, noSweep: o.sweep === false, rebuild: o.rebuild, out: o.out })));
 
 program
   .command("known-defects")

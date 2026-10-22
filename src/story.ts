@@ -1,14 +1,21 @@
+import { execFileSync } from "node:child_process";
+import fs from "node:fs";
 import path from "node:path";
 import type { Config, ServiceConfig } from "./config.js";
 import { type ChangeSet, changeSet, git } from "./git.js";
 import { matchesAny } from "./fsutil.js";
-import { assembleFeature, targetRefOf, type FeatureManifest } from "./feature/manifest.js";
-import type { GitLabContext } from "./scm/gitlab.js";
+import { assembleFeature, featureStatus, targetRefOf, type FeatureManifest, type ServicePart } from "./feature/manifest.js";
+import { call, pushUrl, type GitLabContext } from "./scm/gitlab.js";
+import { findRevert } from "./release/git.js";
+import { inputToServicePart } from "./stories/parts.js";
+import type { StoryRecord } from "./stories/record.js";
+import { isGitRepo } from "./git.js";
 
 /**
  * Story mode: one analysis (and one test MR) for everything a story changed, across all its service repos.
- * The parts come from the feature manifest (merge requests, or branches and commits carrying the story key);
- * each part's range runs from just before its first story commit to the story's tip in that repo.
+ * The parts come from the story record (kept by the merge-request sweep) or the feature manifest (merge requests, or
+ * branches and commits carrying the story key). Each merge request is its own range: the story's change is the union
+ * of the ranges, never "everything since the first story commit", so unrelated work merged in between is left out.
  */
 export interface StoryPart {
   service: ServiceConfig;
@@ -19,6 +26,8 @@ export interface StoryPart {
   heads: string[];
   relevant: string[];
   merged: boolean;
+  /** Which range this is: "orders-service !12 merged". */
+  label: string;
 }
 
 const keyRe = (key: string) => new RegExp(`(^|[^A-Za-z0-9])${key.replace(/[-]/g, "\\-")}(?![0-9])`, "i");
@@ -31,33 +40,63 @@ const tryGit = (repo: string, args: string[]) => {
   }
 };
 
+const known = (repo: string, sha: string | undefined) => !!sha && tryGit(repo, ["rev-parse", "--verify", "-q", `${sha}^{commit}`]) !== "";
+
+export interface StoryRangeRef {
+  base: string;
+  head: string;
+}
+
 /**
- * The story's change in one repo, without unrelated work from the main branch:
- * - merged (tip on the main line): walk back along the main line over the story's own commits — commits whose
- *   message names the story, and merge commits whose merged side does — and take that run's net change
- *   (a merge commit's M^1..M, a squash commit's S^..S, fast-forwarded commits in a row);
+ * Local fallback for work that is on the target branch: walk the first-parent line (the last `limit` commits) from
+ * `tip`; every commit whose message names the story, or whose merged side does, is its own range (a merge commit's
+ * M^1..M, a squash commit's S^..S). Commits in a row make one range. The ranges are NOT required to touch: unrelated
+ * work between two of them stays out. Revert commits are not story work. Newest first.
+ */
+export function storyRanges(repo: string, story: string, tip: string, limit = 500): StoryRangeRef[] {
+  const re = keyRe(story);
+  const rows = tryGit(repo, ["log", "--first-parent", "-n", String(limit), tip, "--format=%H%x1f%P%x1f%s %b%x1e"])
+    .split("\x1e")
+    .map((l) => l.trim())
+    .filter(Boolean)
+    .map((l) => l.split("\x1f"));
+  const out: StoryRangeRef[] = [];
+  for (const [sha, parentLine = "", message = ""] of rows) {
+    const parents = parentLine.split(" ").filter(Boolean);
+    if (/^Revert\b/i.test(message.trim())) continue;
+    const mergedSide = parents.length > 1 && tryGit(repo, ["log", `${parents[0]}..${parents[1]}`, "--format=%s %b%x1e"]).split("\x1e").some((m) => re.test(m));
+    if (!re.test(message) && !mergedSide) continue;
+    const last = out[out.length - 1];
+    if (last && last.base === sha) last.base = parents[0] ?? sha; // the commit just below the previous range: one range
+    else out.push({ base: parents[0] ?? sha, head: sha });
+  }
+  // A range whose commits a later commit reverted ("This reverts commit <sha>") is not story work any more.
+  return out.filter((r) => {
+    try {
+      const shas = tryGit(repo, ["rev-list", "-n", "200", `${r.base}..${r.head}`]).split("\n").filter(Boolean);
+      return !findRevert(repo, shas.length ? shas : [r.head], tip);
+    } catch {
+      return true;
+    }
+  });
+}
+
+/**
+ * The story's change in one repo, for callers that have only a tip:
+ * - merged (tip on the main line): the newest range from `storyRanges`;
  * - not merged (a branch): from the parent of the oldest commit naming the story to the tip.
  */
 export function storyRange(repo: string, story: string, tip: string, merged = false): { base: string; head: string } | undefined {
   const re = keyRe(story);
-  const msg = (sha: string) => tryGit(repo, ["log", "-1", "--format=%s %b", sha]);
   if (merged) {
-    const line = tryGit(repo, ["rev-list", "--first-parent", "--parents", tip]).split("\n").filter(Boolean);
-    let base: string | undefined;
-    for (const row of line) {
-      const [sha, ...parents] = row.split(" ");
-      const own = re.test(msg(sha));
-      const mergedSide = parents.length > 1 && tryGit(repo, ["log", `${parents[0]}..${parents[1]}`, "--format=%s %b%x1e"]).split("\x1e").some((m) => re.test(m));
-      if (!own && !mergedSide) break;
-      base = parents[0] ?? sha;
-    }
-    if (base) return { base, head: tip };
+    const r = storyRanges(repo, story, tip)[0];
+    if (r) return r;
   }
-  const commits = tryGit(repo, ["log", tip, "--format=%H%x09%P%x09%s %b%x1e"])
+  const commits = tryGit(repo, ["log", tip, "--format=%H%x1f%P%x1f%s %b%x1e"])
     .split("\x1e")
     .map((l) => l.trim())
     .filter(Boolean)
-    .map((l) => l.split("\t"))
+    .map((l) => l.split("\x1f"))
     .filter(([, , m]) => re.test(m ?? ""));
   if (!commits.length) return undefined;
   const oldest = commits[commits.length - 1];
@@ -77,27 +116,126 @@ export function openRange(repo: string, story: string, tip: string, target: stri
   return storyRange(repo, story, tip, false);
 }
 
-export async function storyParts(i: { c: Config; cwd: string; story: string; gitlab?: GitLabContext }): Promise<{ parts: StoryPart[]; manifest: FeatureManifest; notes: string[] }> {
-  // Local clones are the source of truth for diffs; GitLab only helps find parts whose repo isn't checked out.
-  const manifest = await assembleFeature({ c: i.c, cwd: i.cwd, story: i.story });
+/** An open merge request's head: fetched with a one-off token URL (the token never goes into .git/config), else the commit we already know. */
+function fetchMrHead(repo: string, c: Config, service: ServiceConfig, p: ServicePart): string | undefined {
+  if (p.mr) {
+    const projectPath = service.gitlabProject && !/^\d+$/.test(service.gitlabProject) ? service.gitlabProject : undefined;
+    try {
+      const remote = pushUrl(c.ci.gitlabUrl, projectPath) ?? "origin";
+      execFileSync("git", ["fetch", "-q", remote, `refs/merge-requests/${p.mr.iid}/head`], { cwd: repo, encoding: "utf8", timeout: 60_000, env: { ...process.env, GIT_TERMINAL_PROMPT: "0" }, stdio: ["ignore", "pipe", "pipe"] });
+      return git(repo, ["rev-parse", "FETCH_HEAD"]);
+    } catch {
+      // not fetchable (no token, no such ref): use the commit we know
+    }
+  }
+  return known(repo, p.sha) ? p.sha : undefined;
+}
+
+/** The record's parts the manifest did not find, added (matched on service and MR number; a part without a number on its branch or commit). */
+function withRecordParts(m: FeatureManifest, rec: StoryRecord, c: Config, cwd: string): FeatureManifest {
+  const parts = [...m.parts];
+  const notes = [...m.notes];
+  const dropped = [...(m.dropped ?? [])];
+  for (const rp of rec.parts) {
+    if (rp.state === "closed") continue;
+    const has = (x: ServicePart) => x.service === rp.service && (rp.iid !== undefined ? x.mr?.iid === rp.iid : !x.mr && ((!!rp.branch && x.branch === rp.branch) || (!!rp.headSha && x.sha === rp.headSha)));
+    const found = parts.find(has);
+    if (found) {
+      // What the record knows and the listing did not (the diff base of a rebased MR).
+      const rs = inputToServicePart(rp);
+      if (!found.diffRefs && rs.diffRefs) found.diffRefs = rs.diffRefs;
+      if (!found.mergeSha && rs.mergeSha) found.mergeSha = rs.mergeSha;
+      if (!found.squashSha && rs.squashSha) found.squashSha = rs.squashSha;
+      continue;
+    }
+    if (dropped.some(has)) continue;
+    const part = inputToServicePart(rp);
+    const service = c.workspace.services.find((s) => s.name === part.service);
+    const repo = service ? path.resolve(cwd, service.path) : undefined;
+    if (service && repo && part.merged && !part.reverted && fs.existsSync(repo) && isGitRepo(repo)) {
+      const target = targetRefOf(repo, c.ci.targetBranch);
+      if (target) {
+        try {
+          part.reverted = findRevert(repo, [part.sha ?? "", part.mergeSha ?? "", part.squashSha ?? ""].filter(Boolean), target);
+        } catch (e) {
+          notes.push(`${service.name}: could not check whether !${rp.iid ?? "?"} was reverted: ${(e as Error).message.split("\n")[0]}`);
+        }
+      }
+    }
+    parts.push(part);
+  }
+  return { ...m, parts, notes, ...(dropped.length ? { dropped } : {}), status: featureStatus(parts, m.environment) };
+}
+
+/** A merged MR's diff base, from GitLab's single-MR endpoint (the list endpoint has no diff_refs). */
+async function diffRefsOf(gitlab: GitLabContext | undefined, service: ServiceConfig, iid: number): Promise<ServicePart["diffRefs"] | undefined> {
+  if (!gitlab || !service.gitlabProject) return undefined;
+  try {
+    const { data } = await call(gitlab, "GET", `/projects/${encodeURIComponent(service.gitlabProject)}/merge_requests/${iid}`, undefined, 2);
+    const d = data?.diff_refs;
+    return d?.base_sha && d?.head_sha ? { base: d.base_sha, head: d.head_sha, start: d.start_sha ?? d.base_sha } : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+export async function storyParts(i: { c: Config; cwd: string; story: string; gitlab?: GitLabContext; record?: StoryRecord }): Promise<{ parts: StoryPart[]; manifest: FeatureManifest; notes: string[] }> {
+  // Local clones are the source of truth for diffs. GitLab / local git say which changes belong to the story (and are checked for reverts);
+  // the record adds the merge requests it knows about (a sweep sees MRs whose commits name no key).
+  const assembled = await assembleFeature({ c: i.c, cwd: i.cwd, story: i.story, gitlab: i.gitlab });
+  const manifest: FeatureManifest = i.record ? withRecordParts(assembled, i.record, i.c, i.cwd) : assembled;
   const notes = [...manifest.notes];
-  // One entry per service: the mainline range for the merged work, and one range for each branch still open.
-  const byService = new Map<string, { service: ServiceConfig; repo: string; ranges: { base: string; head: string; merged: boolean }[] }>();
-  for (const p of manifest.parts) {
-    const service = i.c.workspace.services.find((s) => s.name === p.service)!;
-    const repo = path.resolve(i.cwd, service.path);
-    if (!p.sha) {
-      notes.push(`${p.service}: no commit found for ${i.story}`);
-      continue;
-    }
-    const range = p.merged ? storyRange(repo, i.story, p.sha, true) : openRange(repo, i.story, p.sha, targetRefOf(repo, i.c.ci.targetBranch));
-    if (!range) {
-      notes.push(`${p.service}: no commit message mentions ${i.story}; skipped`);
-      continue;
-    }
+  // One entry per service: the mainline range of each merged MR, and one range for each branch still open.
+  const byService = new Map<string, { service: ServiceConfig; repo: string; ranges: { base: string; head: string; merged: boolean; label: string }[] }>();
+  const add = (service: ServiceConfig, repo: string, r: StoryRangeRef, merged: boolean, label: string) => {
     const entry = byService.get(service.name) ?? { service, repo, ranges: [] };
-    if (!entry.ranges.some((r) => r.base === range.base && r.head === range.head)) entry.ranges.push({ ...range, merged: p.merged });
+    if (!entry.ranges.some((x) => x.base === r.base && x.head === r.head)) entry.ranges.push({ base: r.base, head: r.head, merged, label });
     byService.set(service.name, entry);
+  };
+  for (const p of manifest.parts) {
+    if (p.dropped) continue;
+    const service = i.c.workspace.services.find((s) => s.name === p.service);
+    if (!service) continue;
+    const repo = path.resolve(i.cwd, service.path);
+    const name = `${p.service}${p.mr ? ` !${p.mr.iid}` : p.branch ? ` ${p.branch}` : ""}`;
+    if (p.reverted) {
+      notes.push(`${name} was reverted on the main branch; its change is left out`);
+      continue;
+    }
+    if (!fs.existsSync(repo) || !isGitRepo(repo)) {
+      notes.push(`${name}: ${service.path} is not a git clone here; its change is left out`);
+      continue;
+    }
+    const target = targetRefOf(repo, i.c.ci.targetBranch);
+    if (p.merged) {
+      const scan = () => {
+        const ranges = storyRanges(repo, i.story, target ?? p.sha ?? "HEAD");
+        if (!ranges.length) notes.push(`${p.service}: no commit message on ${i.c.ci.targetBranch} mentions ${i.story}; skipped`);
+        for (const r of ranges) add(service, repo, r, true, `${name} merged`);
+      };
+      if (p.source === "gitlab-mr") {
+        const sha = p.mergeSha ?? p.squashSha;
+        if (sha && known(repo, sha)) add(service, repo, { base: `${sha}^1`, head: sha }, true, `${name} merged`);
+        else if (sha) notes.push(`${name}: its commit is not in the clone of ${service.path} (fetch the target branch); skipped`);
+        else {
+          // A rebase or fast-forward merge has no merge or squash commit: GitLab's diff base for the MR, else the commit messages.
+          const refs = p.diffRefs ?? (p.mr ? await diffRefsOf(i.gitlab, service, p.mr.iid) : undefined);
+          if (refs && known(repo, refs.base) && known(repo, refs.head)) add(service, repo, { base: refs.base, head: refs.head }, true, `${name} merged`);
+          else {
+            notes.push(`${name}: merged without a merge or squash commit and its commits are not in the clone of ${service.path}; read from the commit messages on ${i.c.ci.targetBranch}`);
+            scan();
+          }
+        }
+      } else scan();
+    } else {
+      const head = fetchMrHead(repo, i.c, service, p);
+      const range = head ? openRange(repo, i.story, head, target) : undefined;
+      if (!range) {
+        notes.push(`${name}: ${!head ? "its head commit is not in the clone" : `no common commit with ${i.c.ci.targetBranch}`}; skipped`);
+        continue;
+      }
+      add(service, repo, range, false, `${name} open`);
+    }
   }
   const parts: StoryPart[] = [];
   for (const { service, repo, ranges } of byService.values()) {
@@ -105,15 +243,15 @@ export async function storyParts(i: { c: Config; cwd: string; story: string; git
     const files = [...new Set(sets.flatMap((x) => x.files))];
     const diff = sets.length === 1 ? sets[0].diff : sets.map((x) => `# ----- ${x.base.slice(0, 8)}..${x.head.slice(0, 8)} -----\n${x.diff}`).join("\n");
     const cs: ChangeSet = { base: sets[0].base, head: sets[0].head, files, diff };
-    parts.push({ service, repo, cs, heads: sets.map((x) => x.head), relevant: files.filter((f) => !matchesAny(f, i.c.agent.skipPaths)), merged: ranges.every((r) => r.merged) });
+    parts.push({ service, repo, cs, heads: sets.map((x) => x.head), relevant: files.filter((f) => !matchesAny(f, i.c.agent.skipPaths)), merged: ranges.every((r) => r.merged), label: ranges.length === 1 ? ranges[0].label : `${service.name} ${ranges.map((r) => r.label.slice(service.name.length).trim()).join(", ")}` });
   }
   return { parts, manifest, notes };
 }
 
-/** The combined view the planner and the author see: one diff with a header per service, files prefixed by service. */
+/** The combined view the planner and the author see: one diff with a header per range, files prefixed by service. */
 export function combinedChange(story: string, parts: StoryPart[]): { cs: ChangeSet; relevant: string[]; service: ServiceConfig } {
-  const diff = parts.map((p) => `# ===== service: ${p.service.name} (${p.service.path}) ${p.cs.base.slice(0, 8)}..${p.cs.head.slice(0, 8)} =====\n${p.cs.diff}`).join("\n");
-  const relevant = parts.flatMap((p) => p.relevant.map((f) => `${p.service.name}/${f}`));
+  const diff = parts.map((p) => `# ===== service: ${p.service.name} (${p.service.path})${p.label ? ` · ${p.label.startsWith(p.service.name) ? p.label.slice(p.service.name.length).trim() || "change" : p.label}` : ""} ${p.cs.base.slice(0, 8)}..${p.cs.head.slice(0, 8)} =====\n${p.cs.diff}`).join("\n");
+  const relevant = [...new Set(parts.flatMap((p) => p.relevant.map((f) => `${p.service.name}/${f}`)))];
   const service: ServiceConfig = {
     name: `story-${story}`,
     path: parts[0]?.service.path ?? ".",

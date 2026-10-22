@@ -26,7 +26,7 @@ import { budgetedEngine, endStateOf, generateJobKey } from "../stories/jobs.js";
 import { NO_STORY } from "../stories/record.js";
 import { type JobHandle } from "../stories/jobs.js";
 import { type RecordStore } from "../stories/record.js";
-import { endJob, startJob } from "../stories/start.js";
+import { endJob, openStore, startJob } from "../stories/start.js";
 import { acHash } from "../expected/format.js";
 import { type AgentResult, addUsage } from "../engines/AgentEngine.js";
 import { planChange } from "../plan/planner.js";
@@ -118,7 +118,8 @@ async function generateRun(o: GenerateOptions, ctl: JobControl): Promise<number>
   let parts: StoryPart[] | undefined;
   if (o.story && o.backfill) throw new Error("backfill and story mode can't be combined");
   if (o.story) {
-    const sp = await storyParts({ c, cwd, story: o.story });
+    const record = await openStore(cwd, c).load(o.story).catch(() => undefined);
+    const sp = await storyParts({ c, cwd, story: o.story, gitlab: c.workspace.services.some((x) => x.gitlabProject) ? gitlabContext(c.ci.gitlabUrl) : undefined, record });
     sp.notes.forEach((n) => log.warn(n));
     if (!sp.parts.length) throw new Error(`No service changes found for ${o.story}: no branch or commit message mentions it in the service repos`);
     parts = sp.parts;
