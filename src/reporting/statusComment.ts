@@ -1,28 +1,43 @@
 import type { Config } from "../config.js";
-import { findIssueComment, type JiraContext, upsertIssueComment, writeIssueComment } from "../scm/jira.js";
+import { jiraMode } from "../config.js";
+import { deleteComment, findIssueComment, listOwnComments, type JiraContext, upsertIssueComment, writeIssueComment } from "../scm/jira.js";
+import type { StoryRecord } from "../stories/record.js";
+import { openStore } from "../stories/start.js";
+import { log } from "../log.js";
 
 /**
  * One QA status comment per story. Everything qa-sentinel says about a story on Jira (feature readiness, the gap
  * report of each service, the story review, proposed bugs, post-deploy results) lives in ONE comment made of
  * sections. A command replaces only its own section and leaves the others; the comment is edited in place, so the
- * story's activity does not fill up with qa-sentinel comments. (The showcase comment stays separate: it @mentions
- * people, and an edited comment does not notify anyone.)
+ * story's activity does not fill up with qa-sentinel comments. Short notifications that mention people are separate
+ * new comments (see notify.ts): an edited comment does not notify anyone.
+ *
+ * Each result section remembers the "basis" it was written against (a digest of the merged code and the ACs, from the
+ * story record). When the basis moves on, the section is shown with an "out of date" mark. Only qa-sentinel's own
+ * comments are ever edited or deleted.
  */
 
 export const STATUS_MARKER = "qa-sentinel:status";
-const SECTION_RE = /^(.*?)(?:\{color:#97a0af\})?Updated ([^{]*?) · qa-sentinel:section=([A-Za-z0-9:._-]+)(?:\{color\})?\s*$/;
+const SECTION_RE = /^(.*?)(?:\{color:#97a0af\})?Updated ([^{]*?) · qa-sentinel:section=([A-Za-z0-9:._-]+)(?: · basis=([0-9a-f]+))?(?:\{color\})?\s*$/;
 /** Jira rejects comments over 32,767 characters. */
 const HARD_LIMIT = 32_000;
+/** The first line of an out-of-date result section; it is added when drawing and removed when reading. */
+const STALE_LINE = "{color:#de350b}⚠️ *Out of date:*";
 
 export interface Section {
   name: string;
   /** Wiki text, starting with its heading. */
   wiki: string;
   updated: string;
+  /** The story basis this section was written against (absent in comments written before bases existed: never marked). */
+  basis?: string;
 }
 
+/** Sections that report a result and can be out of date. The others (pending, bugs, story review, hotfix) are not marked. */
+export const isResultSection = (name: string) => name === "feature" || name.startsWith("gap-report:") || name === "post-deploy" || name === "showcase" || name === "cross-service";
+
 /** Fixed order in the comment: the feature first, then gap reports, then the rest. */
-const rank = (name: string) => (name === "feature" ? 0 : name.startsWith("gap-report:") ? 1 : name === "story-review" ? 2 : name === "bugs" ? 3 : name === "post-deploy" ? 4 : 5);
+const rank = (name: string) => (name === "pending" ? -1 : name === "feature" ? 0 : name.startsWith("gap-report:") ? 1 : name === "story-review" ? 2 : name === "bugs" ? 3 : name === "post-deploy" ? 4 : 5);
 
 /** The sections of an existing status comment (anything before the status marker line is the header). */
 export function parseStatus(body: string): Section[] {
@@ -34,7 +49,9 @@ export function parseStatus(body: string): Section[] {
     const m = SECTION_RE.exec(line);
     if (m) {
       if (m[1].trim()) acc.push(m[1]);
-      out.push({ name: m[3], wiki: acc.join("\n").trim(), updated: m[2].trim() });
+      // The out-of-date line is drawn from the basis every time; never keep it as section text.
+      const text = acc.filter((l) => !l.startsWith(STALE_LINE)).join("\n").trim();
+      out.push({ name: m[3], wiki: text, updated: m[2].trim(), ...(m[4] ? { basis: m[4] } : {}) });
       acc = [];
     } else acc.push(line);
   }
@@ -57,34 +74,174 @@ function fit(sections: Section[], header: string): Section[] {
   return out;
 }
 
-export function renderStatus(story: string, sections: Section[]): string {
+export interface RenderOptions {
+  /** The story's basis now. Result sections written against another basis are marked out of date. */
+  currentBasis?: string;
+  /** What changed, for the mark; given the section. */
+  why?: (s: Section) => string;
+}
+
+const GENERIC_WHY = "new code was merged or the ACs changed after this was written";
+
+export function renderStatus(story: string, sections: Section[], o: RenderOptions = {}): string {
   const header = `h2. QA status · ${story}\n_One comment, kept up to date by qa-sentinel. Each part is replaced when its check runs again._\n{color:#97a0af}${STATUS_MARKER}{color}\n`;
   const ordered = [...sections].sort((a, b) => rank(a.name) - rank(b.name) || a.name.localeCompare(b.name));
-  return [header, ...fit(ordered, header).map((x) => `${x.wiki}\n{color:#97a0af}Updated ${x.updated} · qa-sentinel:section=${x.name}{color}\n`)].join("\n");
+  const stale = (x: Section) => Boolean(o.currentBasis && x.basis && x.basis !== o.currentBasis && isResultSection(x.name));
+  return [
+    header,
+    ...fit(ordered, header).map((x) => {
+      const mark = stale(x) ? `${STALE_LINE} ${o.why?.(x) ?? GENERIC_WHY}.{color}\n` : "";
+      return `${mark}${x.wiki}\n{color:#97a0af}Updated ${x.updated} · qa-sentinel:section=${x.name}${x.basis ? ` · basis=${x.basis}` : ""}{color}\n`;
+    }),
+  ].join("\n");
 }
 
 /** Replace (or add) one section. Pure. */
-export function withSection(existing: Section[], name: string, wiki: string, now = new Date()): Section[] {
-  return [...existing.filter((s) => s.name !== name), { name, wiki: wiki.trim(), updated: stamp(now) }];
+export function withSection(existing: Section[], name: string, wiki: string, now = new Date(), basis?: string): Section[] {
+  return [...existing.filter((s) => s.name !== name), { name, wiki: wiki.trim(), updated: stamp(now), ...(basis ? { basis } : {}) }];
+}
+
+/** "2026-10-21 11:03 UTC" -> ISO time (undefined when it is not that format). */
+const stampToIso = (u: string) => {
+  const m = /^(\d{4}-\d{2}-\d{2}) (\d{2}:\d{2}) UTC$/.exec(u);
+  return m ? `${m[1]}T${m[2]}:00.000Z` : undefined;
+};
+
+/** What changed since a section was written, in words, from the story record. */
+export function whatChanged(rec: Pick<StoryRecord, "parts"> | undefined, s: Section): string {
+  const since = stampToIso(s.updated);
+  const merged = (rec?.parts ?? []).filter((p) => p.state === "merged" && p.mergedAt && (!since || p.mergedAt > since));
+  if (!merged.length) return GENERIC_WHY;
+  return `${GENERIC_WHY} (${merged.slice(0, 3).map((p) => `${p.service}${p.iid ? ` !${p.iid}` : ""} merged ${p.mergedAt!.slice(0, 10)}`).join(", ")}${merged.length > 3 ? `, +${merged.length - 3} more` : ""})`;
+}
+
+export interface StatusWrite {
+  action: "created" | "updated";
+  id: string;
+  url: string;
 }
 
 /**
  * Put a section into the story's status comment. Jira has no compare-and-set, so the comment is read right before
  * it is written; two runners updating different sections at the same moment could still lose one of them, and the
- * next run of that check restores it.
+ * next run of that check restores it. Only the token user's own status comment is edited.
  */
-export async function upsertStatusSection(ctx: JiraContext, story: string, name: string, wiki: string, visibility?: { type: "role" | "group"; value: string }, now = new Date()) {
+export async function upsertStatusSection(ctx: JiraContext, story: string, name: string, wiki: string, visibility?: { type: "role" | "group"; value: string }, now = new Date(), o: { basis?: string; why?: (s: Section) => string } = {}): Promise<StatusWrite> {
   const existing = await findIssueComment(ctx, story, STATUS_MARKER);
-  const sections = withSection(existing ? parseStatus(existing.body) : [], name, wiki, now);
-  return writeIssueComment(ctx, story, existing?.id, renderStatus(story, sections), visibility);
+  const sections = withSection(existing ? parseStatus(existing.body) : [], name, wiki, now, o.basis);
+  return writeIssueComment(ctx, story, existing?.id, renderStatus(story, sections, { currentBasis: o.basis, why: o.why }), visibility);
+}
+
+// ---------------------------------------------------------------------------------------------
+// Older comments
+
+/** Markers of the comments the old layout wrote (one per kind). */
+export const LEGACY_MARKERS = ["qa-sentinel:gap-report:", "qa-sentinel:feature", "qa-sentinel:post-deploy", "qa-sentinel:bugs", "qa-sentinel:story-review", "qa-sentinel:showcase", "qa-sentinel:hotfix-"];
+export const REPLACED_MARKER = "qa-sentinel:replaced";
+
+/**
+ * qa-sentinel's own older comments on a story (one per kind) become a one-line pointer to the status comment, or are
+ * deleted. Other people's comments are never touched, even when they contain a marker; when Jira will not say who the
+ * token belongs to nothing is touched. Comments already replaced are skipped, so running it again changes nothing.
+ * Returns how many comments were changed.
+ */
+export async function cleanupLegacy(c: Config, ctx: JiraContext, story: string, statusUrl: string): Promise<number> {
+  const how = c.reporting.jira.cleanup;
+  if (how === "keep") return 0;
+  let own;
+  try {
+    own = await listOwnComments(ctx, story);
+  } catch (e) {
+    log.warn(`${story}: older qa-sentinel comments left as they are: ${(e as Error).message}`);
+    return 0;
+  }
+  let n = 0;
+  let removed = 0;
+  for (const cm of own) {
+    if (cm.body.includes(STATUS_MARKER) || cm.body.includes(REPLACED_MARKER) || !LEGACY_MARKERS.some((m) => cm.body.includes(m))) continue;
+    try {
+      if (how === "delete") {
+        try {
+          await deleteComment(ctx, story, cm.id);
+          n++;
+          removed++;
+          continue;
+        } catch (e) {
+          log.warn(`${story}: could not delete comment ${cm.id} (${(e as Error).message.split("\n")[0]}); making it a pointer instead`);
+        }
+      }
+      // The pointer keeps the restriction the comment had, or the configured one: never wider.
+      const visibility = (cm.visibility as { type: "role" | "group"; value: string } | undefined) ?? c.reporting.jira.visibility;
+      await writeIssueComment(ctx, story, cm.id, `Replaced by the QA status comment: ${statusUrl} {color:#97a0af}${REPLACED_MARKER}{color}`, visibility);
+      n++;
+    } catch (e) {
+      log.warn(`${story}: could not update comment ${cm.id}: ${(e as Error).message.split("\n")[0]}`);
+    }
+  }
+  if (n) log.info(`${story}: ${n} older qa-sentinel comment(s) cleaned up (${removed} removed, ${n - removed} replaced by a pointer)`);
+  return n;
+}
+
+// ---------------------------------------------------------------------------------------------
+// What the commands call
+
+/** The story record, for the basis. The record is a cache: any problem reading it means no basis, never a failure. */
+async function recordOf(cwd: string | undefined, c: Config, story: string, env: NodeJS.ProcessEnv | undefined): Promise<StoryRecord | undefined> {
+  if (!cwd) return undefined;
+  try {
+    return await openStore(cwd, c, env).load(story);
+  } catch {
+    return undefined;
+  }
+}
+
+export interface PostOptions {
+  name: string;
+  wiki: string;
+  legacyKind: string;
+  legacyMarker?: string;
+  /** Where the story record is (for the basis the section is written against). */
+  cwd?: string;
+  env?: NodeJS.ProcessEnv;
+  /** The basis, when the caller has it (else it comes from the story record). */
+  basis?: string;
+  now?: Date;
 }
 
 /**
- * What every command calls to say something on a story. `reporting.jira.layout`: "single" (default) puts it in the
- * status comment; "separate" is the old behaviour, one comment per kind, with its own marker.
+ * What every command calls to say something on a story. `reporting.jira.mode`: status (default) puts it in the
+ * status comment; legacy is the old behaviour, one comment per kind with its own marker; both writes both. On the
+ * first status comment of a story, qa-sentinel's older comments are cleaned up (`reporting.jira.cleanup`).
  */
-export async function postToStory(c: Config, ctx: JiraContext, story: string, o: { name: string; wiki: string; legacyKind: string; legacyMarker?: string }) {
+export async function postToStory(c: Config, ctx: JiraContext, story: string, o: PostOptions) {
   const j = c.reporting.jira;
-  if (j.layout === "separate") return upsertIssueComment(ctx, story, o.legacyKind, o.wiki, j.visibility, o.legacyMarker);
-  return upsertStatusSection(ctx, story, o.name, o.wiki, j.visibility);
+  const mode = jiraMode(c);
+  const legacy = () => upsertIssueComment(ctx, story, o.legacyKind, o.wiki, j.visibility, o.legacyMarker);
+  if (mode === "legacy") return legacy();
+  const rec = o.basis ? undefined : await recordOf(o.cwd, c, story, o.env);
+  const basis = o.basis ?? rec?.basis;
+  const r = await upsertStatusSection(ctx, story, o.name, o.wiki, j.visibility, o.now, { basis, why: (s) => whatChanged(rec, s) });
+  if (mode === "both") await legacy();
+  else if (r.action === "created") await cleanupLegacy(c, ctx, story, r.url).catch((e) => log.warn(`${story}: ${(e as Error).message}`));
+  return r;
+}
+
+/**
+ * Re-draw an existing status comment against the story's basis now: marks result sections that are out of date, and
+ * sets (or removes, with null) the `pending` section. Section texts do not change and nothing is created: with no
+ * status comment of ours there is nothing to refresh. No AI. Writes only when the comment would look different.
+ */
+export async function refreshStaleness(ctx: JiraContext, story: string, o: { basis?: string; rec?: Pick<StoryRecord, "parts">; pending?: string | null; visibility?: { type: "role" | "group"; value: string }; now?: Date }): Promise<"none" | "unchanged" | "updated"> {
+  const existing = await findIssueComment(ctx, story, STATUS_MARKER);
+  if (!existing) return "none";
+  let sections = parseStatus(existing.body);
+  if (o.pending !== undefined) {
+    const cur = sections.find((x) => x.name === "pending");
+    if (o.pending === null) sections = sections.filter((x) => x.name !== "pending");
+    else if (cur?.wiki !== o.pending.trim()) sections = withSection(sections, "pending", o.pending, o.now);
+  }
+  const body = renderStatus(story, sections, { currentBasis: o.basis, why: (s) => whatChanged(o.rec, s) });
+  if (body.trim() === existing.body.trim()) return "unchanged";
+  await writeIssueComment(ctx, story, existing.id, body, o.visibility);
+  return "updated";
 }

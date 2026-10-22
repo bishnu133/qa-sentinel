@@ -1,7 +1,8 @@
 import http from "node:http";
 import { describe, expect, it } from "vitest";
 import { ConfigSchema } from "../src/config.js";
-import { STATUS_MARKER, parseStatus, postToStory, renderStatus, upsertStatusSection, withSection } from "../src/reporting/statusComment.js";
+import { STATUS_MARKER, parseStatus, postToStory, refreshStaleness, renderStatus, upsertStatusSection, whatChanged, withSection } from "../src/reporting/statusComment.js";
+import { BOT, DANA, mockJira } from "./helpers/mockJira.js";
 
 const T = new Date("2026-10-21T11:03:00Z");
 
@@ -96,6 +97,110 @@ describe("one status comment per story", () => {
       expect(j.comments).toHaveLength(3);
     } finally {
       j.server.close();
+    }
+  });
+});
+
+describe("out-of-date marks", () => {
+  const OLD = "aaaa1111";
+  const NEW = "bbbb2222";
+  const sections = () => {
+    let s = withSection([], "post-deploy", "h3. Post-deploy\nok", T, OLD);
+    s = withSection(s, "gap-report:orders", "h3. Gap orders\nline", T, OLD);
+    s = withSection(s, "feature", "h3. Feature\nno basis recorded", T);
+    s = withSection(s, "bugs", "h3. Bugs\n* a", T, OLD);
+    s = withSection(s, "showcase", "h3. Showcase\nfresh", T, NEW);
+    return s;
+  };
+  const marks = (body: string) => body.split("\n").filter((l) => l.includes("Out of date")).length;
+
+  it("marks result sections written against another basis, and only those", () => {
+    const body = renderStatus("SHOP-1", sections(), { currentBasis: NEW });
+    expect(marks(body)).toBe(2);
+    const text = body.split("\n");
+    expect(text[text.findIndex((l) => l.includes("Out of date")) + 1]).toMatch(/Gap orders|Post-deploy/);
+    expect(body).toContain("new code was merged or the ACs changed after this was written");
+    expect(marks(renderStatus("SHOP-1", sections()))).toBe(0); // no current basis: no marks
+  });
+
+  it("the basis is in the stamp; the mark is not kept as section text when the comment is read back", () => {
+    const body = renderStatus("SHOP-1", sections(), { currentBasis: NEW });
+    expect(body).toContain(`qa-sentinel:section=post-deploy · basis=${OLD}`);
+    const back = parseStatus(body);
+    expect(back.find((x) => x.name === "post-deploy")).toMatchObject({ basis: OLD, wiki: "h3. Post-deploy\nok" });
+    expect(back.find((x) => x.name === "feature")!.basis).toBeUndefined();
+    // Drawing it again gives the same text: marks are never doubled.
+    expect(renderStatus("SHOP-1", back, { currentBasis: NEW })).toBe(body);
+  });
+
+  it("an old-format stamp (no basis) still parses and is never marked", () => {
+    const old = `h2. QA status · SHOP-1\n{color:#97a0af}${STATUS_MARKER}{color}\n\nh3. Post-deploy\nold\n{color:#97a0af}Updated 2026-10-01 09:00 UTC · qa-sentinel:section=post-deploy{color}\n`;
+    const back = parseStatus(old);
+    expect(back).toEqual([{ name: "post-deploy", wiki: "h3. Post-deploy\nold", updated: "2026-10-01 09:00 UTC" }]);
+    expect(marks(renderStatus("SHOP-1", back, { currentBasis: NEW }))).toBe(0);
+  });
+
+  it("whatChanged names the merges after the section was written", () => {
+    const rec = { parts: [{ service: "orders", iid: 12, state: "merged", mergedAt: "2026-10-22T09:00:00Z" }, { service: "shop", iid: 3, state: "merged", mergedAt: "2026-09-01T09:00:00Z" }] } as never;
+    expect(whatChanged(rec, { name: "post-deploy", wiki: "", updated: "2026-10-21 11:03 UTC" })).toContain("(orders !12 merged 2026-10-22)");
+    expect(whatChanged(undefined, { name: "x", wiki: "", updated: "?" })).toBe("new code was merged or the ACs changed after this was written");
+  });
+
+  it("refreshStaleness re-draws our status comment with the marks and no section text changes; a second call writes nothing", async () => {
+    const j = await mockJira();
+    try {
+      j.add("SHOP-1", `${STATUS_MARKER} somebody else's, not ours`, DANA);
+      const mine = j.add("SHOP-1", renderStatus("SHOP-1", sections()), BOT);
+      expect(await refreshStaleness(j.ctx, "SHOP-1", { basis: NEW })).toBe("updated");
+      expect(marks(mine.body)).toBe(2);
+      expect(parseStatus(mine.body).map((x) => x.wiki)).toEqual(parseStatus(renderStatus("SHOP-1", sections())).map((x) => x.wiki));
+      const puts = j.touched.length;
+      expect(await refreshStaleness(j.ctx, "SHOP-1", { basis: NEW })).toBe("unchanged");
+      expect(j.touched.length).toBe(puts);
+      expect(j.foreignWrites()).toEqual([]);
+    } finally {
+      await j.close();
+    }
+  });
+
+  it("refreshStaleness creates nothing when there is no status comment of ours", async () => {
+    const j = await mockJira();
+    try {
+      j.add("SHOP-1", `${STATUS_MARKER} somebody else's`, DANA);
+      expect(await refreshStaleness(j.ctx, "SHOP-1", { basis: NEW, pending: "h3. Waiting\n* x" })).toBe("none");
+      expect(j.comments["SHOP-1"]).toHaveLength(1);
+    } finally {
+      await j.close();
+    }
+  });
+
+  it("the pending section is added at the top, kept when it is the same, and removed with null", async () => {
+    const j = await mockJira();
+    try {
+      j.add("SHOP-1", renderStatus("SHOP-1", withSection([], "feature", "h3. Feature\nx", T)), BOT);
+      expect(await refreshStaleness(j.ctx, "SHOP-1", { pending: "h3. Waiting\n* AC-1 marked ready by Dana on 2026-10-21", now: T })).toBe("updated");
+      const body = j.comments["SHOP-1"][0].body;
+      expect(body.indexOf("Waiting")).toBeLessThan(body.indexOf("Feature"));
+      expect(await refreshStaleness(j.ctx, "SHOP-1", { pending: "h3. Waiting\n* AC-1 marked ready by Dana on 2026-10-21", now: new Date("2026-10-23T00:00:00Z") })).toBe("unchanged");
+      expect(await refreshStaleness(j.ctx, "SHOP-1", { pending: null })).toBe("updated");
+      expect(parseStatus(j.comments["SHOP-1"][0].body).map((x) => x.name)).toEqual(["feature"]);
+    } finally {
+      await j.close();
+    }
+  });
+
+  it("a section written by a command carries the story's basis and re-marks the others (postToStory with a basis)", async () => {
+    const j = await mockJira();
+    try {
+      const c = ConfigSchema.parse({ version: 1, mode: "existing", project: { name: "t" }, tests: { api: { framework: "playwright", runCommand: "x" } }, ci: { platform: "gitlab" } });
+      await postToStory(c, j.ctx, "SHOP-1", { name: "post-deploy", wiki: "h3. P\nok", legacyKind: "post-deploy", basis: OLD, now: T });
+      expect(j.comments["SHOP-1"][0].body).not.toContain("Out of date");
+      await postToStory(c, j.ctx, "SHOP-1", { name: "gap-report:orders", wiki: "h3. G\nnew", legacyKind: "orders", basis: NEW, now: T });
+      const body = j.comments["SHOP-1"][0].body;
+      expect(marks(body)).toBe(1);
+      expect(parseStatus(body).find((x) => x.name === "gap-report:orders")!.basis).toBe(NEW);
+    } finally {
+      await j.close();
     }
   });
 });

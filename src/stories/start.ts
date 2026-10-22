@@ -1,6 +1,7 @@
 import type { Config } from "../config.js";
 import { jiraContext } from "../scm/jira.js";
 import { log } from "../log.js";
+import { notifyStory } from "../reporting/notify.js";
 import { ClaudeAccessError } from "../claude.js";
 import type { AgentEngine } from "../engines/AgentEngine.js";
 import { type JobHandle, beginJob, budgetedEngine, endJob, jobPolicy } from "./jobs.js";
@@ -57,6 +58,7 @@ export async function startJob(o: StartJobOptions): Promise<JobStart> {
     return { run: false, exitCode: 0, message: r.message };
   }
   log.fail(r.message);
+  if (r.reason === "budget" && o.story !== NO_STORY) await notifyStory(o.cwd, o.c, o.story, "stopped-by-budget", `qa-sentinel stopped before starting AI work on this story: ${r.message}`, o.key, o.env, store);
   return { run: false, exitCode: EXIT_LIMIT, message: r.message };
 }
 

@@ -9,7 +9,11 @@ import { type RecordStore, type StoryRecord, SAFE_KEY, emptyRecord } from "../st
 import { openStore } from "../stories/start.js";
 import { acHash } from "../expected/format.js";
 import { gitlabContext } from "../scm/gitlab.js";
-import { jiraContext } from "../scm/jira.js";
+import { jiraContext, type JiraContext } from "../scm/jira.js";
+import { jiraMode } from "../config.js";
+import { notify } from "../reporting/notify.js";
+import { pendingWiki } from "../reporting/pending.js";
+import { refreshStaleness } from "../reporting/statusComment.js";
 import { storyBasis } from "../stories/parts.js";
 import { cloneServices } from "../stories/cloneServices.js";
 import { sweepMrs, sweepSince, writeSweepState } from "../stories/sweep.js";
@@ -153,19 +157,46 @@ export function acChanges(prev: StoryRecord["acs"], now: { id: string; hash: str
 }
 
 /** Store what this check saw, only when something differs (a scheduled check must not rewrite every story's record every time). */
-async function remember(store: RecordStore, key: string, input: StoryInput, a: Assessment, acs: { id: string; hash: string }[], now: Date): Promise<void> {
-  if (!SAFE_KEY.test(key)) return;
-  await store.locked(key, async () => {
-    const rec = (await store.load(key)) ?? emptyRecord(key, now);
+async function remember(store: RecordStore, key: string, input: StoryInput, a: Assessment, acs: { id: string; hash: string }[], now: Date): Promise<{ before?: StoryRecord; after: StoryRecord } | undefined> {
+  if (!SAFE_KEY.test(key)) return undefined;
+  return store.locked(key, async () => {
+    const existing = await store.load(key);
+    const rec = existing ?? emptyRecord(key, now);
     const jira = input.source === "jira" ? { status: input.status, issueType: input.issueType, url: input.url, labels: input.labels, ...(rec.jira?.updated ? { updated: rec.jira.updated } : {}) } : rec.jira;
     const lastCheck = { at: now.toISOString(), state: a.state, next: a.next, reasons: a.reasons };
     const nextAcs = acs.length ? acs : rec.acs;
     const basis = rec.parts.length ? storyBasis(rec, nextAcs.map((x) => x.hash)) : rec.basis;
     const unchanged = JSON.stringify([rec.jira, rec.acs, rec.lastCheck && { ...rec.lastCheck, at: "" }, rec.basis]) === JSON.stringify([jira, acs, { ...lastCheck, at: "" }, basis]);
-    if (unchanged) return;
+    if (unchanged) return { before: existing, after: rec };
     // The ACs are only replaced when the story was readable; an unreadable story keeps the last good copy.
-    await store.save({ ...rec, jira, acs: nextAcs, lastCheck, ...(basis ? { basis } : {}), updatedAt: now.toISOString() });
+    const next = { ...rec, jira, acs: nextAcs, lastCheck, ...(basis ? { basis } : {}), updatedAt: now.toISOString() };
+    await store.save(next);
+    return { before: existing, after: next };
   });
+}
+
+/**
+ * After a check: the status comment is drawn again against the story's basis now (out-of-date marks, the pending
+ * section), and people are told about a mismatch. No AI. Only when something that shows there changed, only an
+ * existing status comment is edited, and only the token user's own.
+ */
+async function reportOnJira(c: ReturnType<typeof loadConfig>, jira: JiraContext, store: RecordStore, a: Assessment, seen: { before?: StoryRecord; after: StoryRecord }): Promise<void> {
+  const { before, after } = seen;
+  const facts = { jiraReady: a.jiraReady, jiraStatus: a.status, state: a.state };
+  if (jiraMode(c) !== "legacy") {
+    const pending = pendingWiki(after, facts);
+    if (before?.basis !== after.basis || pending !== (before ? pendingWiki(before, facts) : null)) {
+      try {
+        const r = await refreshStaleness(jira, a.key, { basis: after.basis, rec: after, pending, visibility: c.reporting.jira.visibility });
+        if (r === "updated") log.info(`${a.key}: status comment redrawn (out-of-date marks / waiting list)`);
+      } catch (e) {
+        log.warn(`${a.key}: status comment not refreshed: ${(e as Error).message.split("\n")[0]}`);
+      }
+    }
+  }
+  if (a.jiraReady)
+    for (const [ac, e] of Object.entries(after.acEvidence))
+      if (e.status === "not-found") await notify({ c, ctx: jira, store, story: a.key, event: "ac-not-built-but-ready", key: ac, text: `${ac} does not look built, but the story status is ${a.status ?? "ready"}. Please check it before it goes to testing.` });
 }
 
 /**
@@ -248,18 +279,26 @@ async function storiesRun(o: StoriesOptions): Promise<number> {
   const records = await store.list();
   const shared = sharedFacts(cwd, c);
   const policy = jobPolicy(c, {}, env);
+  // Jira for the stories' own comments: the /qa ready overrides are read and the status comment is kept current. Not with story files.
+  const jira = o.storiesDir ? undefined : jiraContext(c.requirements.jira.baseUrl, env);
   const list: Assessment[] = [];
   const changes = new Map<string, string[]>();
   const crossReady = new Map<string, string[]>();
+  const overridesOf = new Map<string, StoryRecord["overrides"]>();
   for (const input of inputs) {
-    const facts = await gatherFacts({ cwd, c, store, policy, budgets: c.automation.budgets, records, gitlab, now, env }, input, shared);
+    const facts = await gatherFacts({ cwd, c, store, policy, budgets: c.automation.budgets, records, gitlab, now, env, jira, noRecord: o.noRecord }, input, shared);
     const a = { ...assessStory(facts), ...(facts.jiraReady !== undefined ? { jiraReady: facts.jiraReady } : {}), ...(facts.services ? { services: facts.services } : {}), ...(facts.unmappedComponents ? { unmappedComponents: facts.unmappedComponents } : {}), ...(facts.resolvedFrom ? { resolvedFrom: facts.resolvedFrom } : {}), ...(facts.writeReadiness ? { writeReadiness: facts.writeReadiness } : {}) };
     list.push(a);
     if (facts.crossReady?.length) crossReady.set(a.key, facts.crossReady);
     const acs = facts.acs.map((x) => ({ id: x.id, hash: acHash(x.text) }));
     if (a.state !== "skipped") {
       changes.set(a.key, acChanges(records.find((r) => r.key === a.key)?.acs ?? [], acs));
-      if (!o.noRecord) await remember(store, a.key, input, a, acs, now).catch((e) => log.warn(`story record for ${a.key} not updated: ${(e as Error).message}`));
+      if (!o.noRecord) {
+        const seen = await remember(store, a.key, input, a, acs, now).catch((e) => (log.warn(`story record for ${a.key} not updated: ${(e as Error).message}`), undefined));
+        if (seen) overridesOf.set(a.key, seen.after.overrides);
+        // "Before" is the record as it was when this check began: the overrides are already saved by now, and a change in them must redraw the comment.
+        if (seen && jira) await reportOnJira(c, jira, store, a, { before: records.find((r) => r.key === a.key), after: seen.after });
+      }
     }
   }
   const shown = o.all ? list : list.filter((a) => a.state !== "skipped");
@@ -268,7 +307,7 @@ async function storiesRun(o: StoriesOptions): Promise<number> {
   const outFile = path.resolve(cwd, o.out ?? "qa-stories.md");
   fs.writeFileSync(outFile, md + "\n");
   if (o.json) {
-    process.stdout.write(JSON.stringify(shown.map((a) => ({ ...a, changes: changes.get(a.key) ?? [] })), null, 2) + "\n");
+    process.stdout.write(JSON.stringify(shown.map((a) => ({ ...a, changes: changes.get(a.key) ?? [], overrides: overridesOf.get(a.key) ?? [] })), null, 2) + "\n");
     return o.act ? act(o, c, cwd, actJobs(list, crossReady), env, store.kind) : 0;
   }
   log.title(`Stories: ${list.length} looked at${hidden ? `, ${hidden} left alone (--all lists them)` : ""}`);

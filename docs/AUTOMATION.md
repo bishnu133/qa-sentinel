@@ -162,9 +162,29 @@ Each push after that: the report on the MR carries a hidden stamp (a fingerprint
 While an MR is a draft, `gap-report --post` puts a short "waiting" note in the report's comment, so nobody assumes a report exists; the real report replaces it. The "nothing changed" check also covers the story's `expected/` file and scope items, and it only trusts the comment written by the GitLab token's own user.
 
 
-## One QA status comment per story (phase 4)
+## One QA status comment per story
 
-On the Jira story qa-sentinel keeps **one** comment, "QA status · KEY", with a section per check: `feature` (readiness per AC), `gap-report:<service>`, `story-review`, `bugs`, `post-deploy`. A command replaces only its own section and shows when it last ran; sections are always in the same order. Jira has no compare-and-set, so if two jobs update different sections in the same second one update can be lost; the next run of that check restores it. The comment is kept under Jira's size limit by shortening the biggest section (the full report is the CI artifact). `reporting.jira.layout: separate` goes back to one comment per kind. The showcase comment is separate because it @mentions people. Old comments from earlier versions are not deleted.
+On the Jira story qa-sentinel keeps **one** comment, "QA status · KEY", with a section per check: `waiting` (what is held and why), `feature` (readiness per AC), `gap-report:<service>`, `story-review`, `bugs`, `post-deploy`, `showcase`. A command replaces only its own section and shows when it last ran; sections are always in the same order. Jira has no compare-and-set, so if two jobs update different sections in the same second one update can be lost; the next run of that check restores it. The comment is kept under Jira's size limit by shortening the biggest section (the full report is the CI artifact).
+
+**Modes** (`reporting.jira.mode`):
+
+- `status` (default): the single status comment. The showcase summary is a section of it, and the "ready for your review" mention is a separate short new comment (an edited comment notifies nobody).
+- `legacy`: one comment per kind, as in earlier versions. `layout: separate`, the old key, means the same when `mode` is not set.
+- `both`: writes the status section and the legacy comment. Use it while a team gets used to the new comment.
+
+**Only qa-sentinel's own comments are ever edited or deleted.** qa-sentinel asks Jira which user its token belongs to (`/rest/api/2/myself`) and ignores every other author, even when their comment contains one of qa-sentinel's markers. If Jira will not say who the token belongs to, the older-comment cleanup and the `/qa ready` reading do nothing, and the status comment is found among all comments with a warning (as on GitLab).
+
+**Older comments** (`reporting.jira.cleanup`): the first time the status comment is made on a story, qa-sentinel's own comments from the old layout (gap report, feature, post-deploy, bugs, story review, showcase, hotfix) are edited into one line, "Replaced by the QA status comment: <link>", keeping their visibility. `delete` removes them instead (needs Jira's permission to delete your own comments; if Jira refuses, it makes a pointer). `keep` leaves them. Running it again changes nothing. `mode: legacy` and `both` never clean up.
+
+**Out of date.** Each result section (`feature`, `gap-report:*`, `post-deploy`, `showcase`) remembers a "basis": a short fingerprint of the merged code and the AC texts, from the story record. When new code is merged or an AC changes, the section is shown with a first line "Out of date: new code was merged or the ACs changed after this was written (orders !12 merged 2026-10-22)". `stories` redraws the comment with these marks, with no AI and no new comment: it only edits an existing status comment of its own, and only when something changed. A section written by an older version has no basis and is never marked. The showcase says "Evidence older than the latest change" when the evidence was attached against an older basis; `showcase.reattachOnChange: true` lets the next full pass attach fresh evidence without the refresh label.
+
+**Waiting section.** Also with no AI: ACs whose end-to-end tests are held (and why), "AC-1 looks not built, but the story status is Ready for QA", "every AC has a passing test but the story status is not ready", and every `/qa ready` in use.
+
+**Notifications** (`reporting.jira.notify`): a short new comment with @mentions, sent once per event and subject (the story record remembers it, so a schedule does not repeat it). Events: `showcase-ready` (on by default), `ac-not-built-but-ready`, `cross-service-tests-ready`, `stopped-by-budget`, `merge-conflict` (off by default). `to: []` means `showcase.notify`; with no one to tell, nothing is sent.
+
+**Marking an AC ready by hand.** A person comments `/qa ready AC-1 checked on a device` on the story. `stories` reads it (not from qa-sentinel's own comments, and not from app users) and the AC counts as ready for writing its tests, even if the Jira card is not in a ready status. It does not skip an open merge request, and it does not create code that is not there. `/qa unready AC-1` takes it back; deleting the comment does the same. By default any human can do this; every use is shown in the `waiting` section with the person's name and the date. `reporting.jira.override.allowed` limits it to named Jira account ids or usernames; `override.command` changes the words.
+
+Reading the comments costs one extra Jira read per story per `stories` check. `stories --no-record` sends no notifications and keeps nothing.
 
 
 ## Linking: which work belongs to which story

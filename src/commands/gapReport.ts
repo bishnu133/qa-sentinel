@@ -505,12 +505,12 @@ async function gapReportBody(o: GapReportOptions, wrap: (e: AgentEngine) => Agen
   if (!o.dryRun && !o.story && req.storyKey && mr.mrIid)
     await recordMrSeen(openStore(cwd, c), { feature: req.storyKey, workKey: req.workKey, service: service.name, mrIid: mr.mrIid, url: mr.url, title: mr.title, branch: mr.sourceBranch, headSha: process.env.CI_MERGE_REQUEST_SOURCE_BRANCH_SHA ?? cs.head, keys: extractStoryKeys(jiraKeyPattern(c), mr.title, mr.sourceBranch, mr.description) }).catch((e) => log.warn(`story record: merge request not recorded (${(e as Error).message.split("\n")[0]})`));
   // A merge request that names several stories gets one joined comment (written by gapReportEach); each story still gets its own Jira section here.
-  if (o.post) await publish(c, { report, jiraSummary, service: service.name, storyKey: req.storyKey, mr, ...(o.noMrNote ? { targets: c.reporting.targets.filter((t) => t !== "gitlab-mr") } : {}), ...(!fp || exitCode !== 0 ? {} : { stamp: stampOf(fp, cs.head) }) });
+  if (o.post) await publish(c, { report, jiraSummary, cwd, service: service.name, storyKey: req.storyKey, mr, ...(o.noMrNote ? { targets: c.reporting.targets.filter((t) => t !== "gitlab-mr") } : {}), ...(!fp || exitCode !== 0 ? {} : { stamp: stampOf(fp, cs.head) }) });
   // Story mode with every part merged: requirements nothing builds (or builds differently) become (suspected) bugs.
   if (o.post && parts && parts.every((p) => p.merged) && c.bugs.mode !== "off" && req.storyKey && outcome.plan) {
     const jira = jiraContext(c.requirements.jira.baseUrl);
     if (jira) {
-      const r = await fileBugs(jira, c, req.storyKey, bugsFromPlan(req.storyKey, requirementItems(req), outcome.plan)).catch((e) => (log.warn(`bugs: ${(e as Error).message}`), undefined));
+      const r = await fileBugs(jira, c, req.storyKey, bugsFromPlan(req.storyKey, requirementItems(req), outcome.plan), cwd).catch((e) => (log.warn(`bugs: ${(e as Error).message}`), undefined));
       if (r?.created.length) log.ok(`bug(s) raised on ${req.storyKey}: ${r.created.join(", ")}`);
       if (r?.suggested) log.ok(`${r.suggested} bug(s) proposed on ${req.storyKey}`);
     }

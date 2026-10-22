@@ -133,6 +133,8 @@ export interface ShowcaseRecord {
   commit?: string;
   attachments: { id: string; filename: string }[];
   tests: string[];
+  /** The story's basis (merged code and ACs, from the story record) when the evidence was attached. */
+  basis?: string;
 }
 
 export const SHOWCASE_PROPERTY = "qa-sentinel.showcase";

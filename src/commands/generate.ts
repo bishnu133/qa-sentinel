@@ -15,6 +15,7 @@ import { isFeature, emptySnapshot, requirementItems, resolveRequirements, skippe
 import { findDiscrepancies, verifyChanges } from "../verification.js";
 import { mrDescription } from "../reporting.js";
 import { generationSummary } from "../reporting/jiraSummary.js";
+import { notifyStory } from "../reporting/notify.js";
 import { publish } from "../reporting/publish.js";
 import { reviewMarkdown, reviewTests, type ReviewOutcome } from "../review/reviewer.js";
 import { TEST_FILE, addedLines } from "../guardrails.js";
@@ -341,6 +342,7 @@ async function generateRun(o: GenerateOptions, ctl: JobControl): Promise<number>
     if (!prep.ok) {
       log.fail(prep.message);
       ctl.outcome = `blocked-${prep.reason}`;
+      if (prep.reason === "conflict" && storyKey) await notifyStory(cwd, c, storyKey, "merge-conflict", `the test branch ${prep.branch} cannot take ${c.ci.targetBranch}: ${prep.message}`, prep.branch, penv, ctl.store);
       if (ctx && testProject !== undefined) {
         try {
           const mr = await latestMrForBranch(ctx, testProject, prep.branch, c.ci.targetBranch);
@@ -731,7 +733,7 @@ async function generateRun(o: GenerateOptions, ctl: JobControl): Promise<number>
     const jira = jiraContext(c.requirements.jira.baseUrl);
     if (jira) {
       const candidates = bugsFromDiscrepancies(req.storyKey, requirementItems(req), discrepancies, index, plan, { environment, runCommand: (t) => runCommandsFor(c, [`${t.file}:${t.line}`])[0] });
-      const r = await fileBugs(jira, c, req.storyKey, candidates).catch((e) => (log.warn(`bugs: ${(e as Error).message}`), undefined));
+      const r = await fileBugs(jira, c, req.storyKey, candidates, cwd).catch((e) => (log.warn(`bugs: ${(e as Error).message}`), undefined));
       if (r?.created.length) log.ok(`bug(s) raised on ${req.storyKey}: ${r.created.join(", ")}`);
       if (r?.suggested) log.ok(`${r.suggested} bug(s) proposed on ${req.storyKey}`);
     }
@@ -776,6 +778,8 @@ async function generateRun(o: GenerateOptions, ctl: JobControl): Promise<number>
       });
       log.ok(`merge request ${mr.action}: ${mr.web_url}`);
       if (storyMode && storyKey && ctl.store) await recordAgentMr(ctl.store, storyKey, { branch, iid: mr.iid, url: mr.web_url, headSha: git(cwd, ["rev-parse", "HEAD"]) });
+      // A cross-service run: the people who asked to know are told the test merge request is ready for review.
+      if (storyMode && storyKey && scope?.crossInScope.length) await notifyStory(cwd, c, storyKey, "cross-service-tests-ready", `end-to-end tests for ${scope.crossInScope.join(", ")} are ready for review: ${mr.web_url}`, `${scope.crossInScope.join("+")}@${mr.iid}`, penv, ctl.store);
       if (c.reporting.targets.includes("jira")) {
         const acText = new Map(requirementItems(req).map((a) => [a.id, a.text]));
         const jiraSummary = generationSummary({
@@ -790,7 +794,7 @@ async function generateRun(o: GenerateOptions, ctl: JobControl): Promise<number>
           weakTests: review.review?.tests.filter((t) => t.verdict === "weak" || t.verdict === "wrong-oracle").length,
         });
         fs.writeFileSync(path.join(run.dir, "jira-summary.md"), jiraSummary);
-        await publish(c, { report: description, jiraSummary, service: service.name, storyKey: req.storyKey, mr: {}, targets: ["jira"] });
+        await publish(c, { report: description, jiraSummary, cwd, service: service.name, storyKey: req.storyKey, mr: {}, targets: ["jira"] });
       }
     }
   } else {
