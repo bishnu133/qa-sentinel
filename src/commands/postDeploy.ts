@@ -7,8 +7,13 @@ import { git, isGitRepo } from "../git.js";
 import { createRunDir, findService, testEnv, useEnvironment } from "../run.js";
 import { verificationMarkdown, verifyChanges, type VerificationReport } from "../verification.js";
 import { applyDeploymentGate, deploymentStates, needsFromCommits } from "../deployment.js";
-import { call, createOrUpdateMergeRequest, getAll, gitlabContext, pushUrl, type GitLabContext } from "../scm/gitlab.js";
-import { jiraContext, markdownToJiraWiki } from "../scm/jira.js";
+import { call, createOrUpdateMergeRequest, getAll, gitlabContext, mergeRequestsForCommit, pushUrl, type GitLabContext } from "../scm/gitlab.js";
+import { jiraContext, markdownToJiraWiki, type JiraContext } from "../scm/jira.js";
+import { extractStoryKeys, jiraKeyPattern } from "../requirements.js";
+import { resolveKeysCached } from "../stories/resolve.js";
+import { storyBasis } from "../stories/parts.js";
+import { type StoryRecord, SAFE_KEY, emptyRecord } from "../stories/record.js";
+import { openStore } from "../stories/start.js";
 import { postToStory } from "../reporting/statusComment.js";
 import { log } from "../log.js";
 
@@ -37,26 +42,94 @@ export const EXIT_STILL_WAITING = 75; // EX_TEMPFAIL: run again later
 
 export const WAITING_LABEL = "qa-sentinel::waiting_for_deployment";
 
-/**
- * Stories named in the commits this deployment brought (before..sha; without `before`, the last 20 commits), that
- * have tests.
- */
-export function storiesFromService(c: Config, repo: string, sha: string, index: IndexedTest[], before?: string): string[] {
-  if (!isGitRepo(repo)) return [];
-  let log_ = "";
+/** The commits a deployment brought: before..sha, or without `before` the last 20. */
+function deployedCommits(repo: string, sha: string, before?: string): { sha: string; message: string }[] {
   const range = before && !/^0+$/.test(before) ? [`${before}..${sha}`] : ["-n", "20", sha];
+  const read = (args: string[]) =>
+    git(repo, ["log", "--format=%H%x09%B%x1e", ...args])
+      .split("\x1e")
+      .map((l) => l.trim())
+      .filter(Boolean)
+      .map((l) => ({ sha: l.slice(0, l.indexOf("\t")), message: l.slice(l.indexOf("\t") + 1) }));
   try {
-    log_ = git(repo, ["log", "--format=%B%x1e", ...range]);
+    return read(range);
   } catch {
     try {
-      log_ = git(repo, ["log", "--format=%B%x1e", "-n", "20", sha]); // `before` unknown here: fall back
+      return read(["-n", "20", sha]); // `before` unknown here: fall back
     } catch {
       return [];
     }
   }
-  const re = new RegExp(`\\b(${c.requirements.storyKeyPattern})\\b`, "g");
-  const tagged = new Set(index.flatMap((t) => t.stories));
-  return [...new Set([...log_.matchAll(re)].map((m) => m[1]))].filter((s) => tagged.has(s));
+}
+
+/**
+ * Every story key named in the commits this deployment brought (before..sha; without `before`, the last 20 commits).
+ * Not only keys that have tests: a bug fix with no tests of its own is how its feature gets checked again.
+ */
+export function storiesFromService(c: Config, repo: string, sha: string, before?: string): string[] {
+  if (!isGitRepo(repo)) return [];
+  return extractStoryKeys(jiraKeyPattern(c), ...deployedCommits(repo, sha, before).map((x) => x.message));
+}
+
+/**
+ * Keys for the deployed commits that the commit messages do not give: a commit that a recorded merge request merged
+ * (the record knows its commit), else the merge request GitLab lists for the commit (title, source branch, description).
+ */
+async function keysBehindCommits(c: Config, svc: { name: string; gitlabProject?: string }, commits: { sha: string; message: string }[], records: StoryRecord[], gitlab: GitLabContext | undefined): Promise<string[]> {
+  const pattern = jiraKeyPattern(c);
+  const out: string[] = [];
+  let calls = 0;
+  for (const cm of commits) {
+    if (extractStoryKeys(pattern, cm.message).length) continue;
+    const viaRecord = records.filter((r) => r.parts.some((p) => p.service === svc.name && [p.mergeSha, p.squashSha, p.headSha].some((x) => x && (x === cm.sha || cm.sha.startsWith(x)))));
+    if (viaRecord.length) {
+      out.push(...viaRecord.map((r) => r.key));
+      continue;
+    }
+    if (gitlab && svc.gitlabProject && calls++ < 20) {
+      const mrs = await mergeRequestsForCommit(gitlab, svc.gitlabProject, cm.sha).catch(() => []);
+      for (const m of mrs) out.push(...extractStoryKeys(pattern, m.title, m.source_branch, m.description));
+    }
+  }
+  return [...new Set(out)];
+}
+
+export interface FeatureTarget {
+  feature: string;
+  /** The deployed bug, task or sub-task cards that led to this feature. */
+  bugs: { key: string; issueType?: string; via: "parent" | "link" }[];
+}
+
+/**
+ * Deployed keys → the features to check. A bug, task or sub-task is its story's change: its feature's tests run again
+ * (strict Jira rules, see stories/resolve.ts). A key Jira does not know is dropped with a note; without Jira the keys are used as they are.
+ */
+export async function featuresForKeys(c: Config, jira: JiraContext | undefined, keys: string[]): Promise<{ targets: FeatureTarget[]; notes: string[] }> {
+  const targets = new Map<string, FeatureTarget>();
+  const notes: string[] = [];
+  const add = (feature: string, bug?: FeatureTarget["bugs"][number]) => {
+    const k = [...targets.keys()].find((x) => x.toLowerCase() === feature.toLowerCase()) ?? feature;
+    const t = targets.get(k) ?? { feature: k, bugs: [] };
+    if (bug && !t.bugs.some((b) => b.key === bug.key)) t.bugs.push(bug);
+    targets.set(k, t);
+  };
+  if (!jira) for (const k of keys) add(k);
+  else
+    for (const r of await resolveKeysCached(c, jira, keys, { hasCode: true })) {
+      if (r.via === "not-found") notes.push(r.explain);
+      else if (r.via === "error") {
+        notes.push(`${r.explain}; its key is used as it is`);
+        add(r.work);
+      } else if (r.feature && (r.via === "parent" || r.via === "link")) add(r.feature, { key: r.work, issueType: r.workIssue?.issueType, via: r.via });
+      else add(r.feature ?? r.work);
+    }
+  return { targets: [...targets.values()], notes };
+}
+
+/** The Playwright --grep for a feature's tests and its bug fixes' tests. */
+export function featureGrep(feature: string, bugs: string[]): string {
+  const esc = (x: string) => x.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return [feature, ...bugs].map((k, i) => `@${i === 0 ? "story" : "bug"}:(?:\\S*,)?${esc(k)}(?![\\w-])`).join("|");
 }
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -64,6 +137,8 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 export interface StoryOutcome {
   story: string;
   status: "passed" | "failed" | "waiting" | "no-tests" | "not-merged" | "reverted" | "blocked" | "bdd-only";
+  /** Why it was checked, when it was not named itself: "fix SHOP-210 (Bug → SHOP-12) deployed". */
+  reason?: string;
   manifest: FeatureManifest;
   report?: VerificationReport;
 }
@@ -81,12 +156,21 @@ export async function postDeployCommand(o: PostDeployOptions): Promise<number> {
   if (!environment) throw new Error("post-deploy needs --env (an environment from `environments:`)");
   const baseUrl = process.env[c.tests.api.baseUrlEnv]!;
   const index = indexTests(cwd, c);
-  const stories = new Set((o.stories ?? []).map((s) => s.toUpperCase()));
+  const gl = c.workspace.services.some((s) => s.gitlabProject) || o.mrs ? gitlabContext(c.ci.gitlabUrl) : undefined;
+  const store = openStore(cwd, c);
+  const keys = new Set((o.stories ?? []).map((s) => s.toUpperCase()));
   if (o.service && o.sha) {
     const svc = findService(c, o.service, cwd, o.servicePath);
-    for (const s of storiesFromService(c, path.resolve(cwd, svc.path), o.sha, index, o.before)) stories.add(s);
+    const repo = path.resolve(cwd, svc.path);
+    for (const k of storiesFromService(c, repo, o.sha, o.before)) keys.add(k);
+    // Commits that name no key: the record or GitLab knows the merge request they came from.
+    const records = await store.list().catch(() => [] as StoryRecord[]);
+    for (const k of await keysBehindCommits(c, svc, isGitRepo(repo) ? deployedCommits(repo, o.sha, o.before) : [], records, gl)) keys.add(k);
   }
-  const gl = c.workspace.services.some((s) => s.gitlabProject) || o.mrs ? gitlabContext(c.ci.gitlabUrl) : undefined;
+  const { targets, notes: keyNotes } = await featuresForKeys(c, jiraContext(c.requirements.jira.baseUrl), [...keys]);
+  keyNotes.forEach((n) => log.warn(n));
+  const stories = new Set(targets.map((t) => t.feature));
+  const targetOf = new Map(targets.map((t) => [t.feature, t]));
   const deadline = Date.now() + (o.waitMinutes ?? 0) * 60_000;
   const poll = o.pollMs ?? 60_000;
   const outcomes: StoryOutcome[] = [];
@@ -98,28 +182,34 @@ export async function postDeployCommand(o: PostDeployOptions): Promise<number> {
       await sleep(poll);
       manifest = await assembleFeature({ c, cwd, story, gitlab: gl, environment, baseUrl });
     }
-    const tests = index.filter((t) => t.stories.includes(story) && t.status === "active" && !t.bdd);
+    const target = targetOf.get(story)!;
+    // A key can be the bug fix itself: its own @bug:KEY tests count, with or without Jira.
+    const bugKeys = [story, ...target.bugs.map((b) => b.key)];
+    const reason = target.bugs.length ? `re-run: fix ${target.bugs.map((b) => `${b.key}${b.issueType ? ` (${b.issueType} → ${story})` : ""}`).join(", ")} deployed` : undefined;
+    const tests = index.filter((t) => (t.stories.includes(story) || t.bugs.some((b) => bugKeys.includes(b))) && t.status === "active" && !t.bdd);
     const bddOnly = !tests.length && index.some((t) => t.stories.includes(story) && t.status === "active" && t.bdd);
-    if (manifest.status === "waiting-for-deployment") outcomes.push({ story, status: "waiting", manifest });
-    else if (manifest.status === "in-development") outcomes.push({ story, status: "not-merged", manifest });
-    else if (manifest.status === "reverted") outcomes.push({ story, status: "reverted", manifest });
-    else if (bddOnly) outcomes.push({ story, status: "bdd-only", manifest });
-    else if (!tests.length) outcomes.push({ story, status: "no-tests", manifest });
+    if (manifest.status === "waiting-for-deployment") outcomes.push({ story, status: "waiting", manifest, reason });
+    else if (manifest.status === "in-development") outcomes.push({ story, status: "not-merged", manifest, reason });
+    else if (manifest.status === "reverted") outcomes.push({ story, status: "reverted", manifest, reason });
+    else if (bddOnly) outcomes.push({ story, status: "bdd-only", manifest, reason });
+    else if (!tests.length) outcomes.push({ story, status: "no-tests", manifest, reason });
     else {
       log.step(`${story}: every part is deployed on ${environment}; running ${tests.length} test(s)`);
       const run = createRunDir(cwd, `post-deploy-${story}`);
       const files = [...new Set(tests.map((t) => t.file))].map((p) => ({ path: p, status: "M" }));
       // Only this story's tests: other tests in the same files are not what this check is about.
-      const grep = `@story:(?:\\S*,)?${story.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![\\w-])`;
+      const grep = featureGrep(story, bugKeys);
       const report = await verifyChanges({ cwd, c, changes: files, runDir: run.dir, env: testEnv(c, process.env, { healing: true }), environment, grep });
-      outcomes.push({ story, status: report.status === "VERIFIED" ? "passed" : report.status === "FAILED" ? "failed" : "blocked", manifest, report });
+      const status = report.status === "VERIFIED" ? "passed" : report.status === "FAILED" ? "failed" : "blocked";
+      outcomes.push({ story, status, manifest, report, reason });
+      await rememberResult(store, story, { environment, status, tests: tests.length }).catch((e) => log.warn(`story record for ${story} not updated: ${(e as Error).message.split("\n")[0]}`));
     }
   }
 
   const md = ["# After deployment", "", `Environment: **${environment}**`, ""];
   for (const x of outcomes) {
     const head = { passed: "✅ tests passed", failed: "❌ tests failed", waiting: "⏳ waiting for deployment", "no-tests": "⬜ no tests tagged", "not-merged": "🚧 not merged yet", blocked: "⛔ tests could not run", reverted: "↩️ reverted: tests held back", "bdd-only": "🥒 deployed; its tests are Cucumber scenarios: run them with your BDD job" }[x.status];
-    const body = [`## ${x.story}: ${head}`, "", featureMarkdown(x.manifest).replace(/^#+ .*\n/, ""), ...(x.report ? ["", verificationMarkdown(x.report)] : [])].join("\n");
+    const body = [`## ${x.story}: ${head}`, ...(x.reason ? ["", `_${x.reason}_`] : []), "", featureMarkdown(x.manifest).replace(/^#+ .*\n/, ""), ...(x.report ? ["", verificationMarkdown(x.report)] : [])].join("\n");
     md.push(body, "");
     if (o.post && (x.status === "passed" || x.status === "failed" || x.status === "waiting")) {
       const jira = jiraContext(c.requirements.jira.baseUrl);
@@ -127,6 +217,7 @@ export async function postDeployCommand(o: PostDeployOptions): Promise<number> {
     }
     log[x.status === "passed" ? "ok" : x.status === "failed" ? "fail" : "warn"](`${x.story}: ${head}`);
   }
+  for (const n of keyNotes) md.push(`> ${n}`, "");
   if (!stories.size) {
     md.push("_No story with tests found for this deployment._");
     log.info("no story with tests found for this deployment (pass --story, or --service with --sha)");
@@ -150,6 +241,17 @@ export async function postDeployCommand(o: PostDeployOptions): Promise<number> {
     return EXIT_STILL_WAITING;
   }
   return 0;
+}
+
+/** What this check found goes into the story record: the environment, when, against which basis, and how it ended. */
+async function rememberResult(store: ReturnType<typeof openStore>, story: string, r: { environment: string; status: string; tests: number }): Promise<void> {
+  if (!SAFE_KEY.test(story)) return;
+  const now = new Date();
+  await store.locked(story, async () => {
+    const rec = (await store.load(story)) ?? emptyRecord(story, now);
+    const basis = rec.basis ?? storyBasis(rec, rec.acs.map((a) => a.hash));
+    await store.save({ ...rec, results: [...rec.results, { environment: r.environment, at: now.toISOString(), basis, status: r.status, tests: r.tests }], updatedAt: now.toISOString() });
+  });
 }
 
 /**

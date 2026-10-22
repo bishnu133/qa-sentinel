@@ -183,6 +183,25 @@ export function partFromGit(repo: string, s: ServiceConfig, story: string, targe
   return parts.find((p) => !p.merged) ?? parts[0];
 }
 
+/** One GitLab merge request (as the API lists it) as a part of its service. */
+export function mrToPart(service: string, m: any, keyPattern = "[A-Z][A-Z0-9]+-\\d+"): ServicePart {
+  const merged = m.state === "merged";
+  return {
+    service,
+    source: "gitlab-mr",
+    mr: { iid: m.iid, url: m.web_url, state: m.state, title: m.title },
+    branch: m.source_branch,
+    sha: merged ? (m.merge_commit_sha ?? m.squash_commit_sha ?? m.sha) : m.sha,
+    merged,
+    keys: extractStoryKeys(keyPattern, m.title, m.source_branch, m.description),
+    ...(m.merge_commit_sha ? { mergeSha: m.merge_commit_sha } : {}),
+    ...(m.squash_commit_sha ? { squashSha: m.squash_commit_sha } : {}),
+    ...(m.diff_refs?.base_sha && m.diff_refs?.head_sha ? { diffRefs: { base: m.diff_refs.base_sha, head: m.diff_refs.head_sha, start: m.diff_refs.start_sha ?? m.diff_refs.base_sha } } : {}),
+    ...(m.merged_at ? { mergedAt: m.merged_at } : {}),
+    ...(m.state === "closed" ? { dropped: true } : {}),
+  };
+}
+
 /**
  * GitLab: every merge request that carries the story key. Two lookups, merged by MR number:
  *  1. the text search over titles and descriptions (every page);
@@ -228,23 +247,7 @@ export async function partsFromGitLab(
   }
   if (truncated) o.notes?.push(`${s.name}: only the newest ${MR_SCAN_PAGES * 100} merge requests updated in the last ${days} days were checked for a branch naming ${story}; an older one may be missing (requirements.jira.search.mrLookbackDays)`);
   const pattern = o.keyPattern ?? "[A-Z][A-Z0-9]+-\\d+";
-  const parts = [...found.values()].map((m): ServicePart => {
-    const merged = m.state === "merged";
-    return {
-      service: s.name,
-      source: "gitlab-mr",
-      mr: { iid: m.iid, url: m.web_url, state: m.state, title: m.title },
-      branch: m.source_branch,
-      sha: merged ? (m.merge_commit_sha ?? m.squash_commit_sha ?? m.sha) : m.sha,
-      merged,
-      keys: extractStoryKeys(pattern, m.title, m.source_branch, m.description),
-      ...(m.merge_commit_sha ? { mergeSha: m.merge_commit_sha } : {}),
-      ...(m.squash_commit_sha ? { squashSha: m.squash_commit_sha } : {}),
-      ...(m.diff_refs?.base_sha && m.diff_refs?.head_sha ? { diffRefs: { base: m.diff_refs.base_sha, head: m.diff_refs.head_sha, start: m.diff_refs.start_sha ?? m.diff_refs.base_sha } } : {}),
-      ...(m.merged_at ? { mergedAt: m.merged_at } : {}),
-      ...(m.state === "closed" ? { dropped: true } : {}),
-    };
-  });
+  const parts = [...found.values()].map((m) => mrToPart(s.name, m, pattern));
   const rank = (p: ServicePart) => (p.dropped ? 2 : p.merged ? 1 : 0);
   return parts.sort((a, b) => rank(a) - rank(b) || String(b.mergedAt ?? "").localeCompare(String(a.mergedAt ?? "")) || (b.mr?.iid ?? 0) - (a.mr?.iid ?? 0));
 }

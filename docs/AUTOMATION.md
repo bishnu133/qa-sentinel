@@ -24,6 +24,7 @@ For each story it works out one state and the next step, using fixed rules (no A
 The to-do list says who acts (ai / qa / po / dev), the command, and why a step is **blocked** (budget reached, job
 already ran, too many failed attempts). Questions for the PO never block. Output: `qa-stories.md`, and one record
 per story under `.qa-sentinel/stories/`. `stories` never starts an AI step; a scheduler or a person runs the command it names.
+With GitLab it first runs the merge-request sweep (below).
 
 Jira settings (`requirements.jira.search`): `jql` (own query), `lookbackDays` 30, `maxStories` 50, `skipLabels`
 `[qa-skip]`, `onlyLabels`, `api: auto|cloud|server`. Without `jql` you need `requirements.jira.projectKeys`. Statuses are filtered by qa-sentinel (`approvedStatuses`), not in the JQL, because a status name your workflow doesn't have makes Jira reject the whole query.
@@ -32,6 +33,28 @@ Jira settings (`requirements.jira.search`): `jql` (own query), `lookbackDays` 30
 
 `.qa-sentinel/stories/<KEY>.json`: AC hashes, the last check, AI jobs and what they cost. It is a **cache**: the truth is always recomputed from Jira, `expected/` and the tests. Delete it and you lose job history and spend counts, not a decision. A damaged file is moved aside (`.damaged-<time>`) and a new one started.
 `automation.record: jira` also keeps a copy in the Jira issue property `qa-sentinel.record`, so a CI runner without a cache still knows. If Jira can't be reached the run goes on with the local file and says so.
+
+## Story record and sweep
+
+The record `.qa-sentinel/stories/<KEY>.json` holds, besides the AC hashes, the last check, the AI jobs and the spend:
+
+- `parts`: every merge request (or branch) of the story, one entry per MR, with its service, number, state (opened, merged, closed, reverted), branch, head, merge or squash commit and when it was first and last seen. A closed MR stays in the list and is shown as "dropped".
+- `linked`: the bugs, tasks and sub-tasks that were reached from this story, and how (parent or link).
+- `results`: the last post-deploy results per environment (the newest 5 each), with the basis they were run against.
+- `basis`: a short fingerprint of the merged commits and the AC hashes. When it changes, what was reported earlier was written against older code or ACs.
+- Empty for now, filled by later steps: `agentMr`, `crossService`, `acEvidence`, `notified`, `overrides`.
+
+It is a **cache**. Everything in it can be found again from GitLab and Jira. Delete a record and you lose job history and spend counts. To fill the parts again run `qa-sentinel stories --rebuild` (the sweep looks back 365 days).
+
+**The sweep** makes `stories` aware of merge requests without cloning anything: for every service with `gitlabProject` it asks GitLab once (paged) for the merge requests updated since the last check. The last check is stored in `.qa-sentinel/stories/_sweep.json`; the next sweep starts `automation.sweep.overlapHours` (24) before it, so a merge request that changed while the last check ran is not missed. The first sweep looks back `requirements.jira.search.mrLookbackDays` (30). Each MR is matched to every story key in its title, branch or description. A bug, task or sub-task goes to its story by the fixed Jira rules, and the card is kept in `linked`. A key that is not in Jira is skipped with a note. Stories whose merge requests changed are checked even when the Jira search did not list them. Merge requests with no key are listed as a warning ("MRs with no story key: !12 orders-service"). If a GitLab call fails, the sweep does not move its "last check" forward, so the next run tries the same window again.
+
+Settings: `automation.sweep.enabled` (true), `overlapHours` (24), `maxPages` (5 pages of 100 MRs per repository). `stories --no-sweep` skips it.
+
+The gap report also records its own merge request the first time it sees it, so later steps know the MR and its head without a story key in a commit message.
+
+**The story's change** (`gap-report --story`, `generate --story`) is the union of what each merge request changed, not everything since the first story commit: a merge commit gives `M^1..M`, a squash commit `S^..S`, a rebased MR its `diff_refs` range, an open MR the range from the merge base of the target branch to its head (fetched from `refs/merge-requests/<n>/head`, with the token only on the command line, never in `.git/config`). Without a record or GitLab it walks the last 500 commits of the target branch and takes every commit (or merge) that names the story, as its own range, so unrelated work merged in between stays out, and a branch that merged main into itself does not bring main's commits. A part whose commit is not in the local clone is skipped with a note ("fetch the target branch"). Reverted parts are skipped.
+
+**After a deployment** (`post-deploy`) every story key in the deployed commits counts, not only keys that already have tests. Each key goes to its feature (a bug or task fix runs its story's tests again), and the tests run are the feature's `@story:` tests plus the tests tagged `@bug:<KEY>` for the deployed fix. The report says why ("re-run: fix SHOP-210 (Bug → SHOP-12) deployed"). A feature with no tests is reported as "no tests tagged". A commit with no key (a squash titled without it) is matched through the recorded merge requests, then through GitLab's "merge requests of a commit". Without Jira the keys are used as they are. The result is written to the story record.
 
 ## Job keys: the same work isn't done twice
 
@@ -68,6 +91,8 @@ A person reviews and merges: that is the gate. A test that failed for another re
 
 - Day and month budgets count the records this machine/cache has; separate runners without a shared cache each count their own.
 - The Jira record has no compare-and-set: two runners starting the same job at the same moment can both run.
+- The sweep reads only merge requests GitLab lists as updated since the last check (and at most `maxPages` pages per repository). A key that only appears in a commit message, not in the MR's title, branch or description, is found by the story's own lookup (`feature`, `gap-report --story`) but not by the sweep.
+- A repository that is not checked out is left out of a story's change, with a note.
 - The Jira search was tested against mocked responses, not yet a live Jira (see the try guide for the live check).
 - The per-story budget never resets.
 - `stories` reads `expected/` on the checked-out branch: "approved" means merged on the branch you run from.
@@ -115,4 +140,4 @@ On the Jira story qa-sentinel keeps **one** comment, "QA status · KEY", with a 
 - **Environment-aware suite.** `suite --env uat` asks each service which commit it runs and leaves out tests of features not deployed there; `suite --tag v3.4` uses what the tag contains. Stories with no change found, or where the environment cannot tell, are treated as established and run (the table says so). Tests without `@story` always run.
 - **Reverts.** A change reverted on main (a "This reverts commit" message) is shown as `reverted`; its tests are held back by `suite`, never deleted.
 - Hotfix branches in `generate`: the service pipeline passes its branch as `QA_SERVICE_BRANCH` (the shipped GitLab template does; for Jenkins pass it yourself). Without it nothing is skipped. The gap-report note also appears for merge requests whose source branch matches `ci.hotfixBranches`.
-- Limits: `generate --story` can still write tests for a reverted part. `suite --run` passes `file:line` to the runner (Playwright, Vitest); runners that take only files run the whole file, and Cucumber scenarios are listed but not run. In a shallow clone, release/tag questions are answered "unknown" (those tests run). Matching reads the latest 500 commits of the main branch; `release-features` depends on story keys being in commit messages; squash-merged cherry-picks are matched only by their `-x` line or an identical diff.
+- Limits: `suite --run` passes `file:line` to the runner (Playwright, Vitest); runners that take only files run the whole file, and Cucumber scenarios are listed but not run. In a shallow clone, release/tag questions are answered "unknown" (those tests run). Matching reads the latest 500 commits of the main branch; `release-features` depends on story keys being in commit messages; squash-merged cherry-picks are matched only by their `-x` line or an identical diff.

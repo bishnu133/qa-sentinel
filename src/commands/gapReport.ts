@@ -19,7 +19,8 @@ import { assembleFeature, type MrScanCache } from "../feature/manifest.js";
 import { publish } from "../reporting/publish.js";
 import { engineFor } from "../engines/ClaudeCodeEngine.js";
 import type { AgentEngine } from "../engines/AgentEngine.js";
-import { withSpend } from "../stories/start.js";
+import { openStore, withSpend } from "../stories/start.js";
+import { recordMrSeen } from "../stories/sweep.js";
 import { addUsage } from "../engines/AgentEngine.js";
 import { oracleOf, planChange } from "../plan/planner.js";
 import { acHash } from "../expected/format.js";
@@ -277,7 +278,8 @@ async function gapReportPrepare(o: GapReportOptions, c: ReturnType<typeof loadCo
   let service: ServiceConfig, repo: string, cs: ChangeSet, relevant: string[];
   let parts: StoryPart[] | undefined;
   if (o.story) {
-    const sp = await storyParts({ c, cwd, story: o.story });
+    const record = await openStore(cwd, c).load(o.story).catch(() => undefined);
+    const sp = await storyParts({ c, cwd, story: o.story, gitlab: c.workspace.services.some((x) => x.gitlabProject) ? gitlabContext(c.ci.gitlabUrl) : undefined, record });
     sp.notes.forEach((n) => log.warn(n));
     if (!sp.parts.length) throw new Error(`No service changes found for ${o.story}: no branch or commit message mentions it in the service repos`);
     parts = sp.parts;
@@ -499,6 +501,9 @@ async function gapReportBody(o: GapReportOptions, wrap: (e: AgentEngine) => Agen
   writeManifest(run, manifest);
   log.ok(`report written to ${path.relative(cwd, out)}${u ? ` (${u})` : ""}`);
 
+  // The record keeps the merge request from the moment it is first seen, so later steps know it without a key in a commit message.
+  if (!o.dryRun && !o.story && req.storyKey && mr.mrIid)
+    await recordMrSeen(openStore(cwd, c), { feature: req.storyKey, workKey: req.workKey, service: service.name, mrIid: mr.mrIid, url: mr.url, title: mr.title, branch: mr.sourceBranch, headSha: process.env.CI_MERGE_REQUEST_SOURCE_BRANCH_SHA ?? cs.head, keys: extractStoryKeys(jiraKeyPattern(c), mr.title, mr.sourceBranch, mr.description) }).catch((e) => log.warn(`story record: merge request not recorded (${(e as Error).message.split("\n")[0]})`));
   // A merge request that names several stories gets one joined comment (written by gapReportEach); each story still gets its own Jira section here.
   if (o.post) await publish(c, { report, jiraSummary, service: service.name, storyKey: req.storyKey, mr, ...(o.noMrNote ? { targets: c.reporting.targets.filter((t) => t !== "gitlab-mr") } : {}), ...(!fp || exitCode !== 0 ? {} : { stamp: stampOf(fp, cs.head) }) });
   // Story mode with every part merged: requirements nothing builds (or builds differently) become (suspected) bugs.

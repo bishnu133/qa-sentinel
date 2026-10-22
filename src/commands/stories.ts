@@ -9,6 +9,9 @@ import { type RecordStore, type StoryRecord, SAFE_KEY, emptyRecord } from "../st
 import { openStore } from "../stories/start.js";
 import { acHash } from "../expected/format.js";
 import { gitlabContext } from "../scm/gitlab.js";
+import { jiraContext } from "../scm/jira.js";
+import { storyBasis } from "../stories/parts.js";
+import { sweepMrs, sweepSince, writeSweepState } from "../stories/sweep.js";
 
 export interface StoriesOptions {
   cwd: string;
@@ -23,6 +26,10 @@ export interface StoriesOptions {
   out?: string;
   /** Don't update the story records. */
   noRecord?: boolean;
+  /** Don't look at merge requests first (automation.sweep.enabled: false does the same). */
+  noSweep?: boolean;
+  /** Fill the story records again from GitLab and Jira: the sweep looks back 365 days. */
+  rebuild?: boolean;
   env?: NodeJS.ProcessEnv;
   now?: Date;
 }
@@ -46,10 +53,12 @@ async function remember(store: RecordStore, key: string, input: StoryInput, a: A
     const rec = (await store.load(key)) ?? emptyRecord(key, now);
     const jira = input.source === "jira" ? { status: input.status, issueType: input.issueType, url: input.url, labels: input.labels, ...(rec.jira?.updated ? { updated: rec.jira.updated } : {}) } : rec.jira;
     const lastCheck = { at: now.toISOString(), state: a.state, next: a.next, reasons: a.reasons };
-    const unchanged = JSON.stringify([rec.jira, rec.acs, rec.lastCheck && { ...rec.lastCheck, at: "" }]) === JSON.stringify([jira, acs, { ...lastCheck, at: "" }]);
+    const nextAcs = acs.length ? acs : rec.acs;
+    const basis = rec.parts.length ? storyBasis(rec, nextAcs.map((x) => x.hash)) : rec.basis;
+    const unchanged = JSON.stringify([rec.jira, rec.acs, rec.lastCheck && { ...rec.lastCheck, at: "" }, rec.basis]) === JSON.stringify([jira, acs, { ...lastCheck, at: "" }, basis]);
     if (unchanged) return;
     // The ACs are only replaced when the story was readable; an unreadable story keeps the last good copy.
-    await store.save({ ...rec, jira, acs: acs.length ? acs : rec.acs, lastCheck, updatedAt: now.toISOString() });
+    await store.save({ ...rec, jira, acs: nextAcs, lastCheck, ...(basis ? { basis } : {}), updatedAt: now.toISOString() });
   });
 }
 
@@ -75,6 +84,25 @@ async function storiesRun(o: StoriesOptions): Promise<number> {
   const c = loadConfig(cwd);
   const env = o.env ?? process.env;
   const now = o.now ?? new Date();
+  const store = openStore(cwd, c, env);
+  const gitlab = gitlabContext(c.ci.gitlabUrl, env);
+
+  // First the merge requests: one paged call per repository (no clones, no AI). They fill the story records and tell which stories to look at.
+  let touched: string[] = [];
+  if (!o.storiesDir && !o.noSweep && !o.noRecord && c.automation.sweep.enabled && gitlab && c.workspace.services.some((x) => x.gitlabProject)) {
+    try {
+      const since = sweepSince(cwd, c, now, { rebuild: o.rebuild });
+      log.step(`looking at merge requests updated since ${since.slice(0, 16)}Z`);
+      const sw = await sweepMrs(c, gitlab, jiraContext(c.requirements.jira.baseUrl, env), store, { since, now });
+      touched = sw.touched;
+      sw.notes.forEach((n) => log.warn(n));
+      if (sw.noKey.length) log.warn(`MRs with no story key: ${sw.noKey.map((m) => `!${m.iid} ${m.service}`).join(", ")}`);
+      if (sw.complete) writeSweepState(cwd, { lastAt: now.toISOString() });
+    } catch (e) {
+      log.warn(`merge request sweep failed (${(e as Error).message.split("\n")[0]}); the story check goes on without it`);
+    }
+  }
+
   let inputs: StoryInput[];
   if (o.storiesDir) {
     const dir = path.resolve(cwd, o.storiesDir);
@@ -84,16 +112,17 @@ async function storiesRun(o: StoriesOptions): Promise<number> {
     const ctx = jiraFor(c, env);
     log.step(o.story?.length ? `checking ${o.story.join(", ")} in Jira` : "searching Jira for stories (requirements.jira.search)");
     inputs = await inputsFromJira(c, ctx, { keys: o.story });
+    // Stories whose merge requests changed since the last check are looked at even when the search did not list them.
+    const more = o.story?.length ? [] : touched.filter((k) => !inputs.some((x) => x.key.toLowerCase() === k.toLowerCase()));
+    if (more.length) inputs.push(...(await inputsFromJira(c, ctx, { keys: more }).catch((e) => (log.warn(`stories from merge requests not read: ${(e as Error).message}`), []))).filter((x) => !inputs.some((y) => y.key === x.key)));
   } else throw new Error('Nothing to check: set requirements.source: jira (and the Jira settings), pass --story KEY, or pass --stories-dir <folder> to read story files.');
   if (!inputs.length) {
     log.ok("no stories found");
     return 0;
   }
 
-  const store = openStore(cwd, c, env);
   const records = await store.list();
   const shared = sharedFacts(cwd, c);
-  const gitlab = gitlabContext(c.ci.gitlabUrl, env);
   const policy = jobPolicy(c, {}, env);
   const list: Assessment[] = [];
   const changes = new Map<string, string[]>();
