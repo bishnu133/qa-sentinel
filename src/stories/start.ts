@@ -10,7 +10,7 @@ import { type JobKind, NO_STORY, type RecordStore, fileStore, jiraStore } from "
 /** The configured record store. A Jira store that can't be set up (no credentials, no URL) falls back to files, with a warning. */
 export function openStore(cwd: string, c: Config, env: NodeJS.ProcessEnv = process.env): RecordStore {
   if (c.automation.record === "jira") {
-    const ctx = jiraContext(c.requirements.jira.baseUrl, env);
+    const ctx = jiraContext(c.requirements.jira, env);
     if (ctx) return jiraStore(cwd, ctx);
     log.warn("automation.record is jira, but there is no Jira URL or credentials here: the story record is kept in files only");
   }

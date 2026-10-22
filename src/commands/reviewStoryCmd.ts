@@ -62,7 +62,7 @@ async function reviewStoryRun(o: ReviewStoryOptions, wrap: (e: AgentEngine) => A
   fs.writeFileSync(path.join(run.dir, "story-review.md"), md);
   log.ok(`story review: ${r.review.findings.length} finding(s), ${r.review.suggestedAcs.length} suggested AC(s) · ${path.relative(cwd, out)}${usage ? ` (${usage})` : ""}`);
   if (o.post) {
-    const ctx = jiraContext(c.requirements.jira.baseUrl);
+    const ctx = jiraContext(c.requirements.jira);
     if (!ctx || !req.storyKey) log.warn("--post: Jira is not configured or the story key is unknown; nothing posted");
     else {
       const res = await postToStory(c, ctx, req.storyKey, { name: "story-review", wiki: markdownToJiraWiki(md), legacyKind: "story-review", legacyMarker: "qa-sentinel:story-review", cwd });

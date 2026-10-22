@@ -16,6 +16,7 @@ import { postToStory } from "../reporting/statusComment.js";
 import { testEnv, useEnvironment } from "../run.js";
 import { runCommandsFor } from "../layers.js";
 import { log } from "../log.js";
+import { wrapTestCommand } from "../wrapper.js";
 
 export interface FeatureOptions {
   cwd: string;
@@ -42,7 +43,7 @@ export async function featureCommand(o: FeatureOptions): Promise<number> {
   const gl = c.workspace.services.some((s) => s.gitlabProject) ? gitlabContext(c.ci.gitlabUrl) : undefined;
   const manifest = await assembleFeature({ c, cwd, story, gitlab: gl, environment, baseUrl });
 
-  const jira = jiraContext(c.requirements.jira.baseUrl);
+  const jira = jiraContext(c.requirements.jira);
   let acs: ReturnType<typeof parseStoryFor>["acceptanceCriteria"] = [];
   // Whether the Jira card is in a ready status; unknown (undefined) with a story file or when Jira can't be read.
   let jiraReady: boolean | undefined;
@@ -101,7 +102,7 @@ export async function featureCommand(o: FeatureOptions): Promise<number> {
     // API and web tests in one run where possible; healing is allowed here: these are existing, reviewed tests.
     let status = 0;
     for (const cmd of runCommandsFor(c, runnable.filter((t) => !t.bdd).map((t) => `${t.file}:${t.line}`))) {
-      const r = spawnSync(cmd, { cwd, shell: true, stdio: "inherit", env: testEnv(c, process.env, { healing: true }) });
+      const r = spawnSync(wrapTestCommand(c, cmd), { cwd, shell: true, stdio: "inherit", env: testEnv(c, process.env, { healing: true }) });
       if ((r.status ?? 1) !== 0) status = r.status ?? 1;
     }
     const held = readiness.filter((r) => r.state !== "ready");

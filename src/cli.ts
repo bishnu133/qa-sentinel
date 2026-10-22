@@ -16,6 +16,7 @@ import { bugsCommand } from "./commands/bugs.js";
 import { knownDefectsCommand } from "./commands/knownDefects.js";
 import { tagCommand } from "./commands/tag.js";
 import { metricsCommand } from "./commands/metrics.js";
+import { publishCommand } from "./commands/publish.js";
 import { storyCheckCommand } from "./commands/storyCheck.js";
 import { lessonsCommand } from "./commands/lessons.js";
 import { learnCommand } from "./commands/learn.js";
@@ -273,11 +274,12 @@ program
   .command("metrics")
   .description("how the agents are doing: verification rate, merged-without-edits rate, cost, plan repairs (qa-metrics.md)")
   .option("--runs <dir...>", "extra folders with run manifests (e.g. downloaded CI artifacts)")
+  .option("--records <dir...>", "extra folders with story records (e.g. a downloaded CI cache), for the budget suggestions")
   .option("--since <when>", "30d, 12w or a date")
   .option("-o, --out <file>", "markdown output", "qa-metrics.md")
   .option("--json", "print the numbers as JSON instead")
   .option("--no-fetch", "don't fetch merge request heads from origin")
-  .action(wrap(async (o) => metricsCommand({ cwd: cwd(), runs: o.runs, since: o.since, out: o.out, json: o.json, fetch: o.fetch })));
+  .action(wrap(async (o) => metricsCommand({ cwd: cwd(), runs: o.runs, records: o.records, since: o.since, out: o.out, json: o.json, fetch: o.fetch })));
 
 program
   .command("healed")
@@ -311,6 +313,7 @@ program
   .option("--story-file <file>", "file with the story / acceptance criteria")
   .option("-o, --out <file>", "where to write the report", "qa-gap-report.md")
   .option("--post", "post or update the report as a GitLab MR comment")
+  .option("--defer-publish", "do not post: write publish.json in the run folder for `qa-sentinel publish` (needs no write token; implies --post)")
   .option("--dry-run", "do everything except call Claude")
   .option("--even-if-draft", "make the report even if the merge request is still a draft")
   .option("--refresh", "make a new report even if nothing changed since the one on the merge request")
@@ -328,11 +331,22 @@ program
   .option("--checkout", "check out the head commit in the service repo if it is not already there (CI)")
   .option("--story-file <file>", "file with the story / acceptance criteria")
   .option("--push", "push the branch and open a GitLab merge request")
+  .option("--defer-publish", "do not push: leave the branch as branch.bundle and the rest in publish.json for `qa-sentinel publish` (needs no write token; implies --push)")
   .option("--env <name>", "run the tests against this environment from `environments:` (e.g. dev, sit) before pushing")
   .option("--dry-run", "do everything except call Claude and commit")
   .option("--force", "run even if the same job (same story, ACs and commit) finished, failed too often or looks to be running; budgets still apply")
   .option("--once", "skip the run if the same job already finished (the default in CI)")
   .action(wrap(async (o) => generateCommand({ cwd: cwd(), ...needService(o), acs: typeof o.acs === "string" ? o.acs.split(",").map((x: string) => x.trim()).filter(Boolean) : undefined })));
+
+program
+  .command("publish")
+  .description("the second half of the split CI jobs: publish what gap-report/generate --defer-publish left in a run folder (merge request, comments, Jira); uses write tokens, no model key")
+  .option("--run <id|dir|all>", "a run id, a run folder, or all runs still waiting", "all")
+  .option("--target <target>", "only one part: gitlab-mr (merge request comments), jira, or mr-create (push the branch and open the merge request)")
+  .action(wrap(async (o) => {
+    if (o.target && !["gitlab-mr", "jira", "mr-create"].includes(o.target)) throw new Error(`--target: gitlab-mr, jira or mr-create (got "${o.target}")`);
+    return publishCommand({ cwd: cwd(), run: o.run, target: o.target });
+  }));
 
 program
   .command("trace")

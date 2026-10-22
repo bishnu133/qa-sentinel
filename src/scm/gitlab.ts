@@ -1,5 +1,8 @@
 /** Thin GitLab REST client: MR notes, MR creation/update, commit→MR lookup. Retries transient failures. */
 import { maskSecrets } from "../secrets.js";
+import { netFetch, looksLikeHtml } from "../net.js";
+
+const WEB_PAGE_HINT = "a login or SSO proxy in front of GitLab? Check ci.gitlabUrl / CI_API_V4_URL and the token";
 export interface GitLabContext {
   apiUrl: string; // e.g. https://gitlab.com/api/v4
   token: string;
@@ -32,15 +35,25 @@ export async function call(ctx: GitLabContext, method: string, route: string, bo
   let lastErr: unknown;
   for (let i = 0; i < attempts; i++) {
     try {
-      const res = await fetch(`${ctx.apiUrl}${route}`, {
+      const res = await netFetch(`${ctx.apiUrl}${route}`, {
         method,
         headers: { "PRIVATE-TOKEN": ctx.token, "Content-Type": "application/json" },
         // Agent-written text may carry a credential the tests needed: masked before it is published.
         body: body ? maskSecrets(JSON.stringify(body)) : undefined,
       });
       const text = await res.text();
-      if (res.ok) return { data: text ? JSON.parse(text) : undefined, headers: res.headers };
-      const err = new GitLabError(`GitLab ${method} ${route} failed: ${res.status} ${text.slice(0, 300)}`, res.status);
+      const html = looksLikeHtml(text, res.headers.get("content-type"));
+      if (res.ok) {
+        if (html) throw new GitLabError(`GitLab ${method} ${route} answered with a web page, not JSON (${WEB_PAGE_HINT})`, res.status);
+        let data: any;
+        try {
+          data = text ? JSON.parse(text) : undefined;
+        } catch {
+          throw new GitLabError(`GitLab ${method} ${route} answered something that is not JSON (${WEB_PAGE_HINT}): ${text.slice(0, 80).replace(/\s+/g, " ")}`, res.status);
+        }
+        return { data, headers: res.headers };
+      }
+      const err = new GitLabError(`GitLab ${method} ${route} failed: ${res.status} ${html ? `(a web page, not JSON: ${WEB_PAGE_HINT})` : text.slice(0, 300)}`, res.status);
       if (res.status !== 429 && res.status < 500) throw err;
       lastErr = err;
       const retryAfter = Number(res.headers.get("retry-after"));
@@ -228,12 +241,14 @@ export function pushUrl(gitlabUrl: string, projectPath: string | undefined, env:
   const token = gitlabToken(env);
   if (!token || !projectPath || /^\d+$/.test(projectPath)) return undefined;
   const host = new URL(env.CI_SERVER_URL ?? gitlabUrl);
-  return `${host.protocol}//oauth2:${encodeURIComponent(token)}@${host.host}/${projectPath.replace(/^\/|\.git$/g, "")}.git`;
+  // A GitLab under a sub-path (https://corp.example/gitlab) keeps that path: the project lives below it.
+  const base = host.pathname.replace(/\/+$/, "");
+  return `${host.protocol}//oauth2:${encodeURIComponent(token)}@${host.host}${base}/${projectPath.replace(/^\/|\.git$/g, "")}.git`;
 }
 
 /** A file's raw content at a ref, or undefined when it doesn't exist. */
 export async function rawFile(ctx: GitLabContext, project: string | number, file: string, ref: string): Promise<string | undefined> {
-  const res = await fetch(`${ctx.apiUrl}/projects/${enc(project)}/repository/files/${enc(file)}/raw?ref=${enc(ref)}`, { headers: { "PRIVATE-TOKEN": ctx.token } });
+  const res = await netFetch(`${ctx.apiUrl}/projects/${enc(project)}/repository/files/${enc(file)}/raw?ref=${enc(ref)}`, { headers: { "PRIVATE-TOKEN": ctx.token } });
   if (res.status === 404) return undefined;
   if (!res.ok) throw new GitLabError(`GitLab GET ${file} in ${project}: ${res.status}`, res.status);
   return res.text();

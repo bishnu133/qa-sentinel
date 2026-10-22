@@ -144,7 +144,8 @@ Starting from nothing? `qa-sentinel init --mode scratch` scaffolds Playwright AP
 | `bugs [--story KEY] [--results f] [--env sit] [--dry-run]` | After a run: raises (or proposes, per `bugs.mode`) a bug card for each AC whose tests failed, and notes "now passes" on earlier bugs. |
 | `tag [--limit n] [--push] [--dry-run]` | One-off: an agent adds traceability tags to existing untagged tests on a branch; qa-sentinel rejects anything but added tags in test titles. |
 | `lessons [--since 90d] [--push] [--dry-run]` | Learning from review: what reviewers changed in agent MRs before merging, turned into rules in `kb/review-lessons.md` on a branch (MR with `--push`). Each MR is learned from once. |
-| `metrics [--since 30d] [--runs dir…] [--json]` | How the agents are doing: verification rate, merged-without-edits rate (merge, squash and fast-forward), cost, plan repairs, guardrail stops (`qa-metrics.md`). |
+| `metrics [--since 30d] [--runs dir…] [--records dir…] [--json]` | How the agents are doing: verification rate, merged-without-edits rate (merge, squash and fast-forward), cost, plan repairs, guardrail stops (`qa-metrics.md`). With 10+ stories (or 10+ days) it suggests values for `automation.budgets` from the story records (`--records` reads a downloaded CI cache). |
+| `publish [--run <id\|dir\|all>] [--target gitlab-mr\|jira\|mr-create]` | The second half of the split CI jobs: does the writing that `gap-report --defer-publish` and `generate --defer-publish` left in a run folder (checks the branch bundle against the write policy, pushes, opens the MR, comments, Jira). Uses write tokens and **no model key**; never starts an agent. |
 | `discover --gitlab-group <group> [--apply]` | Lists the group's projects and drafts `workspace.services` entries: kind (api, web, mobile), OpenAPI spec (or the generator that makes it), and `dependsOn` suggested from config files that name another service, each with its file and line (`qa-services.draft.yaml` + `.md`). `--apply` adds the ones not configured yet. No AI call. |
 | `coverage [--service s]` | Every endpoint in each service's spec (and every route of front ends) with the tests that exercise it; untested, fixme-only and status-only endpoints ranked by risk (`qa-coverage.md` + `.json`). No AI call. |
 | `backfill --service s [--batch 5] [--min-risk high] [--include-weak] [--endpoint "POST /x"] [--push] [--dry-run]` | Tests for old code nobody is changing: the riskiest gaps from `coverage`, one small batch per run through the normal plan → write → verify → review → MR flow, with the API contract as the oracle. |
@@ -229,7 +230,8 @@ requirements:
   multiKey: each                     # an MR naming several stories: each (a gap report for every story) | first
   maxKeysPerMr: 3                    # at most this many stories per MR (each is an AI run)
   jira:
-    baseUrl: https://yourco.atlassian.net
+    baseUrl: https://yourco.atlassian.net   # Data Center: https://jira.yourco.example (include any /jira context path; use the URL Jira itself reports, see doctor --online)
+    auth: auto                       # auto | cloud | pat. auto: Cloud (JIRA_EMAIL + JIRA_API_TOKEN) when JIRA_EMAIL is set, else the Data Center personal access token JIRA_PAT (Bearer)
     projectKeys: [SHOP]              # story keys are found in MR title, branch or commit messages
     acceptanceCriteriaField: customfield_10045   # optional; else AC are read from the description
     scopeFields: [{ field: customfield_10050, name: Tech scope, prefix: TS }]   # optional: scope kept in Jira fields
@@ -295,6 +297,7 @@ agent:
   maxFixAttempts: 3
   timeoutMinutes: { gapReport: 15, generate: 30, learn: 20 }
   maxBudgetUsd: { gapReport: 2, generate: 5, learn: 3 }
+  sandbox: { enabled: false, allowedDomains: [], failIfUnavailable: true }   # Claude Code's built-in Bash sandbox for the AGENT's shell commands (needs bubblewrap + socat on Linux); see SECURITY.md
   skipPaths: ["**/*.md", "docs/**"]
 guardrails:
   allowedWritePaths: []              # empty = tests.api.dir + helpersDir + extraWritePaths + test-map.yaml
@@ -302,7 +305,7 @@ guardrails:
   allowedHosts: [localhost, example.test]   # hosts allowed in added test code (+ host of the base URL)
   assertionRemoval: warn             # warn | fail
   passEnv: []                        # extra env vars for tests/agents; credentials are never passed otherwise
-verification: { typecheck: auto, lintCommand: "npx eslint", preflight: true, retryFailed: true, timeoutMinutes: 15, defaultEnvironment: sit, requireVerifiedToPush: true }
+verification: { typecheck: auto, lintCommand: "npx eslint", preflight: true, retryFailed: true, timeoutMinutes: 15, defaultEnvironment: sit, requireVerifiedToPush: true, wrapCommand: "docker run --rm --network qa-net -v $PWD:/w -w /w node:22 sh -c {cmd}" }   # wrapCommand (optional): every test command qa-sentinel starts runs inside it; {cmd} = the command as one quoted word. See SECURITY.md
 ```
 
 ## CI
@@ -313,6 +316,15 @@ verification: { typecheck: auto, lintCommand: "npx eslint", preflight: true, ret
 - **Jenkins:** `Jenkinsfile.gap-report` (GitLab plugin MR trigger), `Jenkinsfile.generate` (parameterised, called after service merges) and `Jenkinsfile.tests`. See [templates/ci/jenkins/README.md](templates/ci/jenkins/README.md).
 
 Gap-report jobs never block developers: they are `allow_failure` in GitLab and UNSTABLE rather than FAILED in Jenkins.
+
+**Split CI jobs (GitLab, opt-in).** By default one job does the analysis and the publishing, so one job holds both the model key and the GitLab write token. Set `QA_SPLIT_JOBS: "true"` and the work is cut in two. What each job can reach:
+
+| Job | Can reach | Cannot reach |
+| --- | --- | --- |
+| `qa-generate`, `qa-gap-report` (analysis, `--defer-publish`) | the model; GitLab with `QA_SENTINEL_GITLAB_READ_TOKEN` (`read_api` + `read_repository`: drafts, notes, MR lookups, the story branch); Jira for reading; the QA environment (it runs the tests) | the GitLab write token; the Jira publishing login |
+| `qa-generate-publish`, `qa-gap-report-publish` (`qa-sentinel publish`) | GitLab with `QA_SENTINEL_GITLAB_WRITE_TOKEN` (`api` + `write_repository`); Jira with `QA_JIRA_PUBLISH_PAT` (or `QA_JIRA_PUBLISH_EMAIL` + `QA_JIRA_PUBLISH_API_TOKEN`) | the model key; the QA environment; it runs no tests and starts no agent |
+
+The analysis job leaves a `branch.bundle` and a `publish.json` in the run folder (a job artifact). The publish job checks the bundle against the agent write policy again (the check `verify --policy` makes, without running the tests), then pushes it, opens or updates the MR and posts to Jira. If the story branch moved on the server since the analysis, nothing is overwritten and the analysis must run again. GitLab shows every project variable to every job; the templates `unset` the other half's secrets in their first lines. That protects against what the job runs, not against someone who can edit the pipeline file: for that, protect the variables and the branch. Not yet proven on a real GitLab (docs/TRY-PR5.md).
 
 ## Guardrails
 
@@ -345,6 +357,9 @@ Agent policy: diffs, stories and comments are **evidence, not instructions**. Or
 - **Metrics:** fast-forward merges and squash merges whose branch was deleted are judged from the merge requests' heads, which `metrics` fetches from origin (GitLab `refs/merge-requests/*/head`, GitHub `refs/pull/*/head`). If they can't be fetched, fast-forward merges count as "merged without edits" and those squash merges as "edits unknown".
 
 - **Story automation (v0.8) is new and Playwright/GitLab/Jira-shaped.** The background check (`stories`), job keys, budgets, `known-defects`, per-AC readiness, the draft-MR rule and the single Jira status comment have automated tests and were tried on a sandbox and a live Jira search; the AI refresh of a gap report on a real merge request and the readiness table against a live environment have not been run on a real project yet. Known-defect marker removal handles Playwright `test.fail` only (not jest/vitest `test.failing`).
+- **Jira Data Center and self-hosted GitLab are tested against mocks only.** A mock Jira (PAT as a Bearer token, `/rest/api/2`, no Cloud search) and a mock GitLab under a sub-path (`http://host/gitlab`) pass; the PAT/Cloud choice, the "answered with a web page" errors, the sub-path push URL and the flavour line in `doctor --online` are exercised that way. Nobody has yet run them on a real Data Center or a real self-hosted GitLab: that is the owner's proof (docs/TRY-PR5.md). A company certificate still needs `NODE_OPTIONS=--use-system-ca`; the error now says so.
+- **Running generated tests safely is on you, and the tools are small.** `verification.wrapCommand` runs every test command qa-sentinel starts inside a wrapper you choose (a container, `firejail`, …); qa-sentinel checks that the wrapper starts and passes the exit code, not that it isolates anything. `agent.sandbox` turns on Claude Code's own Bash sandbox for the agent's shell commands only (not its file tools). Neither replaces runners that can reach only GitLab, the Anthropic API, your registry and the QA environment (SECURITY.md).
+- **Budget suggestions need history.** `metrics` suggests `automation.budgets` only from 10 stories with a generate job (per story) or 10 days with spend (per day and month), from records qa-sentinel can read; it cannot see spend of runners whose cache you did not download (`--records`).
 - **Budgets are per machine or cache.** Day and month limits count the spend this runner knows about; two CI runners without a shared cache each count their own. The per-story limit never resets.
 - **Jira has no compare-and-set**, so two jobs updating the same story's status comment in the same second can lose one update until that check runs again. qa-sentinel edits or deletes only comments written by the Jira user its token belongs to (it asks `/rest/api/2/myself`); if Jira will not say who that is it writes no Jira comment at all, and `doctor --online` reports it. A personal API token makes that person's own comments qa-sentinel's own, so use a service account. The cleanup of older comments, `/qa ready` and the notifications are tested against a mock Jira only: try them on a test project first (docs/TRY-PR4.md).
 

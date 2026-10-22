@@ -13,6 +13,18 @@ Two files, two repos:
 3. `qa-generate` pins the service clone to the merged SHA, fetches the acceptance criteria from the MR that introduced it, and writes or updates API tests. qa-sentinel then checks the guardrails and verifies the result independently. It opens an MR labelled `qa-agent` and `qa-sentinel::<status>` (Draft unless VERIFIED). Only one generation runs at a time for the whole test repo (`resource_group: qa-sentinel-generate`).
 4. `qa-agent-mr-checks` runs `qa-sentinel verify --policy` on that MR, which blocks unless VERIFIED. A QA engineer reviews and merges.
 
+## Split jobs (opt-in): analysis without publishing tokens, publishing without the model key
+
+Set `QA_SPLIT_JOBS: "true"` (a CI/CD variable) and the work is done by two jobs instead of one:
+
+| Job | Has | Does not have | Does |
+| --- | --- | --- | --- |
+| `qa-generate`, `qa-gap-report` (analysis) | the model key; `QA_SENTINEL_GITLAB_READ_TOKEN` (read_api + read_repository; the gap report needs read_api only); the Jira login for reading | the GitLab write token, the Jira publishing login | plan, write and verify the tests; leave the branch as `branch.bundle` and the rest in `publish.json` (`--defer-publish`) |
+| `qa-generate-publish`, `qa-gap-report-publish` | `QA_SENTINEL_GITLAB_WRITE_TOKEN` (api + write_repository); optionally `QA_JIRA_PUBLISH_PAT` (or `QA_JIRA_PUBLISH_EMAIL` + `QA_JIRA_PUBLISH_API_TOKEN`) | the model key | `qa-sentinel publish`: checks the bundle against the agent write policy again, pushes it, opens or updates the merge request, comments on the MR and in Jira, writes the story record |
+
+Not proven by us on a real GitLab (see docs/TRY-PR5.md). GitLab shows every project variable to every job, so the jobs `unset` the other half's secrets in their first lines; that keeps them from the programs the job starts, not from the job's variable list. To keep a secret out of a job completely, scope the variable to an environment (Settings › CI/CD › Variables › Environment scope) and give the job that environment (check how your GitLab version matches variables to jobs before relying on it).
+Without `QA_SPLIT_JOBS` nothing changes: one job does everything with `QA_SENTINEL_GITLAB_TOKEN`.
+
 ## Setup checklist
 - [ ] Masked variables in both repos (group level is easiest): `ANTHROPIC_API_KEY`, `QA_SENTINEL_GITLAB_TOKEN`. Using Amazon Bedrock or Google Vertex AI instead of an Anthropic key: `CLAUDE_CODE_USE_BEDROCK=1`, `AWS_REGION` and AWS credentials (or a runner role), or `CLAUDE_CODE_USE_VERTEX=1`, `CLOUD_ML_REGION`, `ANTHROPIC_VERTEX_PROJECT_ID` and GCP credentials; `qa-sentinel doctor` shows which route is used.
 - [ ] `{{baseUrlEnv}}` in this repo, pointing to the QA environment
