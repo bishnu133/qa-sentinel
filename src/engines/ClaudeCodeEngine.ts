@@ -7,7 +7,10 @@ import type { AgentEngine, AgentResult, AgentTask } from "./AgentEngine.js";
 export class ClaudeCodeEngine implements AgentEngine {
   readonly name = "claude-code";
 
-  constructor(private readonly accessCheckSeconds?: number) {}
+  constructor(
+    private readonly accessCheckSeconds?: number,
+    private readonly sandbox?: { enabled: boolean; allowedDomains: string[]; failIfUnavailable: boolean },
+  ) {}
 
   available() {
     return claudeAvailable();
@@ -30,6 +33,7 @@ export class ClaudeCodeEngine implements AgentEngine {
       env: t.env,
       dryRun: t.dryRun,
       accessCheckSeconds: t.accessCheckSeconds ?? this.accessCheckSeconds,
+      sandbox: this.sandbox,
     });
     return { ok: r.ok, status: r.status, result: r.result, costUsd: r.costUsd, turns: r.turns, durationMs: r.durationMs, denials: r.denials };
   }
@@ -38,6 +42,6 @@ export class ClaudeCodeEngine implements AgentEngine {
 export function engineFor(c: Config): AgentEngine {
   switch (c.agent.engine) {
     case "claude-code":
-      return new ClaudeCodeEngine(c.agent.accessCheckSeconds);
+      return new ClaudeCodeEngine(c.agent.accessCheckSeconds, c.agent.sandbox);
   }
 }

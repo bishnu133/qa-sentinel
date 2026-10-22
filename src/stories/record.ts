@@ -204,6 +204,37 @@ async function withFileLock<T>(lockFile: string, fn: () => Promise<T>): Promise<
   }
 }
 
+/**
+ * Read story records from a folder that is not this repo's (a downloaded CI cache), read only: a record that does
+ * not parse is skipped, never moved aside. Looks in the folder, then up to 4 levels below it.
+ */
+export function readRecordsFrom(dir: string): StoryRecord[] {
+  const out: StoryRecord[] = [];
+  const walk = (d: string, depth: number) => {
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(d, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const e of entries) {
+      const p = path.join(d, e.name);
+      if (e.isDirectory()) {
+        if (depth < 4 && e.name !== "node_modules" && e.name !== ".git") walk(p, depth + 1);
+      } else if (e.name.endsWith(".json") && e.name !== SWEEP_FILE) {
+        try {
+          const parsed = StoryRecordSchema.safeParse(JSON.parse(fs.readFileSync(p, "utf8")));
+          if (parsed.success) out.push(parsed.data);
+        } catch {
+          /* not a record */
+        }
+      }
+    }
+  };
+  walk(dir, 0);
+  return out;
+}
+
 export function fileStore(cwd: string): RecordStore {
   const dir = recordsDir(cwd);
   const fileOf = (key: string) => path.join(dir, `${assertSafeKey(key)}.json`);

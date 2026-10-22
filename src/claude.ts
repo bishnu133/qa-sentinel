@@ -25,6 +25,8 @@ export interface ClaudeRunOptions {
    * stale credential makes Claude Code retry for minutes before it gives up; this finds out in seconds.
    */
   accessCheckSeconds?: number;
+  /** Claude Code's built-in Bash sandbox (agent.sandbox). Undefined or not enabled: Claude Code's own default (off). */
+  sandbox?: { enabled: boolean; allowedDomains: string[]; failIfUnavailable: boolean };
 }
 
 export type ClaudeStatus = "ok" | "error" | "timeout" | "max-turns" | "max-budget";
@@ -61,7 +63,12 @@ export function buildClaudeArgs(o: ClaudeRunOptions): string[] {
     o.tools.join(","),
   ];
   if (o.allow.length) args.push("--allowedTools", o.allow.join(","));
-  if (o.deny.length) args.push("--settings", JSON.stringify({ permissions: { deny: o.deny } }));
+  // One --settings value: the deny rules and, when agent.sandbox is on, the sandbox keys (names as in Claude Code's sandboxing docs).
+  const settings: Record<string, unknown> = {
+    ...(o.deny.length ? { permissions: { deny: o.deny } } : {}),
+    ...(o.sandbox?.enabled ? { sandbox: { enabled: true, failIfUnavailable: o.sandbox.failIfUnavailable, allowUnsandboxedCommands: false, network: { allowedDomains: o.sandbox.allowedDomains } } } : {}),
+  };
+  if (Object.keys(settings).length) args.push("--settings", JSON.stringify(settings));
   for (const d of o.addDirs ?? []) args.push("--add-dir", d);
   if (o.model) args.push("--model", o.model);
   if (o.maxBudgetUsd !== undefined) args.push("--max-budget-usd", String(o.maxBudgetUsd));

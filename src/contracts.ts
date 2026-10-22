@@ -81,7 +81,7 @@ export async function loadContract(c: Config, s: ContractSource, o: LoadOptions)
     }
     if (s.jiraAttachment) {
       if (!o.storyKey) return { reason: `${from}: no story for this change` };
-      const ctx = jiraContext(c.requirements.jira.baseUrl, env);
+      const ctx = jiraContext(c.requirements.jira, env);
       if (!ctx) return { reason: `${from}: no Jira credentials` };
       const re = globToRegExp(s.jiraAttachment);
       const matches = (await storyAttachments(ctx, o.storyKey)).filter((a) => re.test(a.filename));

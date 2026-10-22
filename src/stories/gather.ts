@@ -105,7 +105,7 @@ export function inputsFromDir(c: Config, dir: string): StoryInput[] {
 }
 
 export function jiraFor(c: Config, env: NodeJS.ProcessEnv = process.env): JiraContext {
-  const ctx = jiraContext(c.requirements.jira.baseUrl, env);
+  const ctx = jiraContext(c.requirements.jira, env);
   if (!ctx) throw new Error("Jira is not set up here: set requirements.jira.baseUrl and JIRA_EMAIL + JIRA_API_TOKEN (Cloud) or JIRA_PAT (Server/Data Center). Or pass --stories-dir to read stories from files.");
   return ctx;
 }

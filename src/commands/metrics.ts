@@ -5,6 +5,7 @@ import { loadConfig } from "../config.js";
 import { fromRoot, git } from "../git.js";
 import type { Manifest } from "../run.js";
 import { log } from "../log.js";
+import { fileStore, readRecordsFrom, type StoryRecord } from "../stories/record.js";
 
 /**
  * Is the tool earning its keep? Two sources, both already there:
@@ -30,6 +31,8 @@ export interface Metrics {
   /** Cost by change size (diff lines), per command: how cost grows, and the budget the runs suggest. */
   bySize: { kind: string; bucket: string; runs: number; avgCostUsd: number; p90CostUsd: number; hitBudget: number }[];
   suggestedBudgets: { kind: string; runs: number; p90CostUsd: number; suggestedUsd: number }[];
+  /** Suggestions for `automation.budgets` from the story records (per story, per day, per month). */
+  suggestedAutomationBudgets: AutomationBudgetSuggestion;
   costUsd: number;
   generate: { reachedVerification: number; verified: number; verificationRate: number | null };
   plans: { total: number; repaired: number; repairRate: number | null; invalid: number; risk: Record<string, number> };
@@ -37,6 +40,50 @@ export interface Metrics {
   mergeRequests: { total: number; mergedUnedited: number; mergedEdited: number; mergedUnknown: number; open: number; notMerged: number; mergedWithoutEditsRate: number | null };
   /** Merged-without-edits per month of the agent's commit: is the team's review getting lighter as lessons accumulate? */
   byMonth: { month: string; merged: number; unedited: number; rate: number | null }[];
+}
+
+export interface AutomationBudgetSuggestion {
+  /** Stories with at least one generate job, and days with AI spend, that the numbers come from. */
+  stories: number;
+  days: number;
+  perStoryUsd?: number;
+  perDayUsd?: number;
+  perMonthUsd?: number;
+  /** Why a number is missing (how many more are needed). */
+  notes: string[];
+}
+
+const MIN_SAMPLES = 10;
+
+const p90Of = (xs: number[]) => (xs.length ? [...xs].sort((a, b) => a - b)[Math.min(xs.length - 1, Math.ceil(xs.length * 0.9) - 1)] : 0);
+
+/**
+ * Budgets for `automation.budgets` from what stories really cost. perStory: p90 of a story's total cost (stories that
+ * had a generate job) × 1.5. perDay: p90 of the daily sums in the ledgers × 1.5. perMonth: perDay × 22 working days,
+ * rounded to $5. Shown only from 10 stories (perStory) or 10 days (perDay, perMonth).
+ */
+export function suggestAutomationBudgets(records: StoryRecord[]): AutomationBudgetSuggestion {
+  // The same story in two folders (the repo and a downloaded cache): the newest copy counts once.
+  const newest = new Map<string, StoryRecord>();
+  for (const r of records) {
+    const seen = newest.get(r.key);
+    if (!seen || r.updatedAt > seen.updatedAt) newest.set(r.key, r);
+  }
+  const recs = [...newest.values()];
+  const costs = recs.filter((r) => Object.values(r.jobs).some((j) => j.kind === "generate")).map((r) => r.totalCostUsd);
+  const daily = new Map<string, number>();
+  for (const r of recs) for (const e of r.ledger) daily.set(e.at.slice(0, 10), (daily.get(e.at.slice(0, 10)) ?? 0) + e.costUsd);
+  const days = [...daily.values()].filter((v) => v > 0);
+  const out: AutomationBudgetSuggestion = { stories: costs.length, days: days.length, notes: [] };
+  const up = (n: number, step: number) => Math.max(step, Math.ceil(n / step - 1e-9) * step);
+  if (costs.length >= MIN_SAMPLES) out.perStoryUsd = round(up(p90Of(costs) * 1.5, 0.25), 2);
+  else out.notes.push(`perStoryUsd needs ${MIN_SAMPLES} stories with a generate job (found ${costs.length})`);
+  if (days.length >= MIN_SAMPLES) {
+    const perDay = round(up(p90Of(days) * 1.5, 0.25), 2);
+    out.perDayUsd = perDay;
+    out.perMonthUsd = up(perDay * 22, 5);
+  } else out.notes.push(`perDayUsd and perMonthUsd need ${MIN_SAMPLES} days with AI spend (found ${days.length})`);
+  return out;
 }
 
 /** manifest.json files under the given folders (run dirs or downloaded CI artifacts), one per run id. */
@@ -209,7 +256,7 @@ export function agentCommits(repo: string, target: string, since?: Date): AgentC
 const rate = (a: number, b: number) => (b ? Math.round((a / b) * 1000) / 10 : null);
 const round = (n: number, d = 2) => Math.round(n * 10 ** d) / 10 ** d;
 
-export function computeMetrics(manifests: Manifest[], commits: AgentCommit[], since?: string): Metrics {
+export function computeMetrics(manifests: Manifest[], commits: AgentCommit[], since?: string, records: StoryRecord[] = []): Metrics {
   const byKind: Metrics["byKind"] = {};
   for (const m of manifests) {
     const k = (byKind[m.kind] ??= { runs: 0, outcomes: {}, costUsd: 0, avgCostUsd: 0, avgDurationS: 0 });
@@ -260,6 +307,7 @@ export function computeMetrics(manifests: Manifest[], commits: AgentCommit[], si
     byKind,
     bySize,
     suggestedBudgets,
+    suggestedAutomationBudgets: suggestAutomationBudgets(records),
     costUsd: round(manifests.reduce((s, m) => s + (m.agent?.costUsd ?? 0), 0)),
     generate: { reachedVerification: reached.length, verified: verified.length, verificationRate: rate(verified.length, reached.length) },
     plans: {
@@ -328,6 +376,16 @@ export function metricsMarkdown(m: Metrics): string {
       lines.push("", `**Budgets these runs suggest** (p90 × 1.5): ${m.suggestedBudgets.map((b) => `${b.kind} $${b.suggestedUsd.toFixed(2)} (${b.runs} runs)`).join(", ")}. Set them in \`agent.maxBudgetUsd\` (gapReport, generate, …).`);
     else lines.push("", "_Budget suggestions appear once a command has 10 runs with sizes recorded._");
   }
+  const ab = m.suggestedAutomationBudgets;
+  lines.push("", "## Budgets for automation.budgets (from story records)", "");
+  if (ab.perStoryUsd !== undefined || ab.perDayUsd !== undefined) {
+    lines.push("| Setting | Suggested | Based on |", "| --- | --- | --- |");
+    if (ab.perStoryUsd !== undefined) lines.push(`| automation.budgets.perStoryUsd | $${ab.perStoryUsd.toFixed(2)} | p90 of ${ab.stories} stories × 1.5 |`);
+    if (ab.perDayUsd !== undefined) lines.push(`| automation.budgets.perDayUsd | $${ab.perDayUsd.toFixed(2)} | p90 of ${ab.days} days × 1.5 |`);
+    if (ab.perMonthUsd !== undefined) lines.push(`| automation.budgets.perMonthUsd | $${ab.perMonthUsd.toFixed(2)} | perDay × 22, to the next $5 |`);
+    lines.push("");
+  }
+  for (const n of ab.notes) lines.push(`_${n}._`);
   lines.push(
     "",
     "_Merged without edits: no reviewer commits on the agent's files before the merge (merge commits), or the squashed change equals the agent's (squash). Fast-forward merges and squash merges with deleted branches are judged from the merge requests' heads (fetched from origin); without them, fast-forward counts as unedited. Runs come from manifests in the folders read; in CI, download the job artifacts into one folder and pass it with `--runs`._",
@@ -345,7 +403,7 @@ export function parseSince(s?: string): Date | undefined {
   return d;
 }
 
-export async function metricsCommand(o: { cwd: string; runs?: string[]; since?: string; out?: string; json?: boolean; fetch?: boolean }): Promise<number> {
+export async function metricsCommand(o: { cwd: string; runs?: string[]; records?: string[]; since?: string; out?: string; json?: boolean; fetch?: boolean }): Promise<number> {
   const c = loadConfig(o.cwd);
   if (o.fetch !== false && fetchReviewRefs(o.cwd)) log.dim("fetched merge request heads (for fast-forward and squash merges)");
   const since = parseSince(o.since);
@@ -354,7 +412,8 @@ export async function metricsCommand(o: { cwd: string; runs?: string[]; since?: 
   const target = targetRef(o.cwd, c.ci.targetBranch);
   if (!target) log.warn(`target branch ${c.ci.targetBranch} not found; merge statistics are skipped (fetch it first)`);
   const commits = target ? agentCommits(o.cwd, target, since) : [];
-  const m = computeMetrics(manifests, commits, o.since);
+  const records = [...(await fileStore(o.cwd).list()), ...(o.records ?? []).flatMap((d) => readRecordsFrom(path.resolve(o.cwd, d)))];
+  const m = computeMetrics(manifests, commits, o.since, records);
   if (o.json) {
     process.stdout.write(JSON.stringify(m, null, 2) + "\n");
     return 0;

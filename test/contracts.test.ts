@@ -129,7 +129,7 @@ describe("spec-first contracts (agreed API spec outside the service repo)", () =
 
     // A link to another host never gets the Jira credentials.
     vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ fields: { attachment: [{ id: "9", filename: "o.yaml", content: "https://evil.example/o.yaml" }] } }))));
-    expect((await loadContract(c, { jiraAttachment: "o.yaml" }, { cwd: dir, storyKey: "SHOP-1", env })).reason).toMatch(/not on https:\/\/acme.atlassian.net/);
+    expect((await loadContract(c, { jiraAttachment: "o.yaml" }, { cwd: dir, storyKey: "SHOP-1", env })).reason).toMatch(/not on the Jira baseUrl origin https:\/\/acme.atlassian.net/);
   });
 
   it("puts the check into gap-report runs (contract-diff.md, contract-check.md, the agreed spec for the agents) and the contract-check command", async () => {

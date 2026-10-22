@@ -8,6 +8,7 @@ import type { Config } from "./config.js";
 import type { FileChange } from "./git.js";
 import { TEST_FILE, addedLines } from "./guardrails.js";
 import { runProcess } from "./proc.js";
+import { wrapTestCommand } from "./wrapper.js";
 import { type Layer, type LayerConfig, junitReporter, layerOfFile, layers, runnerOf, specArgs } from "./layers.js";
 
 /** WAITING_FOR_DEPLOYMENT: only test runs failed, and the change they test isn't deployed in that environment yet. */
@@ -232,7 +233,7 @@ export async function verifyChanges(o: VerifyOptions): Promise<VerificationRepor
       const grep = o.grep && l.isPlaywright ? ` --grep ${shq(o.grep)}` : "";
       const runArgs = (files: string[]) => `${l.runCommand} ${specArgs(l, files, shq)}${grep}${l.isPlaywright ? " --reporter=line,junit" : (auto?.args ?? "")}`;
       const cmd = runArgs(layerSpecs);
-      let r = await runProcess(cmd, [], { cwd, env, timeoutMs, shell: true });
+      let r = await runProcess(wrapTestCommand(c, cmd), [], { cwd, env, timeoutMs, shell: true });
       let mine = readJUnitAt(junit).map((x) => ({ ...x, layer: l.layer }));
       // One retry of the failed specs before calling it a failure: a test that passes on retry is flaky, not a bug.
       const firstFailed = mine.filter((x) => x.status === "failed" && !ENV_ERROR.test(x.message ?? ""));
@@ -240,7 +241,7 @@ export async function verifyChanges(o: VerifyOptions): Promise<VerificationRepor
         const retrySpecs = layerSpecs.filter((sp) => firstFailed.some((f) => f.file && (sp.endsWith(f.file) || f.file.endsWith(sp))));
         if (retrySpecs.length) {
           fs.rmSync(junit, { recursive: true, force: true });
-          const r2 = await runProcess(runArgs(retrySpecs), [], { cwd, env, timeoutMs, shell: true });
+          const r2 = await runProcess(wrapTestCommand(c, runArgs(retrySpecs)), [], { cwd, env, timeoutMs, shell: true });
           const again = readJUnitAt(junit);
           // Same test = same file and name: two specs may hold tests with the same title.
           const key = (x: TestCase) => `${x.file ?? ""}::${x.name}`;

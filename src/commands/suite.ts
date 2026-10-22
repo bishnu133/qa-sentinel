@@ -9,6 +9,7 @@ import { gitlabContext } from "../scm/gitlab.js";
 import { runCommandsFor } from "../layers.js";
 import { testEnv, useEnvironment } from "../run.js";
 import { log } from "../log.js";
+import { wrapTestCommand } from "../wrapper.js";
 
 export interface SuiteOptions {
   cwd: string;
@@ -111,7 +112,7 @@ export async function suiteCommand(o: SuiteOptions): Promise<number> {
   if (bdd) log.warn(`${bdd} Cucumber scenario(s) are in the list but not run here: run them with your BDD job`);
   let status = 0;
   for (const cmd of runCommandsFor(c, run.filter((t) => !t.bdd).map((t) => `${t.file}:${t.line}`))) {
-    const r = spawnSync(cmd, { cwd, shell: true, stdio: "inherit", env: testEnv(c, process.env, { healing: true }) });
+    const r = spawnSync(wrapTestCommand(c, cmd), { cwd, shell: true, stdio: "inherit", env: testEnv(c, process.env, { healing: true }) });
     if ((r.status ?? 1) !== 0) status = r.status ?? 1;
   }
   return status;
