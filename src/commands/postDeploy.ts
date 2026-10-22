@@ -216,7 +216,7 @@ export async function postDeployCommand(o: PostDeployOptions): Promise<number> {
     md.push(body, "");
     if (o.post && (x.status === "passed" || x.status === "failed" || x.status === "waiting")) {
       const jira = jiraContext(c.requirements.jira.baseUrl);
-      if (jira) await postToStory(c, jira, x.story, { name: "post-deploy", wiki: markdownToJiraWiki(body), legacyKind: "post-deploy", legacyMarker: "qa-sentinel:post-deploy" }).catch((e) => log.warn(`  Jira ${x.story}: ${(e as Error).message}`));
+      if (jira) await postToStory(c, jira, x.story, { name: "post-deploy", wiki: markdownToJiraWiki(body), legacyKind: "post-deploy", legacyMarker: "qa-sentinel:post-deploy", cwd }).catch((e) => log.warn(`  Jira ${x.story}: ${(e as Error).message}`));
     }
     log[x.status === "passed" ? "ok" : x.status === "failed" ? "fail" : "warn"](`${x.story}: ${head}`);
   }

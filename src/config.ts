@@ -72,6 +72,8 @@ const ServiceSchema = z.object({
     .optional(),
 });
 
+const NotifyRule = (on: boolean) => z.object({ on: z.boolean().default(on), to: z.array(z.string()).default([]) }).default({});
+
 export const ConfigSchema = z.object({
   version: z.literal(1),
   mode: z.enum(["existing", "scratch"]),
@@ -433,6 +435,8 @@ export const ConfigSchema = z.object({
         .default({}),
       /** Who to tag when a story is ready for review: Jira Cloud account ids (or Server/DC usernames). */
       notify: z.array(z.string()).default([]),
+      /** When the story's code or ACs changed after the evidence was attached: attach fresh evidence on the next full pass, without the refresh label. Default off: the status only says the evidence is older. */
+      reattachOnChange: z.boolean().default(false),
       /** Only showcase runs against these environments (e.g. [sit, uat]); empty = any. */
       environments: z.array(z.string()).default([]),
       /** A story with a fixme/skip test (known product discrepancy) is not showcased. */
@@ -485,8 +489,24 @@ export const ConfigSchema = z.object({
         .object({
           /** summary: plain-language status per acceptance criterion (default); full: the whole technical report. */
           format: z.enum(["summary", "full"]).default("summary"),
-          /** single (default): one QA status comment per story, with a section per check; separate: one comment per kind (the old layout). */
+          /** Deprecated: use `mode`. single = status, separate = legacy. Only read when `mode` is not set. */
           layout: z.enum(["single", "separate"]).default("single"),
+          /** status (default): one QA status comment per story, a section per check; legacy: one comment per kind (the old layout); both: write both. */
+          mode: z.enum(["status", "legacy", "both"]).optional(),
+          /** What happens to qa-sentinel's own older comments on the first status write: pointer (edit into a one-line pointer), delete, or keep. Only qa-sentinel's own comments are ever touched. */
+          cleanup: z.enum(["pointer", "delete", "keep"]).default("pointer"),
+          /** Short new comments that mention people when something needs them. Each is sent once per story and subject. `to: []` = showcase.notify. */
+          notify: z
+            .object({
+              "showcase-ready": NotifyRule(true),
+              "ac-not-built-but-ready": NotifyRule(false),
+              "cross-service-tests-ready": NotifyRule(false),
+              "stopped-by-budget": NotifyRule(false),
+              "merge-conflict": NotifyRule(false),
+            })
+            .default({}),
+          /** A person can mark an AC ready by hand with a comment: `/qa ready AC-1 reason`. allowed: [] = any human; else Jira account ids or usernames. */
+          override: z.object({ command: z.string().min(2).default("/qa ready"), allowed: z.array(z.string()).default([]) }).default({}),
           /** Restrict the Jira comment, e.g. { type: "role", value: "Developers" }. */
           visibility: z.object({ type: z.enum(["role", "group"]), value: z.string() }).optional(),
           /** Jira caps comments at 32,767 characters; longer reports are cut and linked to the CI artifact. */
@@ -640,6 +660,12 @@ export const ConfigSchema = z.object({
 });
 
 export type Config = z.infer<typeof ConfigSchema>;
+
+/** How qa-sentinel writes on a Jira story: `mode`, or the old `layout` (single = status, separate = legacy) when `mode` is not set. */
+export function jiraMode(c: Pick<Config, "reporting">): "status" | "legacy" | "both" {
+  const j = c.reporting.jira;
+  return j.mode ?? (j.layout === "separate" ? "legacy" : "status");
+}
 export type ServiceConfig = z.infer<typeof ServiceSchema>;
 
 export function configPath(cwd: string): string {

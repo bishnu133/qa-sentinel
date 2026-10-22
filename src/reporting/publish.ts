@@ -10,7 +10,7 @@ import { log } from "../log.js";
  */
 export async function publish(
   c: Config,
-  i: { report: string; jiraSummary?: string; service: string; storyKey?: string; /** Hidden stamp for the MR comment only (see plan/fingerprint.ts). */ stamp?: string; mr: Partial<ReturnType<typeof gitlabMrFromEnv>>; targets?: Config["reporting"]["targets"] },
+  i: { report: string; jiraSummary?: string; service: string; storyKey?: string; /** Where the story record is, for the basis. */ cwd?: string; /** Hidden stamp for the MR comment only (see plan/fingerprint.ts). */ stamp?: string; mr: Partial<ReturnType<typeof gitlabMrFromEnv>>; targets?: Config["reporting"]["targets"] },
   env: NodeJS.ProcessEnv = process.env,
 ): Promise<string[]> {
   const done: string[] = [];
@@ -33,7 +33,7 @@ export async function publish(
           const artifact = env.CI_JOB_URL ? `${env.CI_JOB_URL}/artifacts/file/qa-gap-report.md` : undefined;
           const source = c.reporting.jira.format === "summary" && i.jiraSummary ? i.jiraSummary : i.report;
           const body = capForJira(markdownToJiraWiki(source), c.reporting.jira.maxChars, artifact);
-          const r = await postToStory(c, ctx, i.storyKey, { name: `gap-report:${i.service}`, wiki: body, legacyKind: i.service });
+          const r = await postToStory(c, ctx, i.storyKey, { name: `gap-report:${i.service}`, wiki: body, legacyKind: i.service, cwd: i.cwd, env });
           log.ok(`Jira ${i.storyKey}: comment ${r.action} (${r.url})`);
           done.push("jira");
         }

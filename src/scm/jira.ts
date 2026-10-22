@@ -6,6 +6,7 @@
  */
 import { maskSecrets } from "../secrets.js";
 import { netFetch } from "../net.js";
+import { log } from "../log.js";
 
 export interface JiraContext {
   baseUrl: string;
@@ -249,17 +250,87 @@ async function jiraCall(ctx: JiraContext, method: string, route: string, body?: 
   }
 }
 
-/** The first comment on a story whose body contains `marker` (searches every page of comments). */
-export async function findIssueComment(ctx: JiraContext, key: string, marker: string): Promise<{ id: string; body: string } | undefined> {
+/** Who the token belongs to: Cloud has `accountId`; Data Center has `name` and `key`. */
+export interface JiraUser {
+  accountId?: string;
+  name?: string;
+  key?: string;
+  displayName?: string;
+  accountType?: string;
+}
+
+const meCache = new WeakMap<JiraContext, Promise<JiraUser | undefined>>();
+
+/** The user the credentials belong to (GET /rest/api/2/myself); undefined when Jira will not say. Asked once per context. */
+export function myself(ctx: JiraContext): Promise<JiraUser | undefined> {
+  let p = meCache.get(ctx);
+  if (!p) {
+    p = jiraCall(ctx, "GET", "/rest/api/2/myself").then(
+      (u) => (u && (u.accountId || u.name || u.key) ? ({ accountId: u.accountId, name: u.name, key: u.key, displayName: u.displayName } as JiraUser) : undefined),
+      () => undefined,
+    );
+    meCache.set(ctx, p);
+  }
+  return p;
+}
+
+/** Is this comment (or its author object) written by `me`? Any one identifier that is present on both and equal counts. */
+export function isAuthor(author: JiraUser | undefined, me: JiraUser | undefined): boolean {
+  if (!author || !me) return false;
+  return Boolean((me.accountId && author.accountId === me.accountId) || (me.name && author.name === me.name) || (me.key && author.key === me.key));
+}
+
+export interface JiraComment {
+  id: string;
+  body: string;
+  author?: JiraUser;
+  created?: string;
+  visibility?: { type: string; value: string };
+}
+
+/** Every comment on a story, oldest first (all pages). */
+export async function listComments(ctx: JiraContext, key: string): Promise<JiraComment[]> {
   const base = `/rest/api/2/issue/${encodeURIComponent(key)}/comment`;
+  const out: JiraComment[] = [];
   for (let startAt = 0; ; ) {
     const page = await jiraCall(ctx, "GET", `${base}?startAt=${startAt}&maxResults=100`);
     const comments: any[] = page.comments ?? [];
-    const hit = comments.find((cm) => typeof cm.body === "string" && cm.body.includes(marker));
-    if (hit) return { id: String(hit.id), body: hit.body };
+    for (const cm of comments) if (typeof cm.body === "string") out.push({ id: String(cm.id), body: cm.body, author: cm.author, created: cm.created, visibility: cm.visibility });
     startAt += comments.length;
-    if (!comments.length || startAt >= (page.total ?? 0)) return undefined;
+    if (!comments.length || startAt >= (page.total ?? 0)) return out;
   }
+}
+
+/**
+ * The comments qa-sentinel's own user wrote on a story. Throws when Jira will not say who the token belongs to:
+ * callers that change or delete comments must not guess.
+ */
+export async function listOwnComments(ctx: JiraContext, key: string): Promise<JiraComment[]> {
+  const me = await myself(ctx);
+  if (!me) throw new Error("Jira did not say which user the credentials belong to (GET /rest/api/2/myself), so qa-sentinel's own comments cannot be told from other people's");
+  return (await listComments(ctx, key)).filter((cm) => isAuthor(cm.author, me));
+}
+
+let warnedMyself = false;
+
+/**
+ * The first comment on a story whose body contains `marker` (every page of comments). By default only comments
+ * written by the token's own user count: anyone can paste a marker into a comment, and that must not get theirs
+ * edited. When Jira will not say who the token belongs to, all comments count (with a warning), as on GitLab.
+ */
+export async function findIssueComment(ctx: JiraContext, key: string, marker: string, o: { ownOnly?: boolean } = {}): Promise<{ id: string; body: string } | undefined> {
+  const me = o.ownOnly === false ? undefined : await myself(ctx);
+  if (o.ownOnly !== false && !me && !warnedMyself) {
+    warnedMyself = true;
+    log.warn("Jira did not say which user the credentials belong to (GET /rest/api/2/myself); looking for qa-sentinel's comment among all comments");
+  }
+  const hit = (await listComments(ctx, key)).find((cm) => cm.body.includes(marker) && (!me || isAuthor(cm.author, me)));
+  return hit ? { id: hit.id, body: hit.body } : undefined;
+}
+
+/** Delete one comment (needs the permission to delete the token user's own comments; callers fall back to editing). */
+export async function deleteComment(ctx: JiraContext, key: string, id: string): Promise<void> {
+  await jiraCall(ctx, "DELETE", `/rest/api/2/issue/${encodeURIComponent(key)}/comment/${encodeURIComponent(id)}`);
 }
 
 /** Write a comment: replace `existingId`, or add a new one. */

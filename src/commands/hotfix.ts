@@ -115,7 +115,7 @@ export async function hotfixCommand(o: HotfixOptions): Promise<number> {
     const jira = jiraContext(c.requirements.jira.baseUrl);
     if (!jira || !story) log.warn("--post: needs Jira configured and a story key (--story, or one in the commit message)");
     else {
-      const r = await postToStory(c, jira, story, { name: `hotfix:${service.name}`, wiki: markdownToJiraWiki(md), legacyKind: `hotfix-${service.name}` });
+      const r = await postToStory(c, jira, story, { name: `hotfix:${service.name}`, wiki: markdownToJiraWiki(md), legacyKind: `hotfix-${service.name}`, legacyMarker: `qa-sentinel:hotfix-${service.name}`, cwd });
       log.ok(`Jira ${story}: hotfix status ${r.action}`);
     }
   }

@@ -14,7 +14,8 @@ import { type GitLabContext } from "../scm/gitlab.js";
 import { fetchIssue, jiraContext, searchStories, storiesJql, type FoundStory, type JiraContext } from "../scm/jira.js";
 import type { CodeState, StoryFacts } from "./assess.js";
 import { type JobPolicy, type Budgets, budgetStatus, digest, jobGate, MIN_USEFUL_USD, specJobKey } from "./jobs.js";
-import { type RecordStore, type StoryRecord } from "./record.js";
+import { type RecordStore, type StoryRecord, SAFE_KEY, emptyRecord } from "./record.js";
+import { readOverrides, sameOverrides } from "./overrides.js";
 import { isReadyStatus, resolveFeature, servicesFromComponents, statusSets } from "./resolve.js";
 import { log } from "../log.js";
 
@@ -128,6 +129,10 @@ export interface GatherContext {
   budgets: Budgets;
   records: StoryRecord[];
   gitlab?: GitLabContext;
+  /** Jira: when set, `/qa ready AC-n` comments on the story are read (and kept in the record). */
+  jira?: JiraContext;
+  /** Don't write the record (`stories --no-record`). */
+  noRecord?: boolean;
   now?: Date;
 }
 
@@ -159,6 +164,7 @@ export async function gatherFacts(g: GatherContext, input: StoryInput, shared: {
   // What would stop an AI step from starting: its own job, or the budget.
   const rec = g.records.find((r) => r.key === key) ?? (await g.store.load(key));
   const hashes = acs.map((a) => acHash(a.text));
+  const overrides = await currentOverrides(g, key, rec);
   const limits: StoryFacts["limits"] = {};
   const needed = expected.error ? [] : acsNeedingProposal(expected.file, acs).filter((a) => a.needsProposal);
   if (needed.length) {
@@ -177,13 +183,31 @@ export async function gatherFacts(g: GatherContext, input: StoryInput, shared: {
   let writeReadiness: StoryFacts["writeReadiness"];
   let crossReady: string[] | undefined;
   if (c.generation.scope === "story" && !expected.error && parts.length) {
-    const rows = acWriteReadiness(parts, expected.file, acs.map((a) => a.id), { jiraReady: input.ready, mode: c.generation.crossService, components: servicesFromComponents(c, input.components).services, overrides: rec?.overrides });
+    const rows = acWriteReadiness(parts, expected.file, acs.map((a) => a.id), { jiraReady: input.ready, mode: c.generation.crossService, components: servicesFromComponents(c, input.components).services, overrides });
     writeReadiness = rows.map((r) => ({ ac: r.ac, kind: r.kind, state: r.state, reason: r.reason }));
     const text = new Map(acs.map((a) => [a.id, a.text]));
     crossReady = rows.filter((r) => r.kind === "cross" && r.state === "ready" && !crossWritten(rec, r, parts, text.get(r.ac) ?? "", acHash)).map((r) => r.ac);
   }
   const generateSettled = gens.some((j) => j.state === "done" && j.outcome === "no-changes-needed");
   return { ...base, expected, trace, code, limits: Object.fromEntries(Object.entries(limits).filter(([, v]) => v)), generateSettled, ...(writeReadiness ? { writeReadiness } : {}), ...(crossReady?.length ? { crossReady } : {}) };
+}
+
+/** The `/qa ready AC-n` overrides on the story now. A Jira problem leaves the stored ones in force (the record is a cache, the check must go on). */
+async function currentOverrides(g: GatherContext, key: string, rec: StoryRecord | undefined): Promise<StoryRecord["overrides"] | undefined> {
+  if (!g.jira) return rec?.overrides;
+  try {
+    const now = await readOverrides(g.c, g.jira, key, rec?.overrides ?? []);
+    if (!sameOverrides(now, rec?.overrides ?? []) && !g.noRecord && SAFE_KEY.test(key)) {
+      await g.store.locked(key, async () => {
+        const fresh = (await g.store.load(key)) ?? emptyRecord(key, g.now);
+        await g.store.save({ ...fresh, overrides: now, updatedAt: (g.now ?? new Date()).toISOString() });
+      });
+    }
+    return now;
+  } catch (e) {
+    log.warn(`${key}: /qa ready comments not read (${(e as Error).message.split("\n")[0]})`);
+    return rec?.overrides;
+  }
 }
 
 export function sharedFacts(cwd: string, c: Config) {

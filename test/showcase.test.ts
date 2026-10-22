@@ -5,6 +5,7 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { showcaseCommand } from "../src/commands/showcase.js";
 import { readRunResults } from "../src/showcase/results.js";
+import { emptyRecord, fileStore } from "../src/stories/record.js";
 
 function repo(): string {
   const r = fs.mkdtempSync(path.join(os.tmpdir(), "qas-show-"));
@@ -118,5 +119,87 @@ describe("showcase", () => {
     const md = fs.readFileSync(path.join(r, "qa-showcase.md"), "utf8");
     expect(md).toContain("SHOP-1 · not ready");
     expect(md).toContain("AC-2: 1 test(s) still waiting for a product fix");
+  });
+});
+
+describe("showcase and the Jira status comment", () => {
+  async function setup(extraConfig: string) {
+    const { server, state } = fakeJira();
+    await new Promise<void>((ok) => server.listen(0, ok));
+    const r = repo();
+    const cfg = path.join(r, "qa-sentinel.config.yaml");
+    fs.writeFileSync(cfg, fs.readFileSync(cfg, "utf8").replace("PORT", String((server.address() as any).port)) + extraConfig);
+    return { server, state, r };
+  }
+  const withEnv = async (fn: () => Promise<void>) => {
+    const env = { ...process.env };
+    process.env.JIRA_EMAIL = "qa@example.test";
+    process.env.JIRA_API_TOKEN = "t";
+    try {
+      await fn();
+    } finally {
+      process.env = env;
+    }
+  };
+
+  it("status mode: the summary is a section of the status comment and the mention is a separate short comment, once", async () => {
+    const { server, state, r } = await setup("showcase: { notify: [jsmith] }\n");
+    try {
+      await withEnv(async () => {
+        await showcaseCommand({ cwd: r });
+        const [first, second] = state.comments;
+        expect(first.body).toContain("qa-sentinel:status");
+        expect(first.body).toContain("qa-sentinel:section=showcase");
+        expect(first.body).not.toContain("[~jsmith]");
+        expect(second.body).toMatch(/^\[~jsmith\] this story is ready for your review: /);
+        expect(second.body).toContain("qa-sentinel:notify:showcase-ready");
+        expect(state.comments).toHaveLength(2);
+      });
+    } finally {
+      server.close();
+    }
+  });
+
+  it("legacy mode keeps today's behaviour: one separate showcase comment with the mention inside", async () => {
+    const { server, state, r } = await setup("showcase: { notify: [jsmith] }\nreporting: { jira: { mode: legacy } }\n");
+    try {
+      await withEnv(async () => {
+        await showcaseCommand({ cwd: r });
+        expect(state.comments).toHaveLength(1);
+        expect(state.comments[0].body).toContain("[~jsmith] this story is ready for your review");
+        expect(state.comments[0].body).toContain("qa-sentinel:showcase");
+        expect(state.comments[0].body).not.toContain("qa-sentinel:status");
+      });
+    } finally {
+      server.close();
+    }
+  });
+
+  it("evidence older than the latest change is reported; reattachOnChange attaches again without the label", async () => {
+    const a = await setup("");
+    try {
+      await withEnv(async () => {
+        const store = fileStore(a.r);
+        await store.save({ ...emptyRecord("SHOP-1"), basis: "aaaa1111" });
+        await showcaseCommand({ cwd: a.r });
+        expect(a.state.property.basis).toBe("aaaa1111");
+        expect(a.state.attachments).toHaveLength(2);
+
+        await store.save({ ...(await store.load("SHOP-1"))!, basis: "bbbb2222" });
+        await showcaseCommand({ cwd: a.r });
+        expect(a.state.attachments).toHaveLength(2);
+        expect(fs.readFileSync(path.join(a.r, "qa-showcase.md"), "utf8")).toContain("Evidence older than the latest change");
+
+        fs.appendFileSync(path.join(a.r, "qa-sentinel.config.yaml"), "showcase: { reattachOnChange: true }\n");
+        await showcaseCommand({ cwd: a.r });
+        expect(a.state.attachments).toHaveLength(4);
+        expect(a.state.property.basis).toBe("bbbb2222");
+        // Same basis again: not attached a third time.
+        await showcaseCommand({ cwd: a.r });
+        expect(a.state.attachments).toHaveLength(4);
+      });
+    } finally {
+      a.server.close();
+    }
   });
 });

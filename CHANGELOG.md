@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased — Jira status modes, out-of-date marks, notifications, `/qa ready` (PR 4 of the finishing plan)
+
+- **Behaviour change: older qa-sentinel comments become one-line pointers.** The first time the QA status comment is made on a story, qa-sentinel's own comments from the old layout (gap report, feature, post-deploy, bugs, story review, showcase, hotfix) are edited into "Replaced by the QA status comment: <link>". Set `reporting.jira.cleanup: keep` to keep today's behaviour, or `delete` to remove them. `reporting.jira.mode: status | legacy | both` replaces `layout` (`layout: separate` still works and means `legacy`).
+- **Behaviour change: the showcase summary is a section of the status comment** (mode `status`); the mention is a separate short new comment (`notify.showcase-ready`, on by default, tags `showcase.notify`). In `legacy` mode the showcase comment is as before.
+- **Fix: only qa-sentinel's own comments are found and edited.** Before, any comment holding the marker text was edited, whoever wrote it. qa-sentinel now asks Jira who its token belongs to (`/rest/api/2/myself`, Cloud `accountId` or Data Center `name`/`key`) and ignores other authors. If Jira will not say, the status comment is found among all comments with a warning (as on GitLab) and nothing is cleaned up or deleted.
+- **Fix: the hotfix comment in `legacy` mode** had the marker `qa-sentinel:gap-report:hotfix-<service>`; it is now `qa-sentinel:hotfix-<service>`. A comment written with the old marker is left as it is (a new one is made).
+- **Out-of-date marks.** Each result section of the status comment remembers the story's basis (merged code and AC texts). When it moves on, `stories` redraws the comment with "Out of date: … (orders !12 merged 2026-10-22)" on those sections. No AI, no new comment. Older comments without a basis are never marked.
+- **Waiting section** in the status comment: held end-to-end ACs, "not built but ready" and "looks complete" mismatches, and every `/qa ready` in use.
+- **`/qa ready AC-n [reason]`** in a Jira comment marks an AC ready by hand for writing its tests; `/qa unready AC-n` takes it back. Any human by default, shown with the person's name and date; `reporting.jira.override.allowed` restricts it. Never read from qa-sentinel's own comments.
+- **`reporting.jira.notify`**: `showcase-ready`, `ac-not-built-but-ready`, `cross-service-tests-ready`, `stopped-by-budget`, `merge-conflict`: short new comments with mentions, once per event and subject.
+- `showcase.reattachOnChange` (default false). New config keys all have defaults, so old config files load unchanged.
+- Try it: [docs/TRY-PR4.md](docs/TRY-PR4.md).
+
 ## Unreleased — one test merge request per story, end-to-end tests per AC, `stories --act` (PR 3 of the finishing plan)
 
 - **Behaviour change: one test merge request per story.** When a merged change names a story, qa-sentinel adds its tests to one long-lived branch, `qa-sentinel/story-KEY`, and one merge request (`QA agent: tests for story KEY`), instead of a new `qa-sentinel/<service>-<sha>` merge request per merge. A change with no story key keeps the old branch. To keep the old way for every merge, set `generation.scope: service`. Other settings: `generation.branchPrefix` (`qa-sentinel/story-`), `generation.maxAcsPerRun` (5).

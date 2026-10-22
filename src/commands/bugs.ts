@@ -51,7 +51,7 @@ export async function bugsCommand(o: BugsOptions): Promise<number> {
         candidates.forEach((b) => log.info(`  ${story} ${b.item}: would raise "${b.title}" (actual: ${b.actual})`));
         continue;
       }
-      const r = await fileBugs(ctx, c, story, candidates);
+      const r = await fileBugs(ctx, c, story, candidates, cwd);
       raised += r.created.length;
       if (r.created.length) log.ok(`  ${story}: bug(s) created ${r.created.join(", ")}`);
       if (r.suggested) log.ok(`  ${story}: ${r.suggested} bug(s) proposed in a comment`);

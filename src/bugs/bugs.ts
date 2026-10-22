@@ -157,7 +157,7 @@ export function bugDescription(b: BugCandidate): string {
 }
 
 /** suggest: one comment on the story listing the bugs. create: create, link and record them; never twice. */
-export async function fileBugs(ctx: JiraContext, c: Config, story: string, candidates: BugCandidate[]): Promise<{ created: string[]; suggested: number; skipped: string[] }> {
+export async function fileBugs(ctx: JiraContext, c: Config, story: string, candidates: BugCandidate[], cwd?: string): Promise<{ created: string[]; suggested: number; skipped: string[] }> {
   const created: string[] = [];
   const skipped: string[] = [];
   if (!candidates.length || c.bugs.mode === "off") return { created, suggested: 0, skipped };
@@ -169,7 +169,7 @@ export async function fileBugs(ctx: JiraContext, c: Config, story: string, candi
       "",
       ...list.map((b) => `- *${b.item}*${b.suspected ? " _(suspected)_" : ""}: ${b.title}\n  Expected: ${b.expected}\n  Actual: ${b.actual}${b.test ? `\n  Test: \`${b.test.file}${b.test.line ? `:${b.test.line}` : ""}\`` : ""}`),
     ].join("\n");
-    await postToStory(c, ctx, story, { name: "bugs", wiki: markdownToJiraWiki(md), legacyKind: "bugs", legacyMarker: "qa-sentinel:bugs" });
+    await postToStory(c, ctx, story, { name: "bugs", wiki: markdownToJiraWiki(md), legacyKind: "bugs", legacyMarker: "qa-sentinel:bugs", cwd });
     return { created, suggested: list.length, skipped };
   }
   const record = ((await getIssueProperty<BugRecord>(ctx, story, BUGS_PROPERTY)) ?? {}) as BugRecord;
