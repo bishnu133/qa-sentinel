@@ -1,5 +1,5 @@
 import type { Config } from "../config.js";
-import type { JiraIssue, JiraLink } from "../scm/jira.js";
+import { fetchIssue, isJiraNotFound, type JiraContext, type JiraIssue, type JiraLink } from "../scm/jira.js";
 
 /**
  * Which feature a Jira card belongs to. A bug, task or sub-task is tested and reported under its story, but a wrong
@@ -86,4 +86,55 @@ export function servicesFromComponents(c: Config, components: string[] | undefin
     else unmapped.push(comp);
   }
   return { services: [...services], unmapped };
+}
+
+/** The answer for one key: where it led, and why. The card and the feature are kept so the caller needs no second read. */
+export interface KeyResolution {
+  work: string;
+  /** The feature the card belongs to. Missing when the card is not attached to one (ambiguous, none), is not in Jira, or could not be read. */
+  feature?: string;
+  via: "self" | "parent" | "link" | "none" | "ambiguous" | "not-found" | "error";
+  explain: string;
+  notFound?: boolean;
+  workIssue?: JiraIssue;
+  featureIssue?: JiraIssue;
+}
+
+/** One lookup of a card in Jira, kept for the length of a run. */
+export type IssueCache = Map<string, Promise<{ issue?: JiraIssue; notFound?: boolean; error?: string }>>;
+
+/**
+ * Resolve several keys to their features with the fixed rules above. Each card is read from Jira once per cache
+ * (a new cache per call unless one is given), so an MR that names the same parent twice costs one read.
+ * A key that is not in Jira is `not-found`; it is never guessed at.
+ */
+export async function resolveKeysCached(c: Config, ctx: JiraContext, keys: string[], o: { hasCode?: boolean; cache?: IssueCache; read?: (key: string) => Promise<JiraIssue> } = {}): Promise<KeyResolution[]> {
+  const cache: IssueCache = o.cache ?? new Map();
+  const j = c.requirements.jira;
+  const read = o.read ?? ((key: string) => fetchIssue(ctx, key, j.acceptanceCriteriaField, j.scopeFields.map((f) => f.field)));
+  const get = (key: string) => {
+    const k = key.toUpperCase();
+    if (!cache.has(k))
+      cache.set(
+        k,
+        read(key).then(
+          (issue) => ({ issue }),
+          (e) => ({ notFound: isJiraNotFound(e), error: (e as Error).message }),
+        ),
+      );
+    return cache.get(k)!;
+  };
+  const out: KeyResolution[] = [];
+  for (const key of [...new Set(keys)]) {
+    const card = await get(key);
+    if (!card.issue) {
+      out.push(card.notFound ? { work: key, via: "not-found", notFound: true, explain: `${key} is not in Jira` } : { work: key, via: "error", explain: `${key} could not be read from Jira: ${card.error?.slice(0, 160)}` });
+      continue;
+    }
+    const r = await resolveFeature(c, card.issue, async (k) => (await get(k)).issue, { hasCode: o.hasCode });
+    if (r.kind === "feature") out.push({ work: key, feature: r.feature, via: "self", explain: r.explain, workIssue: card.issue, featureIssue: card.issue });
+    else if (r.kind === "resolved") out.push({ work: key, feature: r.feature, via: r.via, explain: r.explain, workIssue: card.issue, featureIssue: (await get(r.feature)).issue });
+    else out.push({ work: key, via: r.kind, explain: r.explain, workIssue: card.issue });
+  }
+  return out;
 }

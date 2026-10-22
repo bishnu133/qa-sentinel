@@ -10,7 +10,8 @@ import { matchesAny } from "../fsutil.js";
 import { formatUsage } from "../claude.js";
 import { ARTIFACT_GLOBS, createRunDir, findService, startManifest, writeManifest } from "../run.js";
 import { checkServiceUntouched, diffSnapshots, findingsMarkdown, snapshotTree, type Finding } from "../guardrails.js";
-import { requirementsLine, resolveRequirements, skippedBranch, storyMarkdown } from "../requirements.js";
+import { extractStoryKeys, jiraKeyPattern, requirementsLine, resolveRequirements, skippedBranch, storyMarkdown } from "../requirements.js";
+import { resolveKeysCached } from "../stories/resolve.js";
 import { getMrNoteBody, gitlabContext, gitlabMrFromEnv, mrIsDraft, upsertMrNote } from "../scm/gitlab.js";
 import { gapFingerprint, parseStamp, relevantDiffDigest, stampOf, updatedLine } from "../plan/fingerprint.js";
 import { assembleFeature } from "../feature/manifest.js";
@@ -52,6 +53,12 @@ export interface GapReportOptions {
   out?: string;
   post?: boolean;
   dryRun?: boolean;
+  /** Internal, for a merge request that names several stories: the key to resolve (a bug or task key, or the story's own), the feature it belongs to, and whether this run may write the MR comment. */
+  forKey?: string;
+  forFeature?: string;
+  noMrNote?: boolean;
+  /** Internal: facts about the keys the MR names that the report should say (a key that is not in Jira, stories left out). */
+  notes?: string[];
 }
 
 type GapResult = { report: string; skipped: boolean; exitCode: number };
@@ -75,15 +82,87 @@ interface Prepared {
 export async function gapReportCommand(o: GapReportOptions): Promise<GapResult> {
   const cwd = path.resolve(o.cwd);
   const c = loadConfig(cwd);
+  // A merge request that names several stories gets one report for each (requirements.multiKey).
+  const named = await storiesNamedByMr(o, c);
+  if (named && named.items.length > 1) return gapReportEach(o, c, cwd, named);
+  if (named?.items.length === 1) o = { ...o, forKey: named.items[0].work, forFeature: named.items[0].feature, notes: [...(o.notes ?? []), ...named.notes] };
   // The checks that need no AI come first, so a draft or an unchanged push costs nothing and never trips a budget.
   const pre = await gapReportPrepare(o, c, cwd);
   if (pre.done) return pre.done;
   return withSpend(
-    { cwd, c, story: o.story, label: "gap-report", skip: o.dryRun },
+    { cwd, c, story: o.story ?? o.forFeature, label: "gap-report", skip: o.dryRun },
     (exitCode) => ({ report: "", skipped: true, exitCode }),
     (wrap) => gapReportBody(o, wrap, pre.s!),
     (r) => r.exitCode,
   );
+}
+
+interface NamedStories {
+  items: { work: string; feature: string; explain: string }[];
+  /** Keys that are not in Jira, stories left out because of the limit, cards that could not be read. */
+  notes: string[];
+}
+
+/**
+ * The stories a merge request names (title, source branch, description), each resolved to its feature, when it names
+ * more than one key. Undefined when there is nothing to decide: story mode, a story file, no Jira, or fewer than two keys.
+ */
+async function storiesNamedByMr(o: GapReportOptions, c: ReturnType<typeof loadConfig>): Promise<NamedStories | undefined> {
+  if (o.story || o.storyFile || o.forKey || c.requirements.source !== "jira") return undefined;
+  const jctx = jiraContext(c.requirements.jira.baseUrl);
+  if (!jctx) return undefined;
+  const mr = gitlabMrFromEnv();
+  const keys = extractStoryKeys(jiraKeyPattern(c), mr.title, mr.sourceBranch, mr.description);
+  if (keys.length < 2) return undefined;
+  const notes: string[] = [];
+  const items: NamedStories["items"] = [];
+  for (const r of await resolveKeysCached(c, jctx, c.requirements.multiKey === "first" ? keys.slice(0, 1) : keys, { hasCode: true })) {
+    if (r.via === "not-found" || r.via === "error") {
+      notes.push(r.explain);
+      continue;
+    }
+    // A card that is attached to no feature (or to two) is analysed under its own key; two cards of one feature are one story.
+    const feature = r.feature ?? r.work;
+    if (!items.some((x) => x.feature.toLowerCase() === feature.toLowerCase())) items.push({ work: r.work, feature, explain: r.via === "self" ? `${feature}` : r.explain });
+  }
+  const max = c.requirements.maxKeysPerMr;
+  if (items.length > max) {
+    notes.push(`This merge request names ${items.length} stories; only the first ${max} are analysed (requirements.maxKeysPerMr): left out ${items.slice(max).map((x) => x.feature).join(", ")}`);
+    items.length = max;
+  }
+  return { items, notes };
+}
+
+/** One gap report per story the merge request names, joined in one MR comment. Each report is posted to its own story in Jira, and its cost is counted on that story. */
+async function gapReportEach(o: GapReportOptions, c: ReturnType<typeof loadConfig>, cwd: string, named: NamedStories): Promise<GapResult> {
+  const out = path.resolve(cwd, o.out ?? "qa-gap-report.md");
+  const sections: string[] = [];
+  const regression: (string[] | "all")[] = [];
+  let exitCode = 0;
+  let skipped = true;
+  for (const [i, it] of named.items.entries()) {
+    const childOut = path.join(cwd, ".qa-sentinel", "gap", it.feature, "qa-gap-report.md");
+    fs.mkdirSync(path.dirname(childOut), { recursive: true });
+    log.step(`merge request names ${named.items.length} stories: report ${i + 1} for ${it.feature}${it.work !== it.feature ? ` (via ${it.work})` : ""}`);
+    const r = await gapReportCommand({ ...o, out: childOut, forKey: it.work, forFeature: it.feature, noMrNote: true, notes: i === 0 ? named.notes : undefined });
+    // A draft MR gets its waiting note once, not once per story.
+    if (r.report.startsWith("### QA impact · waiting")) return { ...r, report: r.report };
+    sections.push(`#### Story ${it.feature}${it.work !== it.feature ? ` · ${it.explain}` : ""}\n\n${r.report.trim()}`);
+    exitCode = Math.max(exitCode, r.exitCode);
+    skipped = skipped && r.skipped;
+    try {
+      const txt = fs.readFileSync(path.join(path.dirname(childOut), "qa-regression.txt"), "utf8");
+      regression.push(txt.trim() ? txt.split("\n").filter(Boolean) : "all");
+    } catch {
+      /* this report made no selection */
+    }
+  }
+  const report = [`### QA impact · ${named.items.length} stories in this merge request`, ...named.notes.map((n) => `\n> ⚠️ ${n}`), "", sections.join("\n\n---\n\n"), ""].join("\n");
+  fs.writeFileSync(out, report);
+  if (regression.length) fs.writeFileSync(path.join(path.dirname(out), "qa-regression.txt"), regression.includes("all") ? "" : [...new Set(regression.flat())].join("\n") + "\n");
+  const mr = gitlabMrFromEnv();
+  if (o.post && !o.dryRun && c.reporting.targets.includes("gitlab-mr")) await publish(c, { report, service: o.service, mr, targets: ["gitlab-mr"] });
+  return { report, skipped, exitCode };
 }
 
 async function gapReportPrepare(o: GapReportOptions, c: ReturnType<typeof loadConfig>, cwd: string): Promise<{ done?: GapResult; s?: Prepared }> {
@@ -139,11 +218,13 @@ async function gapReportPrepare(o: GapReportOptions, c: ReturnType<typeof loadCo
     storyFile: o.storyFile,
     mr: { title: mr.title, description: mr.description, url: mr.url, sourceBranch: mr.sourceBranch },
     keyHints: o.story ? [o.story] : [mr.sourceBranch, ...commitMessages(repo, cs.base, cs.head)],
+    ...(o.forKey ? { storyKey: o.forKey } : {}),
   });
+  if (o.notes?.length) req.resolveNote = [req.resolveNote, ...o.notes].filter(Boolean).join("; ");
   // One comment per MR, refreshed only when the code that matters (or the ACs, the expected behaviour, the scope) changed since the report on it.
   let fp: string | undefined;
   let previousHead: string | undefined;
-  if (!o.story) {
+  if (!o.story && !o.noMrNote) {
     const range = `${cs.base}...${cs.head}`;
     const digest = relevantDiffDigest((f) => { try { return git(repo, ["-c", "core.quotePath=false", "diff", "--relative", "--binary", "--full-index", range, "--", f]); } catch { return ""; } }, relevant);
     let expectedText = "";
@@ -256,7 +337,7 @@ async function gapReportBody(o: GapReportOptions, wrap: (e: AgentEngine) => Agen
       try {
         const m = await assembleFeature({ c, cwd, story: req.storyKey, gitlab: c.workspace.services.some((x) => x.gitlabProject) ? gitlabContext(c.ci.gitlabUrl) : undefined });
         const others = m.parts.filter((p) => p.service !== service.name);
-        featureServices.push(...others.map((p) => p.service));
+        featureServices.push(...new Set(others.map((p) => p.service)));
         if (others.length) {
           featureLine = `**Feature ${req.storyKey} also changes:** ${others.map((p) => `${p.service} (${p.mr ? `[!${p.mr.iid}](${p.mr.url}), ` : ""}${p.merged ? "merged" : "not merged yet"})`).join(", ")}. Acceptance criteria that need several services are checked with \`qa-sentinel feature ${req.storyKey}\` once every part is deployed.`;
           report = report.replace(footer, `${featureLine}\n\n${footer}`);
@@ -318,7 +399,8 @@ async function gapReportBody(o: GapReportOptions, wrap: (e: AgentEngine) => Agen
   writeManifest(run, manifest);
   log.ok(`report written to ${path.relative(cwd, out)}${u ? ` (${u})` : ""}`);
 
-  if (o.post) await publish(c, { report, jiraSummary, service: service.name, storyKey: req.storyKey, mr, ...(!fp || exitCode !== 0 ? {} : { stamp: stampOf(fp, cs.head) }) });
+  // A merge request that names several stories gets one joined comment (written by gapReportEach); each story still gets its own Jira section here.
+  if (o.post) await publish(c, { report, jiraSummary, service: service.name, storyKey: req.storyKey, mr, ...(o.noMrNote ? { targets: c.reporting.targets.filter((t) => t !== "gitlab-mr") } : {}), ...(!fp || exitCode !== 0 ? {} : { stamp: stampOf(fp, cs.head) }) });
   // Story mode with every part merged: requirements nothing builds (or builds differently) become (suspected) bugs.
   if (o.post && parts && parts.every((p) => p.merged) && c.bugs.mode !== "off" && req.storyKey && outcome.plan) {
     const jira = jiraContext(c.requirements.jira.baseUrl);

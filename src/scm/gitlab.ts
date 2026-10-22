@@ -62,7 +62,8 @@ export async function getAll(ctx: GitLabContext, route: string, maxPages = 50): 
     const { data, headers } = await call(ctx, "GET", `${route}${sep}per_page=100&page=${page}`);
     out.push(...(data ?? []));
     const next = headers.get("x-next-page");
-    if (!next || !Array.isArray(data) || data.length < 100) break;
+    // GitLab says whether another page follows (an empty x-next-page = last page). Without that header, a short page is the last.
+    if (!Array.isArray(data) || (next === null ? data.length < 100 : !next)) break;
   }
   return out;
 }

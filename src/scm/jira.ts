@@ -68,12 +68,23 @@ export function parseLinks(raw: unknown): JiraLink[] {
   return out;
 }
 
+/** A Jira answer that is not a success. `status` 404 means the key (or the issue) does not exist or is not visible to this user. */
+export class JiraHttpError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+  ) {
+    super(message);
+  }
+}
+export const isJiraNotFound = (e: unknown) => e instanceof JiraHttpError && e.status === 404;
+
 export async function fetchIssue(ctx: JiraContext, key: string, acField?: string, extraFields: string[] = []): Promise<JiraIssue> {
   const fields = ["summary", "description", "status", "issuetype", "labels", "updated", "parent", "issuelinks", "components", ...(acField ? [acField] : []), ...extraFields].join(",");
   const res = await netFetch(`${ctx.baseUrl}/rest/api/2/issue/${encodeURIComponent(key)}?fields=${fields}`, {
     headers: { Authorization: ctx.authHeader, Accept: "application/json" },
   });
-  if (!res.ok) throw new Error(`Jira GET ${key} failed: ${res.status} ${(await res.text()).slice(0, 200)}`);
+  if (!res.ok) throw new JiraHttpError(`Jira GET ${key} failed: ${res.status} ${(await res.text()).slice(0, 200)}`, res.status);
   const j: any = await res.json();
   const f = j.fields ?? {};
   return {

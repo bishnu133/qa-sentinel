@@ -226,13 +226,16 @@ level: intelligence                  # intelligence (read-only) | maintenance (a
 requirements:
   source: jira                       # mr-description | jira | none
   required: false                    # refuse to generate without requirements
+  multiKey: each                     # an MR naming several stories: each (a gap report for every story) | first
+  maxKeysPerMr: 3                    # at most this many stories per MR (each is an AI run)
   jira:
     baseUrl: https://yourco.atlassian.net
     projectKeys: [SHOP]              # story keys are found in MR title, branch or commit messages
     acceptanceCriteriaField: customfield_10045   # optional; else AC are read from the description
     scopeFields: [{ field: customfield_10050, name: Tech scope, prefix: TS }]   # optional: scope kept in Jira fields
     approvedStatuses: [Ready for Dev, In Progress, Done]   # these statuses make AC "approved"
-    featureIssueTypes: [Story]   # only these get expected behaviour (empty = every type)
+    featureIssueTypes: [Story]   # only these get expected behaviour (empty = every type). A bug or task named in an MR is read as its story
+    search: { mrLookbackDays: 30 }   # finding a story's MRs also matches the source branch of MRs updated in the last N days (the GitLab text search reads only titles and descriptions)
     workflow:
       readyStatuses: [Ready for Testing]      # development is done; cross-service tests wait for this
       byProject: { ABC: { readyStatuses: [QA Ready] } }   # a project with different status names

@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased — linking: every key, every merge request (PR 1 of the finishing plan)
+
+- **A merge request that names several stories gets a report for each** (`requirements.multiKey: each`, the default; `first` keeps the old way of looking at the first key only). At most `requirements.maxKeysPerMr` (default 3) stories are analysed, because each one is an AI run. Each report is posted on its own story in Jira, its cost is counted on that story, and the merge request gets one comment with a section per story. A key that is not in Jira ("SHOP-1012") is said so in the report and never guessed at.
+- **A bug, task or sub-task is read as its story** (when `requirements.jira.featureIssueTypes` is set). The gap report and `generate` take the acceptance criteria from the story. The bug's own text is kept as evidence under "Work card KEY" and never sets an expected value; if it disagrees with an AC the planner asks the product owner. The report says how the card was reached ("SHOP-210 (Bug) → SHOP-12 via parent"). The fixed rules do not change.
+- **A service can have many merge requests for one story.** `feature` and the readiness table show one row per MR (or branch). A service counts as merged only when it has a merged MR and no open one. A closed MR is shown as "dropped" and never holds anything back.
+- **Merge requests are found by their branch name too.** Before, GitLab was searched only in titles and descriptions, one page of 50. Now every page is read, and merge requests updated in the last `requirements.jira.search.mrLookbackDays` days (default 30) are also matched on their source branch. An MR older than that, with the key only in its branch name, is not found.
+- In local git, every branch that names the story is its own part (a branch is found even when its commits do not name the story).
+- Tests can carry `@bug:KEY` (indexed as `bugs`).
+- **Jira data stays out of git.** `init` and `upgrade` now add `.qa-sentinel/` (story records hold Jira statuses and titles), `qa-stories.md` and `qa-post-deploy.md` to `.gitignore`.
+- Try it: [docs/TRY-PR1.md](docs/TRY-PR1.md).
+
 ## Unreleased — hotfixes, release tags, environment-aware runs (phase 5)
 
 - **`qa-sentinel hotfix`** (no AI): where a hotfix stands. Matches each hotfix commit to its cherry-pick on the main branch (a `cherry-pick -x` line, or the same change by patch id) and says whether tests were written from it. `--post` puts it in the Jira QA status comment (section `hotfix:<service>`).

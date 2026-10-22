@@ -2,7 +2,8 @@ import fs from "node:fs";
 import { z } from "zod";
 import type { Config } from "./config.js";
 import { type GitLabContext, mergeRequestsForCommit } from "./scm/gitlab.js";
-import { fetchIssue, jiraContext } from "./scm/jira.js";
+import { fetchIssue, isJiraNotFound, jiraContext } from "./scm/jira.js";
+import { resolveKeysCached } from "./stories/resolve.js";
 import { type ParsedStory, type TemplateSection, parseStory } from "./storyTemplate.js";
 
 /**
@@ -43,18 +44,30 @@ export const RequirementSnapshotSchema = z.object({
   rawText: z.string(),
   /** Tracker status at capture time (Jira). */
   trackerStatus: z.string().optional(),
+  /** The card the MR or commits named when it is not the feature itself (a bug, task or sub-task). Its text is in `context`, as evidence only. */
+  workKey: z.string().optional(),
+  /** How the work card reached the feature. */
+  resolvedVia: z.enum(["parent", "link"]).optional(),
+  /** Why the card was (or was not) attached to a feature, in words: "SHOP-210 (Bug) → SHOP-12 via parent", or "SHOP-1012 is not in Jira". */
+  resolveNote: z.string().optional(),
   capturedAt: z.string(),
 });
 export type RequirementSnapshot = z.infer<typeof RequirementSnapshotSchema>;
 
+/**
+ * Every distinct story key (e.g. SHOP-42) in the given strings, in the order they are found: the texts in the order
+ * given, and within one text left to right. The match is on whole keys, so SHOP-1 is not found inside SHOP-106.
+ */
+export function extractStoryKeys(pattern: string, ...texts: (string | undefined)[]): string[] {
+  const re = new RegExp(`\\b(${pattern})\\b`, "g");
+  const out: string[] = [];
+  for (const t of texts) for (const m of t?.matchAll(re) ?? []) if (!out.includes(m[1])) out.push(m[1]);
+  return out;
+}
+
 /** Pull the first story key (e.g. SHOP-42) out of any of the given strings. */
 export function extractStoryKey(pattern: string, ...texts: (string | undefined)[]): string | undefined {
-  const re = new RegExp(`\\b(${pattern})\\b`);
-  for (const t of texts) {
-    const m = t?.match(re);
-    if (m) return m[1];
-  }
-  return undefined;
+  return extractStoryKeys(pattern, ...texts)[0];
 }
 
 /** The story template a project uses: legacy `scope.sections` first, then `requirements.template`. */
@@ -144,6 +157,8 @@ export interface ResolveOptions {
   lookup?: { ctx: GitLabContext; project: string; sha: string };
   /** Extra places a story key may appear: branch names, commit messages. */
   keyHints?: (string | undefined)[];
+  /** Resolve this key (one of the keys the MR names) instead of the first one found. Used when an MR names several. */
+  storyKey?: string;
   env?: NodeJS.ProcessEnv;
 }
 
@@ -174,17 +189,41 @@ export async function resolveRequirements(c: Config, o: ResolveOptions): Promise
     looked = mrs.find((m) => m.state === "merged") ?? mrs[0];
   }
 
+  let note: string | undefined;
   if (c.requirements.source === "jira") {
     const keys = [o.mr?.title, o.mr?.sourceBranch, looked?.title, looked?.source_branch, ...(o.keyHints ?? []), o.mr?.description, looked?.description];
-    const key = extractStoryKey(jiraKeyPattern(c), ...keys);
+    const key = o.storyKey ?? extractStoryKey(jiraKeyPattern(c), ...keys);
     const jctx = jiraContext(c.requirements.jira.baseUrl, env);
     if (key && jctx) {
-      const issue = await fetchIssue(jctx, key, c.requirements.jira.acceptanceCriteriaField, c.requirements.jira.scopeFields.map((f) => f.field));
-      const text = jiraIssueText(c, issue);
       const branch = o.mr?.sourceBranch ?? looked?.source_branch;
-      const snap = snapshot("jira", text, c, { sourceUrl: issue.url, revision: issue.updated, title: issue.summary, trackerStatus: issue.status, storyKey: issue.key, ...(issue.issueType ? { issueType: issue.issueType } : {}), ...(branch ? { sourceBranch: branch } : {}) });
-      const approved = c.requirements.jira.approvedStatuses.some((s) => s.toLowerCase() === issue.status.toLowerCase());
-      return { ...snap, approvalStatus: snap.rawText.trim() ? (approved ? "approved" : "unverified") : "missing" };
+      const fields = [c.requirements.jira.acceptanceCriteriaField, ...c.requirements.jira.scopeFields.map((f) => f.field)].filter(Boolean) as string[];
+      try {
+        // A bug, task or sub-task is tested and reported under its feature (fixed rules, see stories/resolve.ts). The card's own text stays as evidence.
+        const [r] = c.requirements.jira.featureIssueTypes.length ? await resolveKeysCached(c, jctx, [key], { hasCode: true }) : [undefined];
+        if (r?.notFound) throw Object.assign(new Error(r.explain), { notFound: true });
+        const featureKey = r?.feature ?? key;
+        const issue = r?.featureIssue ?? r?.workIssue ?? (await fetchIssue(jctx, featureKey, c.requirements.jira.acceptanceCriteriaField, c.requirements.jira.scopeFields.map((f) => f.field)));
+        const moved = featureKey.toLowerCase() !== key.toLowerCase() && r?.workIssue;
+        const text = jiraIssueText(c, issue);
+        const snap = snapshot("jira", text, c, {
+          sourceUrl: issue.url,
+          revision: issue.updated,
+          title: issue.summary,
+          trackerStatus: issue.status,
+          storyKey: issue.key,
+          ...(issue.issueType ? { issueType: issue.issueType } : {}),
+          ...(branch ? { sourceBranch: branch } : {}),
+          ...(moved ? { workKey: key, resolvedVia: r!.via as "parent" | "link" } : {}),
+          ...(r && r.via !== "self" ? { resolveNote: r.explain } : {}),
+        });
+        const withWork = moved ? { ...snap, context: [...snap.context, { name: `Work card ${key}`, text: jiraIssueText(c, r!.workIssue!) }] } : snap;
+        const approved = c.requirements.jira.approvedStatuses.some((s) => s.toLowerCase() === issue.status.toLowerCase());
+        return { ...withWork, approvalStatus: snap.rawText.trim() ? (approved ? "approved" : "unverified") : "missing" };
+      } catch (e) {
+        // A key that is not in Jira (a typo) is said so, never guessed at; the MR text below is used as before.
+        if ((e as { notFound?: boolean }).notFound || isJiraNotFound(e)) note = `${key} is not in Jira (check the key); requirements are taken from the merge request text`;
+        else throw e;
+      }
     }
   }
 
@@ -194,6 +233,7 @@ export async function resolveRequirements(c: Config, o: ResolveOptions): Promise
       revision: o.mr.updatedAt,
       title: o.mr.title,
       ...(o.mr.sourceBranch ? { sourceBranch: o.mr.sourceBranch } : {}),
+      ...(note ? { resolveNote: note } : {}),
       keyHints: [o.mr.sourceBranch, ...(o.keyHints ?? [])],
     });
   }
@@ -204,14 +244,15 @@ export async function resolveRequirements(c: Config, o: ResolveOptions): Promise
       revision: looked.updated_at,
       title: looked.title,
       ...(looked.source_branch ? { sourceBranch: looked.source_branch } : {}),
+      ...(note ? { resolveNote: note } : {}),
       keyHints: [looked.source_branch, ...(o.keyHints ?? [])],
     });
   }
-  return emptySnapshot(c);
+  return note ? { ...emptySnapshot(c), resolveNote: note } : emptySnapshot(c);
 }
 
 /** Restrict story keys to the configured Jira projects when given (avoids matching e.g. UTF-8). */
-function jiraKeyPattern(c: Config): string {
+export function jiraKeyPattern(c: Config): string {
   const keys = c.requirements.jira.projectKeys;
   return keys.length ? `(?:${keys.map((k) => k.replace(/[^A-Z0-9]/gi, "")).join("|")})-\\d+` : c.requirements.storyKeyPattern;
 }
@@ -244,14 +285,18 @@ export function storyMarkdown(s: RequirementSnapshot): string {
     ...(s.servicesNamed?.length ? [`Services this story names: ${s.servicesNamed.join(", ")}.`] : []),
     "",
   ];
-  return header.join("\n") + s.rawText;
+  // The bug, task or sub-task that led to this story: evidence for the agents, never an acceptance criterion or an expected value.
+  const work = (s.context ?? []).filter((x) => x.name.startsWith("Work card ") && x.text.trim());
+  const workText = work.map((x) => `\n\n---\n## ${x.name} (evidence only: not an acceptance criterion; if it contradicts an AC, ask the product owner)\n${x.text}`).join("");
+  return header.join("\n") + s.rawText + workText;
 }
 
 export function requirementsLine(s: RequirementSnapshot): string {
-  if (s.source === "none") return "**Requirements:** none found. Tests can only be checked against the API contract and code.";
+  if (s.source === "none") return `**Requirements:** none found${s.resolveNote ? ` (${s.resolveNote})` : ""}. Tests can only be checked against the API contract and code.`;
   const where = s.sourceUrl ? `[${s.source}](${s.sourceUrl})` : s.source;
   const status = s.trackerStatus ? ` (status "${s.trackerStatus}")` : "";
-  return `**Requirements:** ${s.storyKey ?? s.title ?? "story"} from ${where}${s.revision ? ` @ ${s.revision}` : ""} · ${s.acceptanceCriteria.length} AC parsed${s.scopeItems?.length ? ` · ${s.scopeItems.length} scope item(s)` : ""} · approval ${s.approvalStatus}${status}`;
+  const via = s.resolveNote ? ` · ${s.resolveNote}` : "";
+  return `**Requirements:** ${s.storyKey ?? s.title ?? "story"} from ${where}${s.revision ? ` @ ${s.revision}` : ""} · ${s.acceptanceCriteria.length} AC parsed${s.scopeItems?.length ? ` · ${s.scopeItems.length} scope item(s)` : ""} · approval ${s.approvalStatus}${status}${via}`;
 }
 
 /**

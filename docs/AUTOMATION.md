@@ -100,6 +100,14 @@ While an MR is a draft, `gap-report --post` puts a short "waiting" note in the r
 On the Jira story qa-sentinel keeps **one** comment, "QA status · KEY", with a section per check: `feature` (readiness per AC), `gap-report:<service>`, `story-review`, `bugs`, `post-deploy`. A command replaces only its own section and shows when it last ran; sections are always in the same order. Jira has no compare-and-set, so if two jobs update different sections in the same second one update can be lost; the next run of that check restores it. The comment is kept under Jira's size limit by shortening the biggest section (the full report is the CI artifact). `reporting.jira.layout: separate` goes back to one comment per kind. The showcase comment is separate because it @mentions people. Old comments from earlier versions are not deleted.
 
 
+## Linking: which work belongs to which story
+
+- **Every key counts.** A merge request that names several stories (title, source branch or description) gets one gap report per story (`requirements.multiKey: each`, at most `requirements.maxKeysPerMr`). Each report goes to its own story in Jira and its cost is counted there. `multiKey: first` looks at the first key only.
+- **A bug, task or sub-task is read as its story** when `featureIssueTypes` is set, by the fixed rules above. The story gives the acceptance criteria; the card's own text is added as "Work card KEY", evidence only. A key that is not in Jira is reported as such.
+- **Many merge requests per service.** A story can have several MRs in one service. They are listed one per row. A service is merged only when it has a merged MR and no open one; a closed MR is "dropped" and ignored.
+- **How merge requests are found.** GitLab's text search (every page) plus the MRs updated in the last `requirements.jira.search.mrLookbackDays` days whose source branch names the story. Older MRs with the key only in the branch name are not found. Without GitLab, every local branch that names the story is a part.
+- **Nothing from Jira is committed.** `init` and `upgrade` put `.qa-sentinel/`, `qa-stories.md` and `qa-post-deploy.md` in `.gitignore`.
+
 ## Hotfixes, releases and environments (phase 5)
 
 - **Hotfix flow.** The hotfix is branched from production and cherry-picked to main. The hotfix MR gets the gap report as usual, with a note that the regression selection is what to run against the hotfix environment. `generate` does not write tests on branches matching `ci.hotfixBranches`: tests are written once, when the change reaches main. `qa-sentinel hotfix --service s --commit <sha>` shows whether the cherry-pick exists (matched by its `-x` line or by patch id, so a plain cherry-pick works too) and whether tests were written.
