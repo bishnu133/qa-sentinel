@@ -5,6 +5,7 @@ import type { Config } from "../config.js";
 import type { IndexedTest } from "../analysis/testIndex.js";
 import { type Layer, isUiLayer, layerConfig, layerOfFile, specArgs } from "../layers.js";
 import { runProcess } from "../proc.js";
+import { wrapTestCommand } from "../wrapper.js";
 import { matchResult, readRunResults, type RunResult } from "./results.js";
 import { redact } from "./redact.js";
 import type { EvidenceFile, StoryReadiness } from "./showcase.js";
@@ -231,7 +232,7 @@ export async function buildShowcasePack(i: {
     const l = layerConfig(c, "web");
     const json = path.join(i.workDir, "recording.json");
     const files = [...new Set(webPicks.map((p) => `${p.test.file}:${p.test.line}`))];
-    const r2 = await runProcess(`${l.runCommand} ${files.map(shq).join(" ")} --workers=1 --retries=0 --reporter=json --output=${shq(path.join(i.workDir, "recording"))}`, [], {
+    const r2 = await runProcess(wrapTestCommand(c, `${l.runCommand} ${files.map(shq).join(" ")} --workers=1 --retries=0 --reporter=json --output=${shq(path.join(i.workDir, "recording"))}`), [], {
       cwd,
       shell: true,
       timeoutMs: 15 * 60_000,
@@ -252,7 +253,7 @@ export async function buildShowcasePack(i: {
   if (mobilePicks.length && c.showcase.video.record && c.tests.mobile.enabled) {
     const l = layerConfig(c, "mobile");
     const dir = path.join(i.workDir, "recording-mobile");
-    const r2 = await runProcess(`${l.runCommand} ${specArgs(l, mobilePicks.map((p) => p.test.file), shq)}`, [], {
+    const r2 = await runProcess(wrapTestCommand(c, `${l.runCommand} ${specArgs(l, mobilePicks.map((p) => p.test.file), shq)}`), [], {
       cwd,
       shell: true,
       timeoutMs: 20 * 60_000,

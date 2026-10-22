@@ -33,6 +33,7 @@ import { contractCheckMarkdown, deviationsIn } from "../contracts.js";
 import { log } from "../log.js";
 import { bugsFromPlan, fileBugs } from "../bugs/bugs.js";
 import { jiraContext } from "../scm/jira.js";
+import { deferInNewRun, deferSteps } from "../reporting/deferred.js";
 import type { ServiceConfig } from "../config.js";
 import type { ChangeSet } from "../git.js";
 import { type StoryPart, combinedChange, storyParts } from "../story.js";
@@ -66,6 +67,11 @@ export interface GapReportOptions {
   /** Internal: the Jira reads and the recent-MR scans of this run, shared by the reports of one merge request. */
   issueCache?: IssueCache;
   scanCache?: MrScanCache;
+  /**
+   * Do not publish: write what would be published to publish.json in the run folder (qa-sentinel publish does it, with
+   * write tokens and no model key). Implies --post.
+   */
+  deferPublish?: boolean;
 }
 
 /** `reason`: why nothing was run (a budget or limit stopped it). */
@@ -90,6 +96,7 @@ interface Prepared {
 export async function gapReportCommand(o: GapReportOptions): Promise<GapResult> {
   const cwd = path.resolve(o.cwd);
   const c = loadConfig(cwd);
+  if (o.deferPublish) o = { ...o, post: true };
   // A draft is still changing: this comes first, so it costs nothing (no Jira read) and covers every story the merge request names.
   const waiting = await draftGate(o, c, cwd);
   if (waiting) return waiting;
@@ -127,7 +134,7 @@ interface NamedStories {
  */
 async function storiesNamedByMr(o: GapReportOptions, c: ReturnType<typeof loadConfig>): Promise<NamedStories | undefined> {
   if (o.story || o.storyFile || o.forKey || c.requirements.source !== "jira") return undefined;
-  const jctx = jiraContext(c.requirements.jira.baseUrl);
+  const jctx = jiraContext(c.requirements.jira);
   if (!jctx) return undefined;
   const mr = gitlabMrFromEnv();
   const keys = extractStoryKeys(jiraKeyPattern(c), mr.title, mr.sourceBranch, mr.description);
@@ -163,6 +170,11 @@ async function draftGate(o: GapReportOptions, c: ReturnType<typeof loadConfig>, 
   const report = `### QA impact · waiting\n**Verdict:** this merge request is a draft. The gap report is made once it is marked ready for review (automation.gapReport.when: ready; --even-if-draft overrides).\n`;
   fs.writeFileSync(out, report);
   // Say so on the MR: marking it ready does not start a pipeline by itself, and nobody should think a report exists.
+  if (o.deferPublish && o.post && c.reporting.targets.includes("gitlab-mr") && mr.project) {
+    deferInNewRun(cwd, "gap-report", "gap-waiting", [{ type: "report", report, service: o.service, mr: { ...mr }, targets: ["gitlab-mr"] }]);
+    log.ok("merge request is a draft; the waiting note is left for `qa-sentinel publish`");
+    return { report, skipped: true, exitCode: 0 };
+  }
   const gl = o.post && c.reporting.targets.includes("gitlab-mr") ? gitlabContext(c.ci.gitlabUrl) : undefined;
   if (gl && mr.project) await upsertMrNote(gl, mr.project, mr.mrIid, report).catch((e) => log.warn(`could not post the waiting note: ${(e as Error).message}`));
   log.ok("merge request is a draft; the gap report waits until it is ready for review");
@@ -269,7 +281,11 @@ async function gapReportEach(o: GapReportOptions, c: ReturnType<typeof loadConfi
   fs.writeFileSync(out, report);
   if (!o.dryRun) fs.writeFileSync(path.join(path.dirname(out), "qa-regression.txt"), selections.includes("all") ? "" : [...new Set(selections.flat())].join("\n") + "\n");
   // The stamp goes on only when every story was analysed: a failed or refused one must be tried again on the next push.
-  if (o.post && !o.dryRun && c.reporting.targets.includes("gitlab-mr")) await publish(c, { report, service: o.service, mr, targets: ["gitlab-mr"], ...(allOk && combined && head ? { stamp: stampOf(combined, head) } : {}) });
+  if (o.post && !o.dryRun && c.reporting.targets.includes("gitlab-mr")) {
+    const stamp = allOk && combined && head ? stampOf(combined, head) : undefined;
+    if (o.deferPublish) deferInNewRun(cwd, "gap-report", "gap-joined", [{ type: "report", report, service: o.service, mr: { ...mr }, targets: ["gitlab-mr"], ...(stamp ? { stamp } : {}) }]);
+    else await publish(c, { report, service: o.service, mr, targets: ["gitlab-mr"], ...(stamp ? { stamp } : {}) });
+  }
   return { report, skipped, exitCode };
 }
 
@@ -502,15 +518,28 @@ async function gapReportBody(o: GapReportOptions, wrap: (e: AgentEngine) => Agen
   log.ok(`report written to ${path.relative(cwd, out)}${u ? ` (${u})` : ""}`);
 
   // The record keeps the merge request from the moment it is first seen, so later steps know it without a key in a commit message.
-  if (!o.dryRun && !o.story && req.storyKey && mr.mrIid)
-    await recordMrSeen(openStore(cwd, c), { feature: req.storyKey, workKey: req.workKey, service: service.name, mrIid: mr.mrIid, url: mr.url, title: mr.title, branch: mr.sourceBranch, headSha: process.env.CI_MERGE_REQUEST_SOURCE_BRANCH_SHA ?? cs.head, keys: extractStoryKeys(jiraKeyPattern(c), mr.title, mr.sourceBranch, mr.description) }).catch((e) => log.warn(`story record: merge request not recorded (${(e as Error).message.split("\n")[0]})`));
-  // A merge request that names several stories gets one joined comment (written by gapReportEach); each story still gets its own Jira section here.
-  if (o.post) await publish(c, { report, jiraSummary, cwd, service: service.name, storyKey: req.storyKey, mr, ...(o.noMrNote ? { targets: c.reporting.targets.filter((t) => t !== "gitlab-mr") } : {}), ...(!fp || exitCode !== 0 ? {} : { stamp: stampOf(fp, cs.head) }) });
+  const seen = !o.dryRun && !o.story && req.storyKey && mr.mrIid ? { feature: req.storyKey, workKey: req.workKey, service: service.name, mrIid: mr.mrIid, url: mr.url, title: mr.title, branch: mr.sourceBranch, headSha: process.env.CI_MERGE_REQUEST_SOURCE_BRANCH_SHA ?? cs.head, keys: extractStoryKeys(jiraKeyPattern(c), mr.title, mr.sourceBranch, mr.description) } : undefined;
+  const postTargets = o.noMrNote ? c.reporting.targets.filter((t) => t !== "gitlab-mr") : undefined;
+  const stampNow = !fp || exitCode !== 0 ? undefined : stampOf(fp, cs.head);
   // Story mode with every part merged: requirements nothing builds (or builds differently) become (suspected) bugs.
-  if (o.post && parts && parts.every((p) => p.merged) && c.bugs.mode !== "off" && req.storyKey && outcome.plan) {
-    const jira = jiraContext(c.requirements.jira.baseUrl);
+  const bugCandidates = o.post && parts && parts.every((p) => p.merged) && c.bugs.mode !== "off" && req.storyKey && outcome.plan ? bugsFromPlan(req.storyKey, requirementItems(req), outcome.plan) : undefined;
+  if (o.deferPublish && o.post) {
+    // The write steps wait for `qa-sentinel publish` (write tokens, no model key); this run needs none of them.
+    deferSteps(run.dir, "gap-report", run.id, [
+      ...(seen ? [{ type: "mr-seen" as const, args: seen }] : []),
+      { type: "report" as const, report, jiraSummary, service: service.name, storyKey: req.storyKey, mr: { ...mr }, ...(postTargets ? { targets: postTargets } : {}), ...(stampNow ? { stamp: stampNow } : {}) },
+      ...(bugCandidates && req.storyKey ? [{ type: "bugs" as const, story: req.storyKey, candidates: bugCandidates }] : []),
+    ]);
+    log.ok(`publishing deferred: ${path.relative(cwd, path.join(run.dir, "publish.json"))} (run \`qa-sentinel publish --run ${run.id}\`)`);
+    return { report, skipped: false, exitCode };
+  }
+  if (seen) await recordMrSeen(openStore(cwd, c), seen).catch((e) => log.warn(`story record: merge request not recorded (${(e as Error).message.split("\n")[0]})`));
+  // A merge request that names several stories gets one joined comment (written by gapReportEach); each story still gets its own Jira section here.
+  if (o.post) await publish(c, { report, jiraSummary, cwd, service: service.name, storyKey: req.storyKey, mr, ...(postTargets ? { targets: postTargets } : {}), ...(stampNow ? { stamp: stampNow } : {}) });
+  if (bugCandidates && req.storyKey) {
+    const jira = jiraContext(c.requirements.jira);
     if (jira) {
-      const r = await fileBugs(jira, c, req.storyKey, bugsFromPlan(req.storyKey, requirementItems(req), outcome.plan), cwd).catch((e) => (log.warn(`bugs: ${(e as Error).message}`), undefined));
+      const r = await fileBugs(jira, c, req.storyKey, bugCandidates, cwd).catch((e) => (log.warn(`bugs: ${(e as Error).message}`), undefined));
       if (r?.created.length) log.ok(`bug(s) raised on ${req.storyKey}: ${r.created.join(", ")}`);
       if (r?.suggested) log.ok(`${r.suggested} bug(s) proposed on ${req.storyKey}`);
     }

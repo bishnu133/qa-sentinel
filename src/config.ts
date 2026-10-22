@@ -217,6 +217,11 @@ export const ConfigSchema = z.object({
       jira: z
         .object({
           baseUrl: z.string().optional(),
+          /**
+           * How to log in. auto (default): Jira Cloud (JIRA_EMAIL + JIRA_API_TOKEN) when JIRA_EMAIL is set, else the
+           * Data Center personal access token JIRA_PAT. cloud / pat force one form.
+           */
+          auth: z.enum(["auto", "cloud", "pat"]).default("auto"),
           projectKeys: z.array(z.string()).default([]),
           /** Custom field holding acceptance criteria, e.g. customfield_10045 (else they are read from the description). */
           acceptanceCriteriaField: z.string().optional(),
@@ -577,6 +582,21 @@ export const ConfigSchema = z.object({
           spec: z.number().positive().default(1),
         })
         .default({}),
+      /**
+       * Claude Code's built-in sandbox around the AGENT's shell commands (its Bash tool), off by default. On: the agent
+       * runs with `--settings {"sandbox":{"enabled":true,"failIfUnavailable":true,"allowUnsandboxedCommands":false,
+       * "network":{"allowedDomains":[...]}}}`. It covers shell commands only, not Claude's file tools, and needs
+       * bubblewrap and socat on Linux (docs/SECURITY.md). Tests qa-sentinel itself runs: verification.wrapCommand.
+       */
+      sandbox: z
+        .object({
+          enabled: z.boolean().default(false),
+          /** Hosts the agent's shell commands may reach (the QA environment's host, the package registry). Empty: none. */
+          allowedDomains: z.array(z.string()).default([]),
+          /** Stop at startup when the sandbox cannot start, instead of running unsandboxed. */
+          failIfUnavailable: z.boolean().default(true),
+        })
+        .default({}),
       skipPaths: z
         .array(z.string())
         .default(["**/*.md", "docs/**", "**/*.lock", "**/package-lock.json", ".gitlab-ci.yml", "Jenkinsfile"]),
@@ -633,6 +653,12 @@ export const ConfigSchema = z.object({
       retryFailed: z.boolean().default(true),
       /** With --push: keep the branch local unless verification is VERIFIED (no draft MRs). */
       requireVerifiedToPush: z.boolean().default(false),
+      /**
+       * Run every test command qa-sentinel starts (verification, post-deploy, suite, feature, showcase recording)
+       * inside this wrapper. `{cmd}` is replaced by the command as one shell-quoted word, so use `sh -c {cmd}` or
+       * similar, e.g. `docker run --rm --network qa-net -v $PWD:/w -w /w node:22 sh -c {cmd}`.
+       */
+      wrapCommand: z.string().refine((s) => s.includes("{cmd}"), { message: "must contain {cmd}, where the test command goes (e.g. \"firejail sh -c {cmd}\")" }).optional(),
     })
     .default({}),
   /** Named lower environments the tests can run against before an MR is opened, e.g. dev and sit. */
