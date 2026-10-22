@@ -339,7 +339,13 @@ export const ConfigSchema = z.object({
        */
       crossService: z.enum(["when-ready-status", "when-ac-complete"]).default("when-ready-status"),
       /** The story's test branch is `<branchPrefix><KEY>`. Kept configurable for repositories with branch naming rules. */
-      branchPrefix: z.string().regex(/^[A-Za-z0-9._\-/]*$/, "letters, digits, . _ - / only").default("qa-sentinel/story-"),
+      branchPrefix: z
+        .string()
+        .regex(/^[A-Za-z0-9._\-/]*$/, "letters, digits, . _ - / only")
+        .refine((v) => !v.startsWith("-") && !v.startsWith("/") && !v.includes(".."), "must not start with - or / and must not contain ..")
+        .default("qa-sentinel/story-"),
+      /** An open merge request that nobody has touched for this many days no longer holds back the ACs of its service (0: it always does). */
+      staleMrDays: z.number().int().min(0).max(3650).default(30),
       /** At most this many acceptance criteria are planned in one run (the rest wait for the next one). */
       maxAcsPerRun: z.number().int().min(1).max(50).default(5),
     })

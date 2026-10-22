@@ -9,7 +9,7 @@ import { generateCommand } from "../src/commands/generate.js";
 import { acHash } from "../src/expected/format.js";
 import { parseStoryFor } from "../src/requirements.js";
 import { fileStore, emptyRecord } from "../src/stories/record.js";
-import { generateJobKey, specJobKey } from "../src/stories/jobs.js";
+import { crossServiceJobKey, specJobKey } from "../src/stories/jobs.js";
 
 const STORY = "# SHOP-101 Delivery slots\n\n## Acceptance criteria\n- AC-1: A slot takes at most 3 orders.\n- AC-2: Orders in the past are rejected.\n";
 const git = (cwd: string, ...a: string[]) => execFileSync("git", a, { cwd, encoding: "utf8", env: { ...process.env, GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@t", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@t" } });
@@ -100,7 +100,8 @@ describe("generate: job keys and budgets", () => {
   it("skips when the same service change and ACs were already done (CI)", async () => {
     process.env.CI = "true";
     const head = git(svc, "rev-parse", "HEAD").trim();
-    const key = generateJobKey("SHOP-101", "orders", head, storyAcs().map((a) => acHash(a.text)));
+    // Story scope: the key is the ACs planned and the commits they are written against.
+    const key = crossServiceJobKey("SHOP-101", ["AC-1", "AC-2"], [`orders:${head}`], storyAcs().map((a) => acHash(a.text)));
     const s = fileStore(repo);
     const r = emptyRecord("SHOP-101");
     r.jobs[key] = { key, kind: "generate", state: "done", startedAt: new Date().toISOString(), finishedAt: new Date().toISOString(), attempts: 1, costUsd: 1.2, outcome: "verified" };

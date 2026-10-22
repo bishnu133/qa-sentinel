@@ -90,6 +90,61 @@ describe("storyScope", () => {
   });
 });
 
+describe("storyScope: already written, unknown ids, and heads", () => {
+  const c = ConfigSchema.parse({ version: 1, mode: "existing", project: { name: "t" }, tests: { api: { framework: "mocha", runCommand: "x" } }, ci: { platform: "gitlab" } });
+  const acs = ["AC-1", "AC-2"].map((id) => ({ id, text: id }));
+  const e = exp({ "AC-1": ["orders", "storefront"], "AC-2": ["orders"] });
+  const parts = [part("orders", true), part("storefront", true)];
+  it("a single-service AC written for these commits is not planned again, also when --acs names it; --force plans it", () => {
+    const rec = emptyRecord("SHOP-1");
+    rec.singleService["AC-2"] = { state: "written", heads: headsDigest(parts, ["orders"]), acHash: acHash("AC-2"), at: "t" };
+    const run = (o: object) => storyScope({ c, acs, expected: e, parts, rec, jiraReady: true, ...o }, acHash);
+    expect(run({}).acScope).toEqual(["AC-1"]);
+    const named = run({ only: ["AC-2"] });
+    expect(named.acScope).toEqual([]);
+    expect(named.alreadyWritten).toEqual(["AC-2"]);
+    expect(run({ only: ["AC-2"], force: true }).acScope).toEqual(["AC-2"]);
+    // A new merge of its service brings it back.
+    expect(run({ parts: [part("orders", true, { sha: "newer00000" }), part("storefront", true)] }).acScope).toContain("AC-2");
+  });
+  it("names the ids --acs asks for that the story does not have", () => {
+    expect(storyScope({ c, acs, expected: e, parts, only: ["AC-1", "AC-9"], jiraReady: true }, acHash).unknown).toEqual(["AC-9"]);
+  });
+  it("allHeads covers the single-service ACs too; heads only the cross ones", () => {
+    const s = storyScope({ c, acs, expected: e, parts, jiraReady: true }, acHash);
+    expect(s.crossInScope).toEqual(["AC-1"]);
+    expect(s.heads).toEqual(["orders:orders1234567", "storefront:storefront1234567"]);
+    const only2 = storyScope({ c, acs, expected: e, parts, only: ["AC-2"], jiraReady: true }, acHash);
+    expect(only2.heads).toEqual([]);
+    expect(only2.allHeads).toEqual(["orders:orders1234567"]);
+  });
+});
+
+describe("an abandoned open merge request", () => {
+  const e = exp({ "AC-1": [], "AC-2": [] });
+  const now = new Date("2026-06-01T00:00:00Z");
+  const stale = part("billing", false, { mr: { iid: 5, url: "u", state: "opened", title: "wip", updatedAt: "2026-01-01T00:00:00Z" } });
+  const fresh = part("billing", false, { mr: { iid: 5, url: "u", state: "opened", title: "wip", updatedAt: "2026-05-30T00:00:00Z" } });
+  it("holds nothing back once nobody touched it for staleDays; a recently updated one still does", () => {
+    const orders = part("orders", true);
+    const rows = (p: ServicePart, staleDays: number) => acWriteReadiness([orders, p], e, ["AC-1"], { ...base, jiraReady: true, staleDays, now });
+    expect(rows(stale, 30)[0]).toMatchObject({ kind: "single", services: ["orders"], state: "ready" });
+    expect(rows(stale, 30)[0].reason).toMatch(/not waited for.*billing !5/);
+    expect(rows(fresh, 30)[0]).toMatchObject({ kind: "cross", state: "waiting-merge" });
+    expect(rows(stale, 0)[0]).toMatchObject({ state: "waiting-merge" }); // 0: never ignored
+  });
+});
+
+describe("config", () => {
+  it("rejects a branch prefix that git would read as an option or that climbs out", () => {
+    const parse = (branchPrefix: string) => ConfigSchema.safeParse({ version: 1, mode: "existing", project: { name: "t" }, tests: { api: { framework: "mocha", runCommand: "x" } }, ci: { platform: "gitlab" }, generation: { branchPrefix } }).success;
+    expect(parse("-bad/")).toBe(false);
+    expect(parse("a/../b")).toBe(false);
+    expect(parse("/abs/")).toBe(false);
+    expect(parse("qa-sentinel/story-")).toBe(true);
+  });
+});
+
 describe("job keys", () => {
   it("the cross-service key depends on the ACs, the commits and the AC texts, not on who asked", () => {
     const k = crossServiceJobKey("SHOP-1", ["AC-2", "AC-1"], ["orders:b", "storefront:a"], ["h2", "h1"]);
@@ -156,6 +211,15 @@ describe("the background check", () => {
     expect(a.next).toBe("generate");
     expect(a.todo[0]).toMatchObject({ who: "ai", command: "qa-sentinel generate --story SHOP-1 --acs AC-1" });
     expect(assessStory(facts()).state).toBe("covered");
+  });
+  it("an AC with no test that cannot be written yet starts nothing; one already written on the story branch is not missing", () => {
+    const noTest = { trace: [{ ac: "AC-1", active: [], pending: [] } as any] };
+    const waiting = assessStory(facts({ ...noTest, writeReadiness: [{ ac: "AC-1", kind: "cross", state: "waiting-merge", reason: "not merged yet: storefront" }] }));
+    expect(waiting.next).toBe("wait");
+    expect(waiting.todo.some((t) => t.who === "ai")).toBe(false);
+    expect(waiting.reasons.join()).toMatch(/AC-1: not merged yet: storefront/);
+    expect(assessStory(facts({ ...noTest, writeReadiness: [{ ac: "AC-1", kind: "single", state: "ready", reason: "" }] })).next).toBe("generate");
+    expect(assessStory(facts({ ...noTest, writtenOnBranch: ["AC-1"] })).state).toBe("covered");
   });
   it("expectations still come first, and a blocked job is reported as blocked", () => {
     const noFile = assessStory(facts({ expected: {}, crossReady: ["AC-1"] }));

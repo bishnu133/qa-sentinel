@@ -18,7 +18,7 @@ describe("actJobs: which due jobs the background check starts", () => {
   });
   it("end-to-end tests: generate with the ready ACs", () => {
     const jobs = actJobs([a("S-1", { state: "needs-cross-service-tests" })], new Map([["S-1", ["AC-1", "AC-3"]]]));
-    expect(jobs).toEqual([{ key: "S-1", what: "generate", acs: ["AC-1", "AC-3"], describe: "generate --story S-1 --acs AC-1,AC-3" }]);
+    expect(jobs).toEqual([{ key: "S-1", what: "generate", acs: ["AC-1", "AC-3"], describe: "generate --story S-1 --acs AC-1,AC-3 --push --once" }]);
   });
 });
 
@@ -53,7 +53,7 @@ describe("stories --act", () => {
 
   it("starts at most maxJobsPerCheck jobs, in order, as one generate/spec call each", async () => {
     const started: string[] = [];
-    const runners = { spec: async (o: any) => (started.push(`spec ${o.story}`), 0), generate: async (o: any) => (started.push(`generate ${o.story}${o.push ? " push" : ""}${o.once ? " once" : ""}`), 0) };
+    const runners = { spec: async (o: any) => (o.onStarted?.(), started.push(`spec ${o.story}`), 0), generate: async (o: any) => (o.onStarted?.(), started.push(`generate ${o.story}${o.push ? " push" : ""}${o.once ? " once" : ""}`), 0) };
     expect(await run({}, runners)).toBe(0);
     expect(started).toEqual(["generate SHOP-1 push once", "generate SHOP-2 push once"]);
   });
@@ -64,11 +64,11 @@ describe("stories --act", () => {
     expect(started).toEqual([]);
   });
   it("exit 4 when a limit stopped a job (e.g. the budget), 1 when a job failed, 0 when all are done", async () => {
-    const limit = { spec: async () => 0, generate: async () => 4 };
+    const limit = { spec: async () => 0, generate: async (o: any) => (o.onStarted?.(), 4) };
     expect(await run({}, limit)).toBe(4);
-    const mixed = { spec: async () => 0, generate: async (o: any) => (o.story === "SHOP-1" ? 4 : 1) };
+    const mixed = { spec: async () => 0, generate: async (o: any) => (o.onStarted?.(), o.story === "SHOP-1" ? 4 : 1) };
     expect(await run({}, mixed)).toBe(1);
-    const thrown = { spec: async () => 0, generate: async () => { throw new Error("boom"); } };
+    const thrown = { spec: async () => 0, generate: async (o: any) => { o.onStarted?.(); throw new Error("boom"); } };
     expect(await run({}, thrown)).toBe(1);
   });
   it("does not start anything without --act", async () => {
@@ -81,5 +81,34 @@ describe("stories --act", () => {
     const runners = { spec: async () => 0, generate: async () => (g(qa, "checkout", "-q", "-b", "qa-sentinel/story-X"), 0) };
     await run({}, runners);
     expect(g(qa, "rev-parse", "--abbrev-ref", "HEAD")).toBe("main");
+  });
+
+  it("restores a detached checkout (a CI job) to the commit it started on", async () => {
+    g(qa, "checkout", "-q", "--detach");
+    const sha = g(qa, "rev-parse", "HEAD");
+    const runners = { spec: async () => 0, generate: async (o: any) => (o.onStarted?.(), g(qa, "checkout", "-q", "-b", `qa-sentinel/story-${o.story}`), 0) };
+    await run({}, runners);
+    expect(g(qa, "rev-parse", "HEAD")).toBe(sha);
+    expect(g(qa, "rev-parse", "--abbrev-ref", "HEAD")).toBe("HEAD");
+  });
+  it("a job that turns out to be nothing to do does not use up maxJobsPerCheck", async () => {
+    const started: string[] = [];
+    // SHOP-1 is skipped (already done / nothing ready): it never calls onStarted. The next two really start.
+    const runners = { spec: async () => 0, generate: async (o: any) => (o.story === "SHOP-1" ? 0 : (o.onStarted?.(), started.push(o.story), 0)) };
+    expect(await run({}, runners)).toBe(0);
+    expect(started).toEqual(["SHOP-2", "SHOP-3"]);
+  });
+  it("says exactly what it starts, flags included", async () => {
+    const lines: string[] = [];
+    const spy = vi.spyOn(console, "log").mockImplementation((...a: unknown[]) => void lines.push(a.join(" ")));
+    try {
+      await run({ dryRun: true }, { spec: async () => 0, generate: async () => 0 });
+    } finally {
+      spy.mockRestore();
+    }
+    expect(lines.join("\n")).toMatch(/would start: qa-sentinel generate --story SHOP-1 --push --once/);
+  });
+  it("--dry-run without --act is an error", async () => {
+    await expect(storiesCommand({ cwd: qa, storiesDir: "stories", noSweep: true, dryRun: true, env: { CI: "true" } })).rejects.toThrow(/--dry-run goes with --act/);
   });
 });

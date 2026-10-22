@@ -28,10 +28,12 @@ import { type JobHandle } from "../stories/jobs.js";
 import { type RecordStore } from "../stories/record.js";
 import { endJob, openStore, startJob } from "../stories/start.js";
 import { acHash, parseExpected } from "../expected/format.js";
-import { isReadyStatus } from "../stories/resolve.js";
-import { fetchBranch, prepareStoryBranch, pushStoryBranch, remoteFor, storyBranchName, type PrepareResult } from "../generation/storyBranch.js";
+import { isReadyStatus, servicesFromComponents } from "../stories/resolve.js";
+import { prepareStoryBranch, pushStoryBranch, remoteFor, storyBranchName, type PrepareResult } from "../generation/storyBranch.js";
+import { storyBranchView, storyExpected, type StoryBranchView } from "../generation/storyView.js";
 import { headsDigest, storyScope, type StoryScope } from "../generation/storyScope.js";
 import { addedFiles, listOpenAgentMrs, writeOpenAgentMrs } from "../generation/openAgentMrs.js";
+import { checkDuplicateFiles } from "../guardrails.js";
 import type { ServicePart } from "../feature/manifest.js";
 import { type AgentResult, addUsage } from "../engines/AgentEngine.js";
 import { planChange } from "../plan/planner.js";
@@ -65,6 +67,8 @@ export interface GenerateOptions {
   acs?: string[];
   /** The environment this run reads (CI, GitLab token, project ids). Default: the process environment. Tests pass their own. */
   processEnv?: NodeJS.ProcessEnv;
+  /** Called once the job is claimed and AI work is about to start (not for a skipped, blocked or empty run): `stories --act` counts only these against its limit. */
+  onStarted?: () => void;
   /** Run even if the same job (same story, ACs and commit) already finished, failed too often or looks to be running. Budgets still apply. */
   force?: boolean;
   /** Skip a job that already finished with the same inputs, also outside CI. */
@@ -131,6 +135,8 @@ async function generateRun(o: GenerateOptions, ctl: JobControl): Promise<number>
   let manifestParts: ServicePart[] = [];
   let storyRec: Awaited<ReturnType<RecordStore["load"]>>;
   if (o.story && o.backfill) throw new Error("backfill and story mode can't be combined");
+  if (o.story && (!SAFE_KEY.test(o.story) || o.story.includes(".."))) throw new Error(`"${o.story}" is not a story key (letters, digits, - _ . only)`);
+  if (o.acs?.length && !o.story) throw new Error("--acs needs --story: it names the ACs of one story");
   if (o.story) {
     const record = await openStore(cwd, c, penv).load(o.story).catch(() => undefined);
     storyRec = record;
@@ -219,6 +225,7 @@ async function generateRun(o: GenerateOptions, ctl: JobControl): Promise<number>
   let triggerService: string | undefined;
   let scope: StoryScope | undefined;
   const genv = o.processEnv ? { ...process.env, ...o.processEnv } : undefined;
+  const testProject = c.ci.testRepoProject ?? penv.CI_PROJECT_ID;
   if (!o.backfill && !parts && gated && req.storyKey && SAFE_KEY.test(req.storyKey) && isFeature(c, req)) {
     storyKey = req.storyKey.toUpperCase();
     triggerService = service.name;
@@ -239,39 +246,44 @@ async function generateRun(o: GenerateOptions, ctl: JobControl): Promise<number>
       if (!manifestParts.some((p) => p.service === triggerService && p.merged)) manifestParts.push({ service: triggerService, source: "git", sha: ownHead, merged: true, keys: [key] });
     }
     if (gated) {
-      const rel = expectedPath(expectedDirOf(c.tests.expectedDir), key);
-      const parse = (t: string | undefined) => {
-        try {
-          return t ? parseExpected(t, rel) : undefined;
-        } catch {
-          return undefined;
+      // The story's test branch as `stories` reads it: its expected file and records only count while its merge request is open.
+      const view = await storyBranchView(cwd, c, key, { gitlab: ctx, project: testProject, env: genv });
+      view.notes.forEach((n) => log.info(n));
+      if (view.branchGone) log.warn(`merge request !${view.mr!.iid} is open, but its branch ${view.branch} is gone`);
+      const expectedNow = storyExpected(cwd, c, key, view).file;
+      // Records of what was written belong to a branch that no longer counts (closed or merged merge request, deleted branch): start from none.
+      const recNow = storyRec && !view.live ? { ...storyRec, crossService: {}, singleService: {} } : storyRec;
+      if (storyRec && !view.live && (Object.keys(storyRec.crossService).length || Object.keys(storyRec.singleService).length)) log.info(`${view.branch} is not live (${view.mr ? `its merge request !${view.mr.iid} is ${view.mr.state}` : "no such branch"}): what was written before is written again on a new branch`);
+      // A story with no acceptance criteria that qa-sentinel can read has no per-AC scope: the change itself is planned, on the story branch.
+      if (!req.acceptanceCriteria.length) {
+        if (o.acs?.length) throw new Error(`${key} has no acceptance criteria to choose from (--acs ${o.acs.join(",")})`);
+        log.info(`${key}: no acceptance criteria found; planning from the change itself, on the story branch`);
+      } else {
+        scope = storyScope(
+          {
+            c,
+            acs: req.acceptanceCriteria.map((a) => ({ id: a.id, text: a.text })),
+            expected: expectedNow,
+            parts: manifestParts,
+            rec: recNow,
+            service: triggerService,
+            jiraReady: req.source === "jira" ? isReadyStatus(c, key, req.trackerStatus) : undefined,
+            components: servicesFromComponents(c, req.components).services,
+            only: o.acs,
+            force: o.force,
+          },
+          acHash,
+        );
+        if (scope.unknown.length) throw new Error(`${scope.unknown.join(", ")} ${scope.unknown.length === 1 ? "is" : "are"} not in ${key} (its ACs: ${req.acceptanceCriteria.map((a) => a.id).join(", ")})`);
+        if (scope.refused.length) throw new Error(`${scope.refused.join(", ")} cannot be planned yet: ${scope.refused.map((id) => `${id} waits for ${scope!.heldAcs.get(id)}`).join("; ")}. Use --force to plan it anyway.`);
+        for (const ac of scope.alreadyWritten) if (o.acs?.some((x) => x.toLowerCase() === ac.toLowerCase())) log.info(`${ac} is already written for these commits (use --force to plan it again)`);
+        for (const [ac, why] of scope.heldAcs) log.info(`${ac} waits for ${why}`);
+        if (!scope.acScope.length) {
+          log.ok(`${key}: no acceptance criterion is ready to get tests now; nothing to generate`);
+          return 0;
         }
-      };
-      const branchName = storyBranchName(c, key);
-      const fetched = fetchBranch(cwd, remoteFor(c, penv), branchName, genv);
-      const expectedNow = parse(fetched.sha ? showFile(cwd, fetched.ref, rel) : undefined) ?? parse(showFile(cwd, `refs/heads/${branchName}`, rel)) ?? parse(fs.existsSync(path.join(cwd, rel)) ? fs.readFileSync(path.join(cwd, rel), "utf8") : undefined);
-      scope = storyScope(
-        {
-          c,
-          acs: req.acceptanceCriteria.map((a) => ({ id: a.id, text: a.text })),
-          expected: expectedNow,
-          parts: manifestParts,
-          rec: storyRec,
-          service: triggerService,
-          jiraReady: req.source === "jira" ? isReadyStatus(c, key, req.trackerStatus) : undefined,
-          components: req.components,
-          only: o.acs,
-          force: o.force,
-        },
-        acHash,
-      );
-      if (scope.refused.length) throw new Error(`${scope.refused.join(", ")} cannot be planned yet: ${scope.refused.map((id) => `${id} waits for ${scope!.heldAcs.get(id)}`).join("; ")}. Use --force to plan it anyway.`);
-      for (const [ac, why] of scope.heldAcs) log.info(`${ac} waits for ${why}`);
-      if (!scope.acScope.length) {
-        log.ok(`${key}: no acceptance criterion is ready to get tests now; nothing to generate`);
-        return 0;
+        log.step(`${key}: planning ${scope.acScope.join(", ")}${scope.crossInScope.length ? ` (${scope.crossInScope.join(", ")} need several services)` : ""}`);
       }
-      log.step(`${key}: planning ${scope.acScope.join(", ")}${scope.crossInScope.length ? ` (${scope.crossInScope.join(", ")} need several services)` : ""}`);
     }
     // The parts this run plans against: the merge itself, plus the other merged services when a cross-service AC is written.
     if (triggerService) {
@@ -307,20 +319,21 @@ async function generateRun(o: GenerateOptions, ctl: JobControl): Promise<number>
     const story = (req.storyKey ?? o.story ?? "").toUpperCase() || NO_STORY;
     const hashes = o.backfill ? o.backfill.map((t) => `${t.method} ${t.path}`) : req.acceptanceCriteria.map((a) => acHash(a.text));
     const head = triggerService ? ownHead : parts ? parts.flatMap((p) => p.heads).join("+") : cs.head;
-    // Several services: the key is the ACs and the commits they are written against, however the run was started. One service: the merge.
+    // Story scope: the key is the ACs planned and the commits they are written against, however the run was started (a merge, --acs, stories --act).
+    // Cross-service ACs in scope make it theirs alone; otherwise it is the single-service ACs'. One service, no story scope: the merge.
     const jobKey =
-      scope?.crossInScope.length && storyKey
-        ? crossServiceJobKey(storyKey, scope.acScope, scope.heads, hashes)
-        : generateJobKey(story === NO_STORY ? undefined : story, triggerService ?? (parts ? `story${o.acs?.length ? `:${[...o.acs].sort().join("+")}` : ""}` : service.name), head, hashes);
+      scope && storyKey
+        ? crossServiceJobKey(storyKey, scope.crossInScope.length ? scope.crossInScope : scope.acScope, scope.crossInScope.length ? scope.heads : scope.allHeads, hashes)
+        : generateJobKey(story === NO_STORY ? undefined : story, triggerService ?? (parts ? "story" : service.name), head, hashes);
     // Two generate jobs of one story write the same test branch: only one runs at a time.
     const start = await startJob({ cwd, c, story, kind: "generate", key: jobKey, force: o.force, once: o.once, env: penv, exclusive: Boolean(storyKey && parts) });
     if (!start.run) return start.exitCode;
     ctl.store = start.store;
     ctl.handle = start.handle;
+    o.onStarted?.();
   }
 
   const storyMode = Boolean(parts && storyKey);
-  const testProject = c.ci.testRepoProject ?? penv.CI_PROJECT_ID;
   // The story's test branch: continue from the server's copy, merge the main branch into it. Never rebuilt, never force-pushed.
   let sb: Extract<PrepareResult, { ok: true }> | undefined;
   if (storyMode && !o.dryRun) {
@@ -339,6 +352,8 @@ async function generateRun(o: GenerateOptions, ctl: JobControl): Promise<number>
       return 1;
     }
     prep.notes.forEach((n) => log.warn(n));
+    // A new branch (the earlier merge request was closed or merged, or the branch was gone) starts with no record of tests written: they are written again.
+    if ((!prep.existing || prep.previousMr) && ctl.store) await resetWrittenRecords(ctl.store, storyKey!);
     if (prep.mergedMain) log.info(`merged ${c.ci.targetBranch} into ${prep.branch}`);
     log.step(`${prep.branch}: ${prep.existing ? "building on the existing branch" : `new branch from ${c.ci.targetBranch}`}`);
     sb = prep;
@@ -356,7 +371,7 @@ async function generateRun(o: GenerateOptions, ctl: JobControl): Promise<number>
       : `${service.name}@${sha8}`;
   const policy = generatePolicy(c);
   const run = createRunDir(cwd, `gen-${service.name}`);
-  if (!storyMode && !o.backfill && ctx && testProject !== undefined) {
+  if (!o.backfill && ctx && testProject !== undefined) {
     try {
       const open = await listOpenAgentMrs(cwd, c, { gitlab: ctx, project: testProject, ownBranch: branch, env: penv });
       writeOpenAgentMrs(run.dir, open);
@@ -513,6 +528,8 @@ async function generateRun(o: GenerateOptions, ctl: JobControl): Promise<number>
     fs.writeFileSync(path.join(run.dir, "summary.md"), summary);
     fs.writeFileSync(path.join(cwd, "qa-sentinel-summary.md"), summary);
     log.ok("every decision is reuse or skip: existing tests are enough");
+    // The ACs were planned and need nothing new: written, as far as the story is concerned (so `stories` stops listing them as ready).
+    if (storyMode && storyKey && scope && ctl.store) await recordStoryRun(ctl.store, storyKey, { scope, parts: manifestParts, acs: req.acceptanceCriteria, plan, runId: run.id, branch });
     return finish("no-changes-needed", 0);
   }
 
@@ -593,6 +610,8 @@ async function generateRun(o: GenerateOptions, ctl: JobControl): Promise<number>
     }),
     ...before.flatMap((b) => checkServiceUntouched(b.repo, b.name, b.snap)),
     ...checkKnownDefectMarkers(changes, cwd, startSha),
+    // Files another open QA agent merge request already adds (also other stories', and per-merge ones).
+    ...checkDuplicateFiles(changes, openMrFiles),
     // The tests assert the expected values (named by @b: tags), not the code's.
     ...(expectedFile ? checkExpectedValues({ repo: cwd, ref: startSha, changes, expected: expectedFile, plannedBehaviours: [...new Set(todo.flatMap((d) => d.proposedScenarios.flatMap((s) => s.behaviourIds)))] }) : []),
     // Expected values follow the story, never the code: an AI run may not change them unless the AC changed.
@@ -701,7 +720,11 @@ async function generateRun(o: GenerateOptions, ctl: JobControl): Promise<number>
     `test(${service.name}): QA agent ${o.backfill ? `backfill (${o.backfill.map((b) => b.endpoint).join(", ")})` : `updates for ${sha8}`}\n\nGenerated by qa-sentinel ${VERSION} from ${parts ? parts.map((p) => `${p.service.name}@${p.cs.head}`).join(", ") : `${service.name}@${cs.head}`}.\nRisk: ${planned.risked.overall}. Verification: ${verification.status}. Run: ${run.id}${trailer ? `\n\n${trailer}` : ""}`,
   ]);
   log.ok(`committed ${paths.length} file(s) on ${branch}`);
-  if (storyMode && storyKey && scope && ctl.store) await recordStoryRun(ctl.store, storyKey, { scope, parts: manifestParts, acs: req.acceptanceCriteria, plan, runId: run.id, branch });
+  // The story record says "written" only once the tests are really on the server's branch (after the push below), or on the local one when this run does not push.
+  const recordWritten = async () => {
+    if (storyMode && storyKey && scope && ctl.store) await recordStoryRun(ctl.store, storyKey, { scope, parts: manifestParts, acs: req.acceptanceCriteria, plan, runId: run.id, branch });
+  };
+  if (!o.push) await recordWritten();
 
   // Bug cards (bugs.mode): requirements the product doesn't meet, seen failing by the author and written as fixme.
   if (c.bugs.mode !== "off" && req.storyKey && discrepancies.length && !o.dryRun) {
@@ -730,6 +753,7 @@ async function generateRun(o: GenerateOptions, ctl: JobControl): Promise<number>
       // A per-merge branch is owned by qa-sentinel and named after the source SHA, so a rerun may overwrite it.
       git(cwd, ["push", "--force", url ?? "origin", `HEAD:refs/heads/${branch}`]);
     }
+    await recordWritten();
     const project = testProject;
     if (!ctx || !project) {
       log.warn("pushed; set QA_SENTINEL_GITLAB_TOKEN and ci.testRepoProject to open the MR automatically");
@@ -801,11 +825,13 @@ async function recordStoryRun(store: RecordStore, story: string, i: { scope: Sto
     await store.locked(story, async () => {
       const rec = (await store.load(story)) ?? emptyRecord(story);
       const text = new Map(i.acs.map((a) => [a.id, a.text]));
-      for (const r of i.scope.readiness.filter((x) => x.kind === "cross")) {
+      for (const r of i.scope.readiness) {
+        const map = r.kind === "cross" ? rec.crossService : rec.singleService;
         const heads = headsDigest(i.parts, r.services);
         const hash = acHash(text.get(r.ac) ?? "");
-        if (i.scope.acScope.includes(r.ac)) rec.crossService[r.ac] = { state: "written", heads, acHash: hash, at };
-        else if (rec.crossService[r.ac]?.state !== "written" || rec.crossService[r.ac].acHash !== hash) rec.crossService[r.ac] = { state: "held", heads, acHash: hash, at, reason: i.scope.heldAcs.get(r.ac) ?? r.reason };
+        if (i.scope.acScope.includes(r.ac)) map[r.ac] = { state: "written", heads, acHash: hash, at };
+        // Only the cross-service ACs keep a "held" note (what they wait for); a single-service AC that waits has nothing written to remember.
+        else if (r.kind === "cross" && (map[r.ac]?.state !== "written" || map[r.ac].acHash !== hash)) map[r.ac] = { state: "held", heads, acHash: hash, at, reason: i.scope.heldAcs.get(r.ac) ?? r.reason };
       }
       for (const st of i.plan.requirementStatus) if (i.scope.acScope.includes(st.id)) rec.acEvidence[st.id] = { status: st.status, at, runId: i.runId };
       rec.updatedAt = at;
@@ -813,6 +839,23 @@ async function recordStoryRun(store: RecordStore, story: string, i: { scope: Sto
     });
   } catch (e) {
     log.warn(`could not update the story record for ${story}: ${(e as Error).message}`);
+  }
+}
+
+/** The story's test branch starts again: what the record says was written on the old one no longer holds. */
+async function resetWrittenRecords(store: RecordStore, story: string): Promise<void> {
+  try {
+    await store.locked(story, async () => {
+      const rec = await store.load(story);
+      if (!rec || (!Object.keys(rec.crossService).length && !Object.keys(rec.singleService).length && !rec.agentMr)) return;
+      rec.crossService = {};
+      rec.singleService = {};
+      delete rec.agentMr;
+      rec.updatedAt = new Date().toISOString();
+      await store.save(rec);
+    });
+  } catch (e) {
+    log.warn(`could not reset the story record for ${story}: ${(e as Error).message}`);
   }
 }
 

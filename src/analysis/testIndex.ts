@@ -1,8 +1,10 @@
+import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import YAML from "yaml";
 import type { Config } from "../config.js";
 import { layers } from "../layers.js";
+import { showFile } from "../git.js";
 
 /**
  * Scenario-level traceability, derived from the tests themselves rather than maintained by hand.
@@ -213,6 +215,22 @@ export function buildTestIndex(repo: string, testDirs: string | string[]): Index
   const files: string[] = [];
   for (const d of new Set(Array.isArray(testDirs) ? testDirs : [testDirs])) walk(path.join(repo, d), repo, files);
   return [...new Set(files)].sort().flatMap((f) => (f.endsWith(".feature") ? indexFeature : indexSource)(f, fs.readFileSync(path.join(repo, f), "utf8")));
+}
+
+/** The same index for the tests as they are at a git ref (a branch not checked out). Files are read with `git show`. */
+export function buildTestIndexAt(repo: string, ref: string, testDirs: string | string[]): IndexedTest[] {
+  const dirs = [...new Set(Array.isArray(testDirs) ? testDirs : [testDirs])];
+  let listed = "";
+  try {
+    listed = execFileSync("git", ["-c", "core.quotePath=false", "ls-tree", "-r", "--name-only", ref, "--", ...dirs], { cwd: repo, encoding: "utf8", maxBuffer: 64 * 1024 * 1024, stdio: ["ignore", "pipe", "ignore"] });
+  } catch {
+    return [];
+  }
+  const files = listed.split("\n").filter((f) => f && (SPEC.test(path.posix.basename(f)) || f.endsWith(".feature")) && !f.split("/").some((seg) => seg === "node_modules" || seg.startsWith("."))).sort();
+  return files.flatMap((f) => {
+    const src = showFile(repo, ref, f);
+    return src === undefined ? [] : (f.endsWith(".feature") ? indexFeature : indexSource)(f, src);
+  });
 }
 
 /** Index every enabled layer's tests (API, and web when enabled). */

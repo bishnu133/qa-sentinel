@@ -26,6 +26,15 @@ const tryGit = (cwd: string, args: string[], env?: NodeJS.ProcessEnv): string | 
   }
 };
 
+const MAIN_TIP = "qa-sentinel-main-tip: ";
+
+/** The commit of the main branch that qa-sentinel last merged into this branch (from the merge commit it wrote), if any. */
+function lastMergedMainTip(cwd: string, tip: string, env?: NodeJS.ProcessEnv): string | undefined {
+  const out = tryGit(cwd, ["log", "-n", "1", `--grep=^${MAIN_TIP}`, "--format=%B", tip], env);
+  const sha = out?.match(new RegExp(`^${MAIN_TIP}([0-9a-f]{40})$`, "m"))?.[1];
+  return sha && tryGit(cwd, ["cat-file", "-e", `${sha}^{commit}`], env) !== undefined ? sha : undefined;
+}
+
 const isAncestor = (cwd: string, a: string, b: string, env?: NodeJS.ProcessEnv) => tryGit(cwd, ["merge-base", "--is-ancestor", a, b], env) !== undefined;
 
 /** Where to fetch from and push to: the test repo's project with the token in a one-off URL (never in .git/config), else `origin`. */
@@ -46,6 +55,8 @@ export interface RemoteBranch {
 /** Fetch one branch of the remote into `refs/remotes/origin/<name>` (not into .git/config: the URL may carry the token). */
 export function fetchBranch(cwd: string, remote: string, name: string, env?: NodeJS.ProcessEnv): RemoteBranch {
   const ref = `refs/remotes/origin/${name}`;
+  // A test repo with no `origin` at all (a local try-out) has nothing to fetch: that is not an error worth a message.
+  if (remote === "origin" && tryGit(cwd, ["remote", "get-url", "origin"], env) === undefined) return { ref, sha: tryGit(cwd, ["rev-parse", "--verify", "-q", ref], env) };
   let listed: string;
   try {
     listed = git(cwd, ["ls-remote", remote, `refs/heads/${name}`], env);
@@ -77,7 +88,7 @@ export type PrepareResult =
       mergedMain: boolean;
       notes: string[];
     }
-  | { ok: false; reason: "conflict" | "diverged"; branch: string; message: string; files: string[] };
+  | { ok: false; reason: "conflict" | "diverged" | "missing-branch" | "unreachable" | "main-rewritten"; branch: string; message: string; files: string[] };
 
 export interface PrepareOptions {
   gitlab?: GitLabContext;
@@ -111,18 +122,32 @@ export async function prepareStoryBranch(cwd: string, c: Config, story: string, 
   const localSha = tryGit(cwd, ["rev-parse", "--verify", "-q", `refs/heads/${branch}`], env);
 
   // Is the story's test merge request still open? The server decides; without GitLab the branch is taken as open.
+  // An open merge request wins over any closed or merged one before it (see latestMrForBranch): only "nothing open" starts again.
   let previousMr: { iid: number; url: string; state: string } | undefined;
+  let openMr: { iid: number; url: string } | undefined;
   let fresh = false;
   if (o.gitlab && o.project !== undefined) {
     try {
       const mr = await latestMrForBranch(o.gitlab, o.project, branch, target);
-      if (mr && mr.state !== "opened") {
+      if (mr && mr.state === "opened") openMr = { iid: mr.iid, url: mr.web_url };
+      else if (mr) {
         previousMr = { iid: mr.iid, url: mr.web_url, state: mr.state };
         fresh = true;
       }
     } catch (e) {
       notes.push(`could not ask GitLab about the merge request of ${branch}: ${(e as Error).message.split("\n")[0]}`);
     }
+  }
+  // An open merge request whose branch is gone (deleted by hand, or the server could not be asked): never silently start again from the main branch.
+  if (openMr && !remoteBranch.sha && !localSha) {
+    const why = remoteBranch.unreachable ? `the server could not be asked (${remoteBranch.unreachable})` : `${branch} no longer exists on the server`;
+    return {
+      ok: false,
+      reason: remoteBranch.unreachable ? "unreachable" : "missing-branch",
+      branch,
+      files: [],
+      message: `merge request !${openMr.iid} is open, but ${why}. Starting a new branch would leave its reviewers' work behind: restore the branch (git push origin <commit>:refs/heads/${branch}) or close !${openMr.iid}, then run again.`,
+    };
   }
 
   let startAt: string | undefined;
@@ -137,12 +162,26 @@ export async function prepareStoryBranch(cwd: string, c: Config, story: string, 
     if (startAt && isAncestor(cwd, startAt, targetRef, env)) startAt = undefined;
   }
   const existing = startAt !== undefined;
+  // The main branch was rewritten (rebased, force-pushed) since it was last merged into this branch: merging it again
+  // would put every rewritten commit in twice. A person decides what to keep.
+  if (startAt) {
+    const lastTip = lastMergedMainTip(cwd, startAt, env);
+    if (lastTip && !isAncestor(cwd, lastTip, targetRef, env)) {
+      return {
+        ok: false,
+        reason: "main-rewritten",
+        branch,
+        files: [],
+        message: `${target} was rewritten (rebased or force-pushed) since it was last merged into ${branch}: commit ${lastTip.slice(0, 8)} is no longer on ${target}. Merging it again would duplicate commits. A person must reconcile the branch (for example recreate it from ${target} and cherry-pick the tests), then run again.`,
+      };
+    }
+  }
   git(cwd, ["checkout", "-q", "-B", branch, startAt ?? targetRef], env);
 
   let mergedMain = false;
   if (existing && !isAncestor(cwd, targetRef, "HEAD", env)) {
     try {
-      git(cwd, ["merge", "--no-edit", "-q", targetRef], env);
+      git(cwd, ["merge", "--no-edit", "-q", "-m", `Merge ${target} into ${branch}\n\n${MAIN_TIP}${git(cwd, ["rev-parse", targetRef], env)}`, targetRef], env);
       mergedMain = true;
     } catch (e) {
       const files = (tryGit(cwd, ["diff", "--name-only", "--diff-filter=U"], env) ?? "").split("\n").filter(Boolean);

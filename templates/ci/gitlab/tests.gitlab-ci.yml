@@ -66,9 +66,19 @@ variables:
     - if [ "$QA_INSTALL_SKIP" = "0" ]; then qa-sentinel data sweep --older-than 0 --out qa-data-sweep.md || echo "WARNING qa-sentinel – test data was left behind on the test environment (see above and qa-data-sweep.md)"; fi
 
 {{#if isMaintenance}}
+# The story records (what was spent, which jobs ran or failed, which ACs are written) are kept in this folder. qa-generate and
+# qa-stories share ONE cache key and save it also when the job fails or stops on a limit (exit 1 or 4): without that, the failure
+# counts and budgets are lost after every run and a failing check would start again every hour. For records that must not depend
+# on a runner cache at all, set automation.record: jira in qa-sentinel.config.yaml.
+.qa-records-cache:
+  cache:
+    key: qa-sentinel-records
+    paths: [{{testsPrefix}}.qa-sentinel/stories/]
+    when: always
+
 # Phase 2: triggered by a service repo after merge. Opens an MR with new/updated API tests.
 qa-generate:
-  extends: .qa-node
+  extends: [.qa-node, .qa-records-cache]
   stage: test
   rules:
     - if: $QA_POST_DEPLOY == "true"   # a post-deploy pipeline runs only qa-post-deploy
@@ -243,25 +253,25 @@ qa-healed:
 # story record and merge requests (no AI); then it starts at most automation.act.maxJobsPerCheck jobs, each through the
 # normal job keys, locks and budgets. Exit 4 means a limit (budget, failed too often) stopped a job: shown as a warning.
 qa-stories:
-  extends: .qa-node
+  extends: [.qa-node, .qa-records-cache]
   stage: test
   variables:
     GIT_DEPTH: 0
   rules:
     - if: $QA_STORIES == "true" && $CI_PIPELINE_SOURCE == "schedule"
   resource_group: qa-sentinel-generate
-  timeout: 60m
+  # Up to automation.act.maxJobsPerCheck (3) generate runs one after the other, each up to agent.timeoutMinutes.generate.
+  timeout: 3h
   allow_failure:
     exit_codes: [4]
-  cache:
-    key: qa-stories-records
-    paths: [{{testsPrefix}}.qa-sentinel/stories/]
   script:
     - npm i -g --no-audit --no-fund --loglevel=error @anthropic-ai/claude-code
     - !reference [.qa-sentinel-install, script]
     - git config user.name "qa-sentinel" && git config user.email "qa-sentinel@noreply.local"
     - git remote set-url origin "${CI_SERVER_URL}/${CI_PROJECT_PATH}.git"   # strip the job token GitLab put in .git/config
-    - qa-sentinel stories --act
+    # The job starts with the test repo only: the service repos (workspace.services[].gitlabProject) are cloned next to it,
+    # at their configured paths, with the job token (allow it in the service projects: Settings > CI/CD > Job token permissions).
+    - qa-sentinel stories --act --clone-services
   artifacts:
     when: always
     paths: [{{testsPrefix}}qa-stories.md, {{testsPrefix}}.qa-sentinel/runs/]

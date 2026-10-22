@@ -49,7 +49,7 @@ pipeline {
           export PATH="$WORKSPACE/.npm-global/bin:$PATH"
           git config user.name "qa-sentinel" && git config user.email "qa-sentinel@noreply.local"
           code=0
-          qa-sentinel stories --act || code=$?
+          qa-sentinel stories --act --clone-services || code=$?
           if [ "$code" = "4" ]; then echo "A limit stopped a job (see qa-stories.md)"; exit 0; fi
           exit $code
         '''

@@ -133,10 +133,18 @@ export async function createOrUpdateMergeRequest(
   return { web_url: data.web_url, iid: data.iid, action: "created" };
 }
 
-/** The newest merge request (open, merged or closed) whose source branch is `source`; undefined when there is none. */
+/**
+ * The merge request that says what happened to a source branch: an OPEN one if there is any (work is going on, whatever
+ * else was closed or merged before), else the newest by creation time (not by last update: a late comment on an old
+ * closed one must not make the branch look closed). Undefined when the branch has no merge request.
+ */
 export async function latestMrForBranch(ctx: GitLabContext, project: string | number, source: string, target?: string): Promise<{ iid: number; web_url: string; state: string; title?: string } | undefined> {
-  const { data } = await call(ctx, "GET", `/projects/${enc(project)}/merge_requests?state=all&source_branch=${enc(source)}${target ? `&target_branch=${enc(target)}` : ""}&order_by=updated_at&sort=desc&per_page=20`);
-  return Array.isArray(data) && data.length ? data[0] : undefined;
+  const { data } = await call(ctx, "GET", `/projects/${enc(project)}/merge_requests?state=all&source_branch=${enc(source)}${target ? `&target_branch=${enc(target)}` : ""}&order_by=created_at&sort=desc&per_page=100`);
+  if (!Array.isArray(data) || !data.length) return undefined;
+  const open = data.find((m: any) => m.state === "opened");
+  if (open) return open;
+  const stamp = (m: any) => (typeof m.created_at === "string" ? Date.parse(m.created_at) : NaN);
+  return [...data].sort((a: any, b: any) => (Number.isNaN(stamp(b)) || Number.isNaN(stamp(a)) ? 0 : stamp(b) - stamp(a)))[0];
 }
 
 /** Open merge requests carrying a label (the QA agent's own: `qa-agent`). */

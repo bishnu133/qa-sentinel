@@ -86,12 +86,18 @@ export interface WriteReadinessOptions {
   components?: string[];
   /** ACs a person marked ready by hand (`/qa ready AC-n`). */
   overrides?: { ac: string }[];
+  /** An open merge request with no update for this many days is treated as abandoned: it neither holds an AC back nor makes it a cross-service one (0: never). */
+  staleDays?: number;
+  now?: Date;
 }
 
 const sameName = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
 
 export function acWriteReadiness(parts: FeatureManifest["parts"], expected: ExpectedFile | undefined, acIds: string[], o: WriteReadinessOptions): AcWriteReadiness[] {
-  const live = activeParts(parts);
+  const nowMs = (o.now ?? new Date()).getTime();
+  const abandoned = (p: FeatureManifest["parts"][number]) => !p.merged && !!o.staleDays && !!p.mr?.updatedAt && nowMs - Date.parse(p.mr.updatedAt) > o.staleDays * 86_400_000;
+  const skipped = activeParts(parts).filter(abandoned);
+  const live = activeParts(parts).filter((p) => !abandoned(p));
   const withParts = [...new Set(live.map((p) => p.service))];
   const named = new Map((expected?.acs ?? []).filter((a) => !a.removed).map((a) => [a.id, a.services]));
   const overridden = new Set((o.overrides ?? []).map((x) => x.ac.toUpperCase()));
@@ -114,7 +120,7 @@ export function acWriteReadiness(parts: FeatureManifest["parts"], expected: Expe
     if (missing.length && !forced) return row("waiting-service", `no change found yet in ${missing.join(", ")}`, `a change in ${missing.join(", ")}`);
     if (kind === "cross" && !forced && o.mode === "when-ready-status" && o.jiraReady === false) return row("waiting-status", `merged in ${services.filter((s) => mine(s).length).join(", ")}; waiting for the Jira card to reach a ready status (generation.crossService: when-ac-complete skips this wait)`, "the Jira card to reach a ready status");
     const note = kind === "cross" && !forced && o.mode === "when-ready-status" && o.jiraReady === undefined ? "; Jira status not known" : "";
-    return row("ready", forced && missing.length ? `marked ready by a person (${missing.join(", ")} has no change)` : `merged in ${services.join(", ")}${note}`);
+    return row("ready", forced && missing.length ? `marked ready by a person (${missing.join(", ")} has no change)` : `merged in ${services.join(", ")}${note}${skipped.length ? `; not waited for (no update for over ${o.staleDays} days): ${skipped.map((p) => `${p.service}${p.mr ? ` !${p.mr.iid}` : ""}`).join(", ")}` : ""}`);
   });
 }
 

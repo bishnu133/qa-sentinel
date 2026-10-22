@@ -39,9 +39,10 @@ export const generateJobKey = (story: string | undefined, scope: string, head: s
   `generate:${story ?? "-"}:${scope}:${/^[0-9a-f]{7,40}$/i.test(head) ? head.slice(0, 12) : digest([head])}:${digest([...acHashes].sort())}`;
 
 /**
- * The generate job of a story's test branch for acceptance criteria that need several services: these ACs, written
- * against these commits of the services they need, for these ACs' texts (all of the story's, so the keys line up with
- * the single-service ones). Two runs that see the same story state get the same key, however they were started.
+ * The generate job of a story's test branch in story scope: these ACs, written against these commits of the services
+ * they need, for these AC texts (all of the story's, so the keys line up with the per-service ones). When cross-service
+ * ACs are planned the key is theirs alone; otherwise the single-service ACs planned. Two runs that see the same story
+ * state get the same key, however they were started (merge pipeline, --acs, stories --act).
  */
 export const crossServiceJobKey = (story: string, acIds: string[], heads: string[], allAcHashes: string[]) =>
   `generate:${story}:acs-${[...acIds].sort().join("+")}:${digest([...heads].sort())}:${digest([...allAcHashes].sort())}`;
@@ -277,6 +278,8 @@ export function jobPolicy(c: { automation: { jobs: { skipDone: "ci" | "always" |
  * verification was not VERIFIED (waiting for deployment, a failing check): the MR carries them, and generating the
  * same tests again would cost the same and change nothing.
  */
-export function endStateOf(code: number, outcome: string): "done" | "failed" {
+export function endStateOf(code: number, outcome: string): "done" | "failed" | "aborted" {
+  // Stopped before any AI work by something a person must fix (the story branch conflicts with main, was deleted, ...): not an attempt of the job, so fixing it needs no --force.
+  if (outcome.startsWith("blocked-")) return "aborted";
   return code === 0 || outcome === "dry-run" || outcome.startsWith("committed-") ? "done" : "failed";
 }

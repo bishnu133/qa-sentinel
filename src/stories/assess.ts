@@ -49,6 +49,8 @@ export interface StoryFacts {
   writeReadiness?: { ac: string; kind: "single" | "cross"; state: string; reason: string }[];
   /** Cross-service ACs that are ready to get their end-to-end tests and have none written for the current commits. */
   crossReady?: string[];
+  /** ACs whose tests an earlier run already wrote on the story's test branch (for this AC text), even if no tagged test shows it (the plan found nothing to change). */
+  writtenOnBranch?: string[];
 }
 
 export type StoryState = "skipped" | "needs-attention" | "needs-expectations" | "needs-tests" | "needs-cross-service-tests" | "needs-triage" | "covered";
@@ -196,13 +198,22 @@ export function assessStory(f: StoryFacts): Assessment {
   }
 
   // 4. AI step 2: tests for ACs that have none (needs the code to be merged: tests are written after the merge).
-  const missing = f.generateSettled ? [] : acsView.filter((a) => a.tests === "none").map((a) => a.id);
+  const written = new Set(f.writtenOnBranch ?? []);
+  const missing = f.generateSettled ? [] : acsView.filter((a) => a.tests === "none" && !written.has(a.id)).map((a) => a.id);
   if (missing.length) {
     reasons.push(`no test, known defect or manual card for ${missing.join(", ")}`);
     if (f.code === "merged" || f.code === "unknown") {
       if (f.code === "unknown") reasons.push("could not check whether the code is merged (no service repo or GitLab access from here)");
-      todo.unshift({ who: "ai", what: `write tests for ${missing.join(", ")}`, command: `qa-sentinel generate --story ${f.key}`, ...(f.limits.generate ? { blocked: f.limits.generate } : {}) });
-      return done("needs-tests", "generate", `${missing.length} of ${f.acs.length} AC(s) have no test`);
+      // Story scope: only ACs whose tests can be written now start a run; the others wait (and the reason is said).
+      const rows = f.writeReadiness ?? [];
+      const ready = f.writeReadiness ? missing.filter((id) => rows.find((r) => r.ac === id)?.state === "ready") : missing;
+      if (!ready.length) {
+        for (const id of missing) reasons.push(`${id}: ${rows.find((r) => r.ac === id)?.reason ?? "waiting"}`);
+        todo.unshift({ who: "dev", what: `${missing.join(", ")} wait${missing.length === 1 ? "s" : ""} for the rest of the story (see the reasons)` });
+        return done("needs-tests", "wait", `waiting: ${missing.length} of ${f.acs.length} AC(s) have no test and none can be written yet`);
+      }
+      todo.unshift({ who: "ai", what: `write tests for ${ready.join(", ")}`, command: `qa-sentinel generate --story ${f.key}`, ...(f.limits.generate ? { blocked: f.limits.generate } : {}) });
+      return done("needs-tests", "generate", `${ready.length} of ${f.acs.length} AC(s) have no test`);
     }
     reasons.push(f.code === "unmerged" ? "the code is not merged yet" : "no merged code found for this story yet");
     todo.unshift({ who: "dev", what: f.code === "unmerged" ? "merge the story's change(s); tests are written after the merge" : "no change carrying this story key was found in the service repos" });

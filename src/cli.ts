@@ -139,8 +139,9 @@ program
   .option("--rebuild", "fill the story records again from GitLab and Jira (the merge request sweep looks back 365 days)")
   .option("--act", "also start the AI steps that are due (expected behaviour, tests, end-to-end tests), at most automation.act.maxJobsPerCheck; exit 4 if a limit stopped one")
   .option("--dry-run", "with --act: say what would be started and start nothing")
+  .option("--clone-services", "clone the service repositories (workspace.services[].gitlabProject) that are not at their path yet, using CI_JOB_TOKEN or the GitLab token (for a CI job that starts with the test repo only)")
   .option("-o, --out <file>", "markdown output", "qa-stories.md")
-  .action(wrap(async (o) => storiesCommand({ cwd: cwd(), story: o.story, storiesDir: o.storiesDir, all: o.all, json: o.json, noRecord: o.record === false, noSweep: o.sweep === false, rebuild: o.rebuild, act: o.act, dryRun: o.dryRun, out: o.out })));
+  .action(wrap(async (o) => storiesCommand({ cwd: cwd(), story: o.story, storiesDir: o.storiesDir, all: o.all, json: o.json, noRecord: o.record === false, noSweep: o.sweep === false, rebuild: o.rebuild, act: o.act, dryRun: o.dryRun, cloneServices: o.cloneServices, out: o.out })));
 
 program
   .command("known-defects")

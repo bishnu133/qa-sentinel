@@ -133,7 +133,7 @@ Starting from nothing? `qa-sentinel init --mode scratch` scaffolds Playwright AP
 | `verify [--policy] [--base <ref>]` | The same independent checks, for any branch. Use it as the blocking CI gate on agent MRs. |
 | `gap-report --story KEY` / `generate --story KEY [--acs AC-1,AC-3]` | Story mode: the story's changes in every service (from the story record, MRs, branches and commits naming the key) as one analysis and one test MR on `qa-sentinel/story-KEY`. Each merge request is its own range, so work merged in between by others is left out; reverted MRs are skipped. |
 | `spec --story KEY [--story-file f] [--commit] [--dry-run]` | Writes or updates `expected/<STORY>.md` from the story alone (code-blind): what each AC means in testable terms; lists questions for the PO. `generate` does it as its first step. See [docs/EXPECTED-BEHAVIOUR.md](docs/EXPECTED-BEHAVIOUR.md) and [docs/GLOSSARY.md](docs/GLOSSARY.md). |
-| `stories [--stories-dir <dir>] [--no-sweep] [--rebuild] [--act [--dry-run]]` | No AI unless `--act`, which also starts the AI steps that are due (at most `automation.act.maxJobsPerCheck`, through job keys and budgets; exit 4 when a limit stopped one). Background check of every story (Jira search or story files): state, next step, who acts, what blocks it. With GitLab it first sweeps the merge requests updated since the last check and keeps every MR of each story in the story record (`--no-sweep` skips that; `--rebuild` fills the records again from the last 365 days). Writes `qa-stories.md` and story records. `--json` for machines. See [docs/AUTOMATION.md](docs/AUTOMATION.md). |
+| `stories [--stories-dir <dir>] [--no-sweep] [--rebuild] [--act [--dry-run] [--clone-services]]` | No AI unless `--act`, which also starts the AI steps that are due (at most `automation.act.maxJobsPerCheck`, through job keys and budgets; exit 4 when a limit stopped one). Background check of every story (Jira search or story files): state, next step, who acts, what blocks it. With GitLab it first sweeps the merge requests updated since the last check and keeps every MR of each story in the story record (`--no-sweep` skips that; `--rebuild` fills the records again from the last 365 days). Writes `qa-stories.md` and story records. `--json` for machines. See [docs/AUTOMATION.md](docs/AUTOMATION.md). |
 | `known-defects [--apply] [--commit] [--push]` | No AI. After a test run: finds known defects (Playwright `test.fail`, Jest `test.failing`, Vitest `test.fails`) that now pass (bug fixed); `--apply` takes the marker and QA-BUG note off for review. |
 | `suite --env <name> \| --tag <ref> [--run]` | No AI. The tests that fit what an environment has deployed or a release contains; tests of features not there yet are left out with the reason. |
 | `release-features --tag <ref> [--from <ref>]` | No AI. The stories a release contains (story keys in commits, per service). |
@@ -268,12 +268,13 @@ showcase:
 automation:
   record: file                       # file | jira (also keep the story record in a Jira issue property)
   sweep: { enabled: true, overlapHours: 24, maxPages: 5 }   # `stories` first lists the merge requests updated since the last check (one paged GitLab call per repo, no AI); each is recorded on the stories it names
-  act: { maxJobsPerCheck: 3 }        # `stories --act` starts at most this many AI jobs per run
+  act: { maxJobsPerCheck: 3 }        # `stories --act` starts at most this many AI jobs per run (a job that turns out to be nothing to do is not counted)
 generation:
   scope: story                       # story (one test branch and MR per story, built on after each merge) | service (one MR per merge, the old way)
   crossService: when-ready-status    # when-ready-status | when-ac-complete: when the end-to-end tests of an AC that needs several services are written
   branchPrefix: qa-sentinel/story-   # the story's test branch is <prefix><KEY>
   maxAcsPerRun: 5                    # ACs planned in one run; the rest wait for the next
+  staleMrDays: 30                    # an open service merge request nobody touched for this long no longer holds back the ACs of its service (0: never)
 bugs: { mode: off, issueType: Bug, priority: Low, labels: [qa-sentinel], linkType: Relates, notBuilt: true }   # off | suggest | create
 ci: { platform: gitlab, testRepoProject: my-group/qa-tests, targetBranch: main }
 agent:

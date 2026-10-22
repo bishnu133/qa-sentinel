@@ -27,6 +27,8 @@ export interface SpecOptions {
   force?: boolean;
   /** Skip a job that already finished with the same inputs, also outside CI. */
   once?: boolean;
+  /** Called once the job is claimed and the AI is about to run (see GenerateOptions.onStarted). */
+  onStarted?: () => void;
 }
 
 /**
@@ -73,6 +75,7 @@ async function specRun(o: SpecOptions, ctl: SpecCtl): Promise<number> {
   if (needed.length && !o.dryRun) {
     const start = await startJob({ cwd, c, story, kind: "spec", key: specJobKey(story, needed.map((a) => acHash(a.text))), force: o.force, once: o.once });
     if (!start.run) return start.exitCode;
+    o.onStarted?.();
     engine = budgetedEngine(engine, start.handle);
     ctl.done = () => endJob(start.store, start.handle, { state: endStateOf(ctl.outcome === "ok" ? 0 : 1, ctl.outcome ?? ""), outcome: ctl.outcome ?? "unknown", runId: run.id });
     ctl.fail = (e) => endJob(start.store, start.handle, { state: e instanceof ClaudeAccessError ? "aborted" : "failed", outcome: "error", error: e.message, runId: run.id });

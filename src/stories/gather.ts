@@ -3,10 +3,11 @@ import path from "node:path";
 import type { Config } from "../config.js";
 import { type IndexedTest, indexTests, traceStory } from "../analysis/testIndex.js";
 import { assembleFeature, type ServicePart } from "../feature/manifest.js";
+import { withRecordParts } from "../story.js";
+import { storyBranchView, storyExpected, storyTests, type StoryBranchView } from "../generation/storyView.js";
 import { acWriteReadiness } from "../feature/readiness.js";
-import { crossWritten } from "../generation/storyScope.js";
-import { expectedDirOf } from "../expected/lock.js";
-import { acHash, readExpected } from "../expected/format.js";
+import { acWritten } from "../generation/storyScope.js";
+import { acHash } from "../expected/format.js";
 import { acsNeedingProposal } from "../expected/spec.js";
 import { readManualCards } from "../manualTests.js";
 import { extractStoryKey, isFeature, jiraIssueText, parseStoryFor } from "../requirements.js";
@@ -109,11 +110,13 @@ export function jiraFor(c: Config, env: NodeJS.ProcessEnv = process.env): JiraCo
   return ctx;
 }
 
-async function codeState(c: Config, cwd: string, key: string, gitlab: GitLabContext | undefined): Promise<{ code: CodeState; parts: ServicePart[] }> {
+async function codeState(c: Config, cwd: string, key: string, gitlab: GitLabContext | undefined, rec?: StoryRecord): Promise<{ code: CodeState; parts: ServicePart[] }> {
   const reachable = c.workspace.services.some((s) => fs.existsSync(path.resolve(cwd, s.path)) || (gitlab && s.gitlabProject));
   if (!reachable) return { code: "unknown", parts: [] };
   try {
-    const m = await assembleFeature({ c, cwd, story: key, gitlab });
+    // The same parts `generate --story` plans against: what the merge requests and git say, plus the merge requests the record knows.
+    const assembled = await assembleFeature({ c, cwd, story: key, gitlab });
+    const m = rec ? withRecordParts(assembled, rec, c, cwd) : assembled;
     return { code: m.status === "no-changes-found" ? "none" : m.status === "in-development" || m.status === "reverted" ? "unmerged" : "merged", parts: m.parts };
   } catch {
     return { code: "unknown", parts: [] };
@@ -129,6 +132,7 @@ export interface GatherContext {
   records: StoryRecord[];
   gitlab?: GitLabContext;
   now?: Date;
+  env?: NodeJS.ProcessEnv;
 }
 
 /** Everything `assessStory` needs for one story. Reads only; nothing is changed. */
@@ -146,18 +150,16 @@ export async function gatherFacts(g: GatherContext, input: StoryInput, shared: {
   const base = { ...extra, key, title: input.title, source: input.source, url: input.url, status: input.status, approved, issueType: input.issueType, isFeature: feature, labels: input.labels, skipLabels: s.skipLabels, onlyLabels: s.onlyLabels, acs, expectationsMode: c.tests.expectations };
   if (skipping || !acs.length) return { ...base, expected: {}, trace: [], code: "unknown", limits: {} };
 
-  let expected: StoryFacts["expected"] = {};
-  try {
-    const file = readExpected(cwd, expectedDirOf(c.tests.expectedDir), key.toUpperCase());
-    expected = file ? { file } : {};
-  } catch (e) {
-    expected = { error: (e as Error).message };
-  }
-  const trace = traceStory(shared.index, key, acs, shared.manual).acs;
-  const { code, parts } = await codeState(c, cwd, key, g.gitlab);
+  // The story record first (the code state reads its merge requests too), and the story's test branch: the expected file and the tests are read where `generate` reads them.
+  const rec = g.records.find((r) => r.key === key) ?? (await g.store.load(key));
+  const env = g.env ?? process.env;
+  const project = c.ci.testRepoProject ?? env.CI_PROJECT_ID;
+  const view: StoryBranchView | undefined = c.generation.scope === "story" ? await storyBranchView(cwd, c, key.toUpperCase(), { gitlab: g.gitlab, project, env }).catch(() => undefined) : undefined;
+  const expected: StoryFacts["expected"] = storyExpected(cwd, c, key.toUpperCase(), view);
+  const trace = traceStory(view?.live ? storyTests(cwd, c, view) : shared.index, key, acs, shared.manual).acs;
+  const { code, parts } = await codeState(c, cwd, key, g.gitlab, rec);
 
   // What would stop an AI step from starting: its own job, or the budget.
-  const rec = g.records.find((r) => r.key === key) ?? (await g.store.load(key));
   const hashes = acs.map((a) => acHash(a.text));
   const limits: StoryFacts["limits"] = {};
   const needed = expected.error ? [] : acsNeedingProposal(expected.file, acs).filter((a) => a.needsProposal);
@@ -176,14 +178,19 @@ export async function gatherFacts(g: GatherContext, input: StoryInput, shared: {
   // Which ACs can get their tests written now (fixed rules), and which of the cross-service ones have none written for the current commits.
   let writeReadiness: StoryFacts["writeReadiness"];
   let crossReady: string[] | undefined;
+  let writtenOnBranch: string[] | undefined;
   if (c.generation.scope === "story" && !expected.error && parts.length) {
-    const rows = acWriteReadiness(parts, expected.file, acs.map((a) => a.id), { jiraReady: input.ready, mode: c.generation.crossService, components: servicesFromComponents(c, input.components).services, overrides: rec?.overrides });
+    const rows = acWriteReadiness(parts, expected.file, acs.map((a) => a.id), { jiraReady: input.ready, mode: c.generation.crossService, components: servicesFromComponents(c, input.components).services, overrides: rec?.overrides, staleDays: c.generation.staleMrDays, now });
     writeReadiness = rows.map((r) => ({ ac: r.ac, kind: r.kind, state: r.state, reason: r.reason }));
     const text = new Map(acs.map((a) => [a.id, a.text]));
-    crossReady = rows.filter((r) => r.kind === "cross" && r.state === "ready" && !crossWritten(rec, r, parts, text.get(r.ac) ?? "", acHash)).map((r) => r.ac);
+    // Tests written on the story's branch count, also when the plan wrote nothing for an AC (the record says so). Gone with the branch when its merge request was closed.
+    if (view?.live || view === undefined) {
+      writtenOnBranch = rows.filter((r) => (["crossService", "singleService"] as const).some((m) => rec?.[m][r.ac]?.state === "written" && rec[m][r.ac].acHash === acHash(text.get(r.ac) ?? ""))).map((r) => r.ac);
+    }
+    crossReady = rows.filter((r) => r.kind === "cross" && r.state === "ready" && !acWritten(rec, r, parts, text.get(r.ac) ?? "", acHash)).map((r) => r.ac);
   }
   const generateSettled = gens.some((j) => j.state === "done" && j.outcome === "no-changes-needed");
-  return { ...base, expected, trace, code, limits: Object.fromEntries(Object.entries(limits).filter(([, v]) => v)), generateSettled, ...(writeReadiness ? { writeReadiness } : {}), ...(crossReady?.length ? { crossReady } : {}) };
+  return { ...base, expected, trace, code, limits: Object.fromEntries(Object.entries(limits).filter(([, v]) => v)), generateSettled, ...(writeReadiness ? { writeReadiness } : {}), ...(crossReady?.length ? { crossReady } : {}), ...(writtenOnBranch?.length ? { writtenOnBranch } : {}) };
 }
 
 export function sharedFacts(cwd: string, c: Config) {
