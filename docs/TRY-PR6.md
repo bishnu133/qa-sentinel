@@ -6,7 +6,7 @@ Everything here is free. No AI, no Jira, no GitLab.
 
 1. `export QAS=~/Documents/qa-sentinel`
 2. `cd $QAS && git fetch origin && git checkout pr6-small-items && npm ci && npm run build`
-3. `npx vitest run test/smallItems.test.ts` and expect 14 tests passing.
+3. `npx vitest run test/smallItems` and expect all tests passing (two files).
 
 ## 1. A quiet doctor after init
 
@@ -22,7 +22,7 @@ Everything here is free. No AI, no Jira, no GitLab.
    Look for the line `created  test-map.yaml (1 tagged test file(s) listed)`.
 6. `cat test-map.yaml`. Expect `POST /orders` under `orders-service`, with `tests/api/orders.spec.ts`.
 7. `node $QAS/dist/cli.js doctor`. Expect no line saying "test-map.yaml agrees with test tags".
-8. Make the map empty: delete the lines under `endpoints:` so it reads `endpoints: {}`. Run `doctor` again. Expect one line: "test-map.yaml is empty but 1 test(s) are tagged: run `qa-sentinel learn`".
+8. Make the map empty: edit `test-map.yaml` so it reads `endpoints: {}` under `orders-service`. Run `doctor` again. Expect exactly one warning about the map: "test-map.yaml agrees with test tags" with "test-map.yaml is empty but 1 test(s) are tagged: run `qa-sentinel learn` to fill it".
 
 ## 2. The hotfix exit code
 
@@ -39,16 +39,36 @@ Everything here is free. No AI, no Jira, no GitLab.
 
 ## 3. `suite` asks each service once
 
-You need the ShopLite sandbox (see docs/TRY-PR2.md, step 1) and its environment running.
+Needs the ShopLite sandbox from docs/TRY-PR2.md step 1.
 
-1. `cd ~/qa-try2 && node $QAS/sandbox/shoplite/local.mjs env start`
+1. `cd ~/qa-try2 && node $QAS/sandbox/shoplite/local.mjs env start` (it prints the base URL; set `QA_BASE_URL` to it if the command says so).
 2. `cd shoplite-local/qa-tests`
 3. `node $QAS/dist/cli.js suite --env local`
-4. Look at the sandbox log of the services (`~/qa-try2` has the log folder named in the `env start` output). Each service's `/version` line shows once for the whole run, not once per story.
+   Look for the dim line `lookups this run: N version endpoint call(s), M revert scan(s) for S stories`.
+4. `node $QAS/dist/cli.js suite --env local --json | grep -A3 '"asked"'`
+   Expect `versionCalls` equal to the number of services that have a version endpoint (one each), and `revertScans` equal to the number of service folders. It does not grow with the number of stories. (A failed answer from a version endpoint is kept for the run too, so a service that is down is asked once, not once per story.)
 5. `cd ~/qa-try2 && node $QAS/sandbox/shoplite/local.mjs env stop`
 
 ## 4. `suite --run` leaves held-back tests out by title
 
-The automatic test (`npx vitest run test/smallItems.test.ts -t "real vitest"`) runs a real Vitest file with a held-back test that throws if it runs. Expect it to pass. To see the command text:
-`npx vitest run test/smallItems.test.ts -t "Mocha"`.
-Cucumber scenarios: `qa-suite.md` has a section "Cucumber scenarios (N; qa-sentinel does not run them, your BDD job does)" and `qa-suite.txt` has no `.feature` lines.
+1. `rm -rf ~/qa-try6b && mkdir -p ~/qa-try6b/orders ~/qa-try6b/qa/tests/api && cd ~/qa-try6b`
+2. `cd orders && git init -q && git commit -q --allow-empty -m start && git tag v1 && git commit -q --allow-empty -m "SHOP-7: after the release" && cd ..`
+3. Paste this into `qa/tests/api/a.test.js`:
+   ```
+   it("kept @story:SHOP-1", () => {});
+   it("held @story:SHOP-7", () => { throw new Error("must not run"); });
+   it("held in a list @story:SHOP-1,SHOP-7", () => { throw new Error("must not run"); });
+   ```
+4. `cd qa && git init -q` and paste this into `qa-sentinel.config.yaml`:
+   ```
+   version: 1
+   mode: scratch
+   project: { name: try }
+   tests: { api: { framework: mocha, runCommand: "$QAS/node_modules/.bin/mocha", dir: tests/api } }
+   ci: { platform: gitlab }
+   workspace: { services: [{ name: orders, path: ../orders }] }
+   ```
+   (write the real path of `$QAS` instead of the text `$QAS`)
+5. `node $QAS/dist/cli.js suite --tag v1 --run`
+   Expect a line `running: … mocha --grep '@story:(?:[^\s,]+,)*(?:SHOP-7)(?![\w-])' --invert tests/api/a.test.js` and `1 passing`. Both SHOP-7 tests were left out, also the one with a comma list.
+6. Cucumber scenarios: `qa-suite.md` has a section "Cucumber scenarios (N; qa-sentinel does not run them, your BDD job does)" when there are any, and `qa-suite.txt` has no `.feature` lines.

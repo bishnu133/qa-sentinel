@@ -103,10 +103,11 @@ export async function suiteCommand(o: SuiteOptions): Promise<number> {
     ...(left.length ? ["", "Left out:", ...left.map((l) => `- \`${l.test.file}:${l.test.line}\` ${l.test.title} (${l.why})`)] : []),
     ...(scenarios.length ? ["", `Cucumber scenarios (${scenarios.length}; qa-sentinel does not run them, your BDD job does):`, ...scenarios.map((t) => `- \`${t.file}:${t.line}\` ${t.title}`)] : []),
   ].join("\n");
+  if (!o.json) log.dim(`lookups this run: ${cache.asked.versionCalls} version endpoint call(s), ${cache.asked.revertScans} revert scan(s) for ${stories.length} stor${stories.length === 1 ? "y" : "ies"} (an answer that failed is kept for the run, not asked again)`);
   const base = path.resolve(cwd, o.out ?? "qa-suite");
   fs.writeFileSync(`${base}.md`, md + "\n");
   fs.writeFileSync(`${base}.txt`, run.filter((t) => !t.bdd).map((t) => `${t.file}:${t.line}`).join("\n") + (run.some((t) => !t.bdd) ? "\n" : ""));
-  if (o.json) process.stdout.write(JSON.stringify({ where, run: run.filter((t) => !t.bdd).map((t) => `${t.file}:${t.line}`), cucumber: scenarios.map((t) => `${t.file}:${t.line}`), leftOut: left.map((l) => ({ test: `${l.test.file}:${l.test.line}`, why: l.why })), stories: [...verdicts.values()] }, null, 2) + "\n");
+  if (o.json) process.stdout.write(JSON.stringify({ where, run: run.filter((t) => !t.bdd).map((t) => `${t.file}:${t.line}`), asked: cache.asked, cucumber: scenarios.map((t) => `${t.file}:${t.line}`), leftOut: left.map((l) => ({ test: `${l.test.file}:${l.test.line}`, why: l.why })), stories: [...verdicts.values()] }, null, 2) + "\n");
   else log.info(md + `\n\nwritten to ${path.basename(base)}.md and ${path.basename(base)}.txt (file:line list for the runner)`);
 
   if (!o.run) return 0;
@@ -124,6 +125,7 @@ export async function suiteCommand(o: SuiteOptions): Promise<number> {
   let status = 0;
   for (const { command: cmd, note } of suiteRunCommands(c, plain, held, packageScripts(cwd))) {
     if (note) log.warn(note);
+    if (!o.json) log.dim(`running: ${cmd}`);
     const r = spawnSync(wrapTestCommand(c, cmd), { cwd, shell: true, stdio: "inherit", env: testEnv(c, process.env, { healing: true }) });
     if ((r.status ?? 1) !== 0) status = r.status ?? 1;
   }

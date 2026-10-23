@@ -139,6 +139,9 @@ export function indexSource(file: string, src: string): IndexedTest[] {
     const body = lines.slice(f.line - 1, end).join("\n");
     const asserts = body.split("\n").filter((l) => ASSERT.test(l) && ((ASSERT.lastIndex = 0), true));
     const parsed = parseTags(f.raw);
+    // A @story tag on an enclosing describe is part of the full test name, so a runner's title filter (and `suite`) sees it: the index must too.
+    const inherited = parseTags(String((f as any).describe ?? "")).stories;
+    if (inherited.length) parsed.stories = [...new Set([...parsed.stories, ...inherited])];
     // test.fail("title", …), test.fail() / test.fail(cond) inside the body, or a test.describe.fail group around it.
     const defect = f.kind === "fail" || f.kind === "failing" || f.kind === "fails" || /\b(?:test|it)\.(?:fail|failing|fails)(?:\.only)?\s*\(/.test(lines.slice(f.line, end).join("\n")) || (f as any).failGroup;
     return {
