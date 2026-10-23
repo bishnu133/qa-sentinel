@@ -105,6 +105,10 @@ export const StoryRecordSchema = z.object({
   notified: z.array(z.object({ event: z.string(), key: z.string(), at: z.string() })).default([]),
   /** ACs a person marked ready by hand (`/qa ready AC-1`). */
   overrides: z.array(z.object({ ac: z.string(), by: z.string(), at: z.string(), commentId: z.string() })).default([]),
+  /** When qa-sentinel's own older Jira comments were last moved into the status comment (so the extra read happens once). */
+  legacyCleanedAt: z.string().optional(),
+  /** The story's test branch could not take the main branch: shown in the status comment until a run goes through. */
+  conflict: z.object({ branch: z.string(), message: z.string(), at: z.string(), key: z.string() }).optional(),
 });
 export type StoryRecord = z.infer<typeof StoryRecordSchema>;
 
@@ -293,7 +297,9 @@ const dropOrder = (a: Job, b: Job) => {
 
 const MAX_PARTS = 40;
 const MAX_RESULTS_PER_ENV = 5;
-const MAX_NOTIFIED = 50;
+/** A notification older than this may be sent again; within it the record keeps up to MAX_NOTIFIED (the oldest go first). */
+const NOTIFIED_DAYS = 180;
+const MAX_NOTIFIED = 200;
 
 /** Open parts always stay; of the others only the newest `keep`. */
 function trimParts(parts: RecordPart[], keep: number): RecordPart[] {
@@ -302,6 +308,12 @@ function trimParts(parts: RecordPart[], keep: number): RecordPart[] {
   if (open.length + rest.length <= open.length + keep) return parts;
   const kept = new Set<RecordPart>([...open, ...rest.slice(0, keep)]);
   return parts.filter((p) => kept.has(p));
+}
+
+function trimNotified(n: StoryRecord["notified"], now: Date): StoryRecord["notified"] {
+  const cutoff = new Date(now.getTime() - NOTIFIED_DAYS * 86_400_000).toISOString();
+  const recent = n.filter((x) => x.at >= cutoff);
+  return recent.length > MAX_NOTIFIED ? recent.slice(-MAX_NOTIFIED) : recent;
 }
 
 export function trimRecord(rec: StoryRecord, now = new Date()): StoryRecord {
@@ -315,7 +327,7 @@ export function trimRecord(rec: StoryRecord, now = new Date()): StoryRecord {
       perEnv.set(r.environment, n);
       return n <= MAX_RESULTS_PER_ENV;
     });
-  const base = { ...rec, ledger, parts: trimParts(rec.parts, MAX_PARTS), results, notified: rec.notified.length > MAX_NOTIFIED ? rec.notified.slice(-MAX_NOTIFIED) : rec.notified };
+  const base = { ...rec, ledger, parts: trimParts(rec.parts, MAX_PARTS), results, notified: trimNotified(rec.notified, now) };
   const jobs = Object.values(rec.jobs);
   if (jobs.length <= MAX_JOBS) return base;
   const keep = [...jobs].sort(dropOrder).slice(jobs.length - MAX_JOBS);

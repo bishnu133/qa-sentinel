@@ -217,9 +217,10 @@ describe("acReadiness with several parts per service", () => {
 
 /** A mock Jira: issues by key, comments kept per issue. */
 function jira(issues: Record<string, any>) {
-  const comments: Record<string, { id: string; body: string }[]> = {};
+  const comments: Record<string, { id: string; body: string; author?: { accountId: string } }[]> = {};
   let n = 0;
   return serve((req, url, body) => {
+    if (url.pathname === "/rest/api/2/myself") return { body: { accountId: "bot" } };
     const m = url.pathname.match(/^\/rest\/api\/2\/issue\/([^/]+)(\/comment(?:\/(\d+))?)?$/);
     if (!m) return { status: 404, body: {} };
     const key = decodeURIComponent(m[1]);
@@ -233,7 +234,7 @@ function jira(issues: Record<string, any>) {
         return { body: { id: m[3] } };
       }
       const id = String(++n);
-      list.push({ id, body: text });
+      list.push({ id, body: text, author: { accountId: "bot" } });
       return { status: 201, body: { id } };
     }
     const i = issues[key];

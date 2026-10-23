@@ -15,7 +15,7 @@ import { isGitRepo } from "../git.js";
 import { log } from "../log.js";
 import { SECRET_NAME } from "../env.js";
 import { currentUser, getProject, gitlabContext } from "../scm/gitlab.js";
-import { jiraContext, projectStatuses, allIssueTypes, linkTypes } from "../scm/jira.js";
+import { jiraContext, projectStatuses, allIssueTypes, linkTypes, myself, type JiraContext } from "../scm/jira.js";
 import { statusSets } from "../stories/resolve.js";
 import { junitReporter, layers, roleEnvNames, runCommandRunsEverything, runnerOf } from "../layers.js";
 import { packageScripts } from "../verification.js";
@@ -295,6 +295,7 @@ export async function doctorCommand(cwd: string, o: { online?: boolean } = {}): 
   if (o.online && !checks.some((c) => c.level === "fail" && c.label.includes("valid"))) {
     const c = loadConfig(path.resolve(cwd));
     const ctx = jiraContext(c.requirements.jira.baseUrl);
+    if (ctx) checks.push(await jiraIdentityCheck(ctx, c.reporting.targets.includes("jira")));
     if (ctx && (c.requirements.jira.projectKeys.length || c.requirements.jira.hierarchy.links.length)) checks.push(...(await jiraConfigChecks(c, { statuses: (p) => projectStatuses(ctx, p), issueTypes: (p) => allIssueTypes(ctx, p), linkTypes: () => linkTypes(ctx) })));
   }
   for (const ch of checks) {
@@ -307,6 +308,17 @@ export async function doctorCommand(cwd: string, o: { online?: boolean } = {}): 
   const warns = checks.filter((c) => c.level === "warn").length;
   log.info(`\n${fails} failing, ${warns} warning(s).`);
   return fails > 0 ? 1 : 0;
+}
+
+/**
+ * Who the Jira credentials belong to (GET /rest/api/2/myself). qa-sentinel edits and deletes only comments written by
+ * this user; without an answer it writes no comments at all. (A personal API token makes that person's own comments
+ * qa-sentinel's own: use a service account.)
+ */
+export async function jiraIdentityCheck(ctx: JiraContext, writes: boolean): Promise<Check> {
+  const me = await myself(ctx);
+  if (me) return { level: "ok", label: `Jira user: ${me.displayName ?? me.accountId ?? me.name ?? me.key}`, hint: "qa-sentinel edits or deletes only comments written by this user; with a personal token that includes your own comments, so a service account is better" };
+  return { level: writes ? "fail" : "warn", label: "Jira says who the credentials belong to (GET /rest/api/2/myself)", hint: "without it qa-sentinel cannot tell its own comments from other people's and writes no Jira comments; check the token and that the user may browse the site" };
 }
 
 /** What `doctor --online` can ask Jira, injectable so the checks can be tested. */

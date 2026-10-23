@@ -85,12 +85,14 @@ interface World {
   storefront: string;
   jira: { status: string };
   jiraUrl: string;
+  /** Comments written to the mock Jira. */
+  comments: { id: string; body: string; author?: { accountId: string } }[];
 }
 let w: World;
 let closers: (() => Promise<void>)[] = [];
 const envOf = (extra: Record<string, string> = {}) => ({ CI: "true", ...extra });
 
-async function world(o: { scope?: "story" | "service"; crossService?: "when-ready-status" | "when-ac-complete"; gitlab?: string; runner?: string; expected?: ExpectedFile; jiraDescription?: string; jiraComponents?: string[]; componentMap?: Record<string, string> } = {}): Promise<World> {
+async function world(o: { notify?: Record<string, unknown>; scope?: "story" | "service"; crossService?: "when-ready-status" | "when-ac-complete"; gitlab?: string; runner?: string; expected?: ExpectedFile; jiraDescription?: string; jiraComponents?: string[]; componentMap?: Record<string, string> } = {}): Promise<World> {
   const root = tmp("qas-story-");
   const origin = path.join(root, "origin.git");
   fs.mkdirSync(origin);
@@ -111,7 +113,19 @@ async function world(o: { scope?: "story" | "service"; crossService?: "when-read
   g(storefront, "checkout", "-q", "main");
 
   const jira = { status: "In Progress" };
-  const j = await serve((_req, url) => {
+  const comments: World["comments"] = [];
+  const j = await serve((req, url, reqBody) => {
+    if (url.pathname === "/rest/api/2/myself") return { body: { accountId: "bot" } };
+    if (/\/comment/.test(url.pathname)) {
+      if (req.method === "GET") return { body: { comments, total: comments.length } };
+      const f = JSON.parse(reqBody);
+      if (req.method === "POST") {
+        comments.push({ id: String(comments.length + 1), author: { accountId: "bot" }, ...f });
+        return { status: 201, body: { id: String(comments.length) } };
+      }
+      Object.assign(comments.find((x) => x.id === url.pathname.split("/").pop())!, f);
+      return { body: {} };
+    }
     const m = url.pathname.match(/^\/rest\/api\/2\/issue\/([^/]+)$/);
     if (!m) return { status: 404, body: {} };
     return { body: { key: m[1], fields: { summary: "Delivery slots", issuetype: { name: "Story" }, status: { name: jira.status }, description: o.jiraDescription ?? `## Acceptance criteria\n- AC-1: ${AC1}\n- AC-2: ${AC2}\n`, labels: [], components: (o.jiraComponents ?? []).map((name) => ({ name })) } } };
@@ -130,6 +144,7 @@ async function world(o: { scope?: "story" | "service"; crossService?: "when-read
     verification: { preflight: false, requireVerifiedToPush: false },
     review: { enabled: false },
     guardrails: { allowedHosts: [] },
+    reporting: { jira: { notify: o.notify ?? {} } },
   });
   writeConfig(qa, c);
   fs.writeFileSync(path.join(qa, "runner.js"), "process.exit(0);\n");
@@ -140,7 +155,7 @@ async function world(o: { scope?: "story" | "service"; crossService?: "when-read
   g(qa, "commit", "-q", "-m", "init tests");
   g(qa, "remote", "add", "origin", origin);
   g(qa, "push", "-q", "origin", "main");
-  return { root, qa, origin, orders, storefront, jira, jiraUrl: j.url };
+  return { root, qa, origin, orders, storefront, jira, jiraUrl: j.url, comments };
 }
 
 const branchFiles = (origin: string, branch = "qa-sentinel/story-SHOP-101") => g(origin, "ls-tree", "-r", "--name-only", branch).split("\n");
@@ -287,14 +302,16 @@ async function mockGitlab() {
   closers.push(gl.close);
   return { url: gl.url, mrs, notes, log: gl.log };
 }
-const glEnv = () => envOf({ QA_SENTINEL_GITLAB_TOKEN: "t" });
+const glEnv = () => envOf({ QA_SENTINEL_GITLAB_TOKEN: "t", JIRA_EMAIL: "a@b.c", JIRA_API_TOKEN: "x" });
+const notes = (event: string) => w.comments.filter((c) => c.body.includes(`qa-sentinel:notify:${event}`));
 const BRANCH = "qa-sentinel/story-SHOP-101";
 
 describe("the story's merge request", () => {
   it("is created once and then updated in place; its title names the story and it lists the ACs still waiting", async () => {
     const gl = await mockGitlab();
-    w = await world({ gitlab: gl.url, crossService: "when-ac-complete" });
+    w = await world({ gitlab: gl.url, crossService: "when-ac-complete", notify: { "cross-service-tests-ready": { on: true, to: ["jsmith"] } } });
     expect(await gen({ processEnv: glEnv() })).toBe(0);
+    expect(notes("cross-service-tests-ready")).toHaveLength(0); // AC-2 is single-service: nothing end-to-end to review yet
     expect(gl.mrs).toHaveLength(1);
     expect(gl.mrs[0].title).toBe("QA agent: tests for story SHOP-101");
     expect(gl.mrs[0].labels).toEqual(expect.arrayContaining(["qa-agent", "story::SHOP-101", "service::orders"]));
@@ -307,6 +324,9 @@ describe("the story's merge request", () => {
     expect(gl.mrs).toHaveLength(1); // the same merge request, not a second one
     expect(gl.mrs[0].labels).toEqual(expect.arrayContaining(["service::storefront", "service::orders"]));
     expect(gl.mrs[0].description).not.toMatch(/Waiting ACs[\s\S]*AC-1: waits/);
+    // The end-to-end AC was written: the people who asked are told the test merge request is ready, once.
+    expect(notes("cross-service-tests-ready")).toHaveLength(1);
+    expect(notes("cross-service-tests-ready")[0].body).toContain(`[~jsmith] end-to-end tests for AC-1 are ready for review: ${gl.url}/mr/1`);
     expect(gl.log.filter((l) => l.startsWith("POST /api/v4/projects/42/merge_requests ")).length + gl.log.filter((l) => l === "POST /api/v4/projects/42/merge_requests").length).toBe(1);
   }, 60_000);
 
@@ -329,7 +349,7 @@ describe("the story's merge request", () => {
 
   it("a conflict with main stops the run: nothing is pushed, the repo is left clean, the job fails and the merge request gets a note", async () => {
     const gl = await mockGitlab();
-    w = await world({ gitlab: gl.url, crossService: "when-ac-complete" });
+    w = await world({ gitlab: gl.url, crossService: "when-ac-complete", notify: { "merge-conflict": { on: true, to: ["jsmith"] } } });
     expect(await gen({ processEnv: glEnv() })).toBe(0);
     const tip = g(w.origin, "rev-parse", BRANCH);
     const other = path.join(w.root, "other");
@@ -358,6 +378,13 @@ describe("the story's merge request", () => {
     // A second check finds the same problem and edits the note instead of adding another.
     await gen({ service: "storefront", servicePath: w.storefront, processEnv: glEnv(), force: true });
     expect(gl.notes[1]).toHaveLength(1);
+    // The people who asked are told once (the key holds both tips, so the same conflict is not announced again), and the record keeps it for the status comment.
+    expect(notes("merge-conflict")).toHaveLength(1);
+    expect(notes("merge-conflict")[0].body).toContain("[~jsmith] the test branch qa-sentinel/story-SHOP-101 cannot take main");
+    const rec = (await fileStore(w.qa).load("SHOP-101"))!;
+    expect(rec.conflict).toMatchObject({ branch: BRANCH });
+    expect(rec.conflict!.key).toMatch(/^qa-sentinel\/story-SHOP-101@[0-9a-f]{10}\+[0-9a-f]{10}$/);
+    expect(rec.notified.filter((n) => n.event === "merge-conflict")).toHaveLength(1);
   }, 90_000);
 
   it("is a draft with its status in the title when verification does not pass", async () => {
@@ -394,6 +421,14 @@ describe("jobs, locks and what stays out of git", () => {
     expect(fs.existsSync(path.join(w.qa, ".qa-sentinel/stories/SHOP-101.json"))).toBe(true);
     // The Jira title appears in no tracked file of the branch (the expected file carries the AC text by design, not the card's title).
     expect(() => g(w.origin, "grep", "-q", "Delivery slots", BRANCH, "--")).toThrow(); // git grep exits 1 when nothing matches
+  }, 60_000);
+
+  it("a run that goes through clears the recorded merge conflict", async () => {
+    w = await world();
+    const { emptyRecord } = await import("../src/stories/record.js");
+    await fileStore(w.qa).save({ ...emptyRecord("SHOP-101"), conflict: { branch: BRANCH, message: "old", at: "2026-10-01T00:00:00Z", key: "k" } });
+    expect(await gen()).toBe(0);
+    expect((await fileStore(w.qa).load("SHOP-101"))!.conflict).toBeUndefined();
   }, 60_000);
 
   it("rejects --acs for an AC that still waits, unless forced", async () => {

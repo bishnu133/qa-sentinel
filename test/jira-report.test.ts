@@ -64,10 +64,11 @@ describe("upsertIssueComment", () => {
         calls.push(`${req.method} ${req.url}`);
         expect(req.headers.authorization).toBe("Basic abc");
         res.setHeader("content-type", "application/json");
+        if (req.url!.endsWith("/myself")) return res.end(JSON.stringify({ accountId: "bot" }));
         if (req.method === "GET") return res.end(JSON.stringify({ startAt: 0, total: comments.length, comments }));
         const payload = JSON.parse(body);
         if (req.method === "POST") {
-          const c = { id: String(comments.length + 1), ...payload };
+          const c = { id: String(comments.length + 1), author: { accountId: "bot" }, ...payload };
           comments.push(c);
           return res.end(JSON.stringify(c));
         }

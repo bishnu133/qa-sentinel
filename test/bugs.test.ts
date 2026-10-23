@@ -25,6 +25,7 @@ function fakeJira() {
     req.on("end", () => {
       const u = req.url!;
       const json = (code: number, v?: unknown) => (res.writeHead(code, { "content-type": "application/json" }), res.end(v === undefined ? "" : JSON.stringify(v)));
+      if (u === "/rest/api/2/myself") return json(200, { accountId: "bot" });
       if (u.startsWith("/rest/api/2/project/")) return json(200, { issueTypes: [{ name: "Task" }, { name: "Story" }] });
       if (u === "/rest/api/2/issue" && req.method === "POST") return state.issues.push(JSON.parse(body).fields), json(201, { key: `SHOP-${100 + ++state.n}` });
       if (u === "/rest/api/2/issueLink") return state.links.push(JSON.parse(body)), json(201);

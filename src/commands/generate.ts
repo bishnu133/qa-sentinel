@@ -1,6 +1,8 @@
 import fs from "node:fs";
 import path from "node:path";
-import { loadConfig } from "../config.js";
+import { jiraMode, loadConfig } from "../config.js";
+import { pendingWiki } from "../reporting/pending.js";
+import { refreshStaleness } from "../reporting/statusComment.js";
 import { changeSet, commitMessages, ensureAtCommit, git, hasChanges, isGitRepo, resolveSha, showFile, workingChanges } from "../git.js";
 import { checkExpectationLock, expectedDirOf } from "../expected/lock.js";
 import { acTrailer } from "../expected/commits.js";
@@ -15,6 +17,7 @@ import { isFeature, emptySnapshot, requirementItems, resolveRequirements, skippe
 import { findDiscrepancies, verifyChanges } from "../verification.js";
 import { mrDescription } from "../reporting.js";
 import { generationSummary } from "../reporting/jiraSummary.js";
+import { notifyStory } from "../reporting/notify.js";
 import { publish } from "../reporting/publish.js";
 import { reviewMarkdown, reviewTests, type ReviewOutcome } from "../review/reviewer.js";
 import { TEST_FILE, addedLines } from "../guardrails.js";
@@ -46,7 +49,7 @@ import { applyDeploymentGate, deploymentStates, notDeployed } from "../deploymen
 import { bugsFromDiscrepancies, fileBugs } from "../bugs/bugs.js";
 import { jiraContext } from "../scm/jira.js";
 import { runCommandsFor } from "../layers.js";
-import type { ServiceConfig } from "../config.js";
+import type { Config, ServiceConfig } from "../config.js";
 import { type ChangeSet, atLeast } from "../git.js";
 import { type StoryPart, combinedChange, storyParts } from "../story.js";
 import { layers } from "../layers.js";
@@ -341,6 +344,7 @@ async function generateRun(o: GenerateOptions, ctl: JobControl): Promise<number>
     if (!prep.ok) {
       log.fail(prep.message);
       ctl.outcome = `blocked-${prep.reason}`;
+      if (prep.reason === "conflict" && storyKey) await reportConflict(cwd, c, storyKey, prep.branch, prep.message, penv, ctl.store);
       if (ctx && testProject !== undefined) {
         try {
           const mr = await latestMrForBranch(ctx, testProject, prep.branch, c.ci.targetBranch);
@@ -731,7 +735,7 @@ async function generateRun(o: GenerateOptions, ctl: JobControl): Promise<number>
     const jira = jiraContext(c.requirements.jira.baseUrl);
     if (jira) {
       const candidates = bugsFromDiscrepancies(req.storyKey, requirementItems(req), discrepancies, index, plan, { environment, runCommand: (t) => runCommandsFor(c, [`${t.file}:${t.line}`])[0] });
-      const r = await fileBugs(jira, c, req.storyKey, candidates).catch((e) => (log.warn(`bugs: ${(e as Error).message}`), undefined));
+      const r = await fileBugs(jira, c, req.storyKey, candidates, cwd).catch((e) => (log.warn(`bugs: ${(e as Error).message}`), undefined));
       if (r?.created.length) log.ok(`bug(s) raised on ${req.storyKey}: ${r.created.join(", ")}`);
       if (r?.suggested) log.ok(`${r.suggested} bug(s) proposed on ${req.storyKey}`);
     }
@@ -776,6 +780,8 @@ async function generateRun(o: GenerateOptions, ctl: JobControl): Promise<number>
       });
       log.ok(`merge request ${mr.action}: ${mr.web_url}`);
       if (storyMode && storyKey && ctl.store) await recordAgentMr(ctl.store, storyKey, { branch, iid: mr.iid, url: mr.web_url, headSha: git(cwd, ["rev-parse", "HEAD"]) });
+      // A cross-service run: the people who asked to know are told the test merge request is ready for review.
+      if (storyMode && storyKey && scope?.crossInScope.length) await notifyStory(cwd, c, storyKey, "cross-service-tests-ready", `end-to-end tests for ${scope.crossInScope.join(", ")} are ready for review: ${mr.web_url}`, `${scope.crossInScope.join("+")}@${mr.iid}`, penv, ctl.store);
       if (c.reporting.targets.includes("jira")) {
         const acText = new Map(requirementItems(req).map((a) => [a.id, a.text]));
         const jiraSummary = generationSummary({
@@ -790,7 +796,7 @@ async function generateRun(o: GenerateOptions, ctl: JobControl): Promise<number>
           weakTests: review.review?.tests.filter((t) => t.verdict === "weak" || t.verdict === "wrong-oracle").length,
         });
         fs.writeFileSync(path.join(run.dir, "jira-summary.md"), jiraSummary);
-        await publish(c, { report: description, jiraSummary, service: service.name, storyKey: req.storyKey, mr: {}, targets: ["jira"] });
+        await publish(c, { report: description, jiraSummary, cwd, service: service.name, storyKey: req.storyKey, mr: {}, targets: ["jira"] });
       }
     }
   } else {
@@ -834,6 +840,7 @@ async function recordStoryRun(store: RecordStore, story: string, i: { scope: Sto
         else if (r.kind === "cross" && (map[r.ac]?.state !== "written" || map[r.ac].acHash !== hash)) map[r.ac] = { state: "held", heads, acHash: hash, at, reason: i.scope.heldAcs.get(r.ac) ?? r.reason };
       }
       for (const st of i.plan.requirementStatus) if (i.scope.acScope.includes(st.id)) rec.acEvidence[st.id] = { status: st.status, at, runId: i.runId };
+      delete rec.conflict; // the branch took the main branch: any earlier conflict is over
       rec.updatedAt = at;
       await store.save(rec);
     });
@@ -857,6 +864,36 @@ async function resetWrittenRecords(store: RecordStore, story: string): Promise<v
   } catch (e) {
     log.warn(`could not reset the story record for ${story}: ${(e as Error).message}`);
   }
+}
+
+/**
+ * The story's test branch cannot take the main branch: remembered in the story record (the status comment's pending
+ * section shows it until a run goes through) and the people who asked to know are told, again when the branch or main has
+ * moved on since (the notification key holds both tips). Best effort; the run itself is already blocked.
+ */
+async function reportConflict(cwd: string, c: Config, story: string, branch: string, message: string, env: NodeJS.ProcessEnv, store: RecordStore | undefined): Promise<void> {
+  const tip = (ref: string) => {
+    try {
+      return git(cwd, ["rev-parse", "-q", "--verify", ref]).slice(0, 10);
+    } catch {
+      return "?";
+    }
+  };
+  const key = `${branch}@${tip(`origin/${branch}`)}+${tip(`origin/${c.ci.targetBranch}`)}`;
+  const st = store ?? openStore(cwd, c, env);
+  try {
+    await st.locked(story, async () => {
+      const rec = (await st.load(story)) ?? emptyRecord(story);
+      const at = new Date().toISOString();
+      await st.save({ ...rec, conflict: { branch, message: message.slice(0, 300), at, key }, updatedAt: at });
+    });
+    const ctx = jiraContext(c.requirements.jira.baseUrl, env);
+    const rec = await st.load(story);
+    if (ctx && rec && jiraMode(c) !== "legacy") await refreshStaleness(ctx, story, { pending: pendingWiki(rec, {}), visibility: c.reporting.jira.visibility, basis: rec.basis, rec });
+  } catch (e) {
+    log.warn(`could not show the merge conflict on ${story}: ${(e as Error).message.split("\n")[0]}`);
+  }
+  await notifyStory(cwd, c, story, "merge-conflict", `the test branch ${branch} cannot take ${c.ci.targetBranch}: ${message}`, key, env, st);
 }
 
 async function recordAgentMr(store: RecordStore, story: string, mr: { branch: string; iid: number; url: string; headSha: string }): Promise<void> {

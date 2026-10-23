@@ -231,14 +231,14 @@ export function capForJira(wiki: string, maxChars: number, fullReportUrl?: strin
   return cut.slice(0, Math.max(0, cut.lastIndexOf("\n"))) + note;
 }
 
-async function jiraCall(ctx: JiraContext, method: string, route: string, body?: unknown): Promise<any> {
+async function jiraCall(ctx: JiraContext, method: string, route: string, body?: unknown, o: { retry?: boolean } = {}): Promise<any> {
   for (let attempt = 1; ; attempt++) {
     const res = await netFetch(`${ctx.baseUrl}${route}`, {
       method,
       headers: { Authorization: ctx.authHeader, Accept: "application/json", "Content-Type": "application/json" },
       body: body ? maskSecrets(JSON.stringify(body)) : undefined,
     });
-    if ((res.status === 429 || res.status >= 500) && attempt < 4) {
+    if ((res.status === 429 || res.status >= 500) && attempt < 4 && o.retry !== false) {
       const wait = Number(res.headers.get("retry-after")) * 1000 || 500 * 2 ** attempt;
       await new Promise((r) => setTimeout(r, Math.min(wait, 10_000)));
       continue;
@@ -249,17 +249,114 @@ async function jiraCall(ctx: JiraContext, method: string, route: string, body?: 
   }
 }
 
-/** The first comment on a story whose body contains `marker` (searches every page of comments). */
-export async function findIssueComment(ctx: JiraContext, key: string, marker: string): Promise<{ id: string; body: string } | undefined> {
+/** Who the token belongs to: Cloud has `accountId`; Data Center has `name` and `key`. */
+export interface JiraUser {
+  accountId?: string;
+  name?: string;
+  key?: string;
+  displayName?: string;
+  accountType?: string;
+}
+
+/** Thrown when qa-sentinel is asked to change a comment but Jira will not say which comments are its own. Nothing is written. */
+export class JiraIdentityError extends Error {
+  constructor(what = "change a comment") {
+    super(`Jira did not say which user the credentials belong to (GET /rest/api/2/myself), so qa-sentinel cannot tell its own comments from other people's and will not ${what}. Check the token (doctor --online checks this).`);
+    this.name = "JiraIdentityError";
+  }
+}
+
+const MAX_MYSELF_FAILURES = 3;
+const meOk = new Map<string, JiraUser>();
+const meFailures = new Map<string, number>();
+const meKey = (ctx: JiraContext) => `${ctx.baseUrl}\u0000${ctx.authHeader}`;
+
+/**
+ * The user the credentials belong to (GET /rest/api/2/myself). A success is remembered for the whole process (one call
+ * per site and login). A failure is NOT remembered: the next call asks again, up to 3 failures in a process, after
+ * which Jira is taken as unable to say (the callers then refuse to change comments).
+ */
+export async function myself(ctx: JiraContext): Promise<JiraUser | undefined> {
+  const key = meKey(ctx);
+  const known = meOk.get(key);
+  if (known) return known;
+  if ((meFailures.get(key) ?? 0) >= MAX_MYSELF_FAILURES) return undefined;
+  try {
+    const u = await jiraCall(ctx, "GET", "/rest/api/2/myself", undefined, { retry: false });
+    if (u && (u.accountId || u.name || u.key)) {
+      const me: JiraUser = { accountId: u.accountId, name: u.name, key: u.key, displayName: u.displayName };
+      meOk.set(key, me);
+      return me;
+    }
+  } catch {
+    /* counted below */
+  }
+  meFailures.set(key, (meFailures.get(key) ?? 0) + 1);
+  return undefined;
+}
+
+/** The user, or a refusal: for everything that edits or deletes. */
+export async function requireMyself(ctx: JiraContext, what?: string): Promise<JiraUser> {
+  const me = await myself(ctx);
+  if (!me) throw new JiraIdentityError(what);
+  return me;
+}
+
+/**
+ * Is this comment's author `me`? Cloud accounts are compared by accountId, Data Center users by key, then name; the
+ * first identifier both sides have decides. (A personal API token makes that person's own comments "ours".)
+ */
+export function isAuthor(author: JiraUser | undefined, me: JiraUser | undefined): boolean {
+  if (!author || !me) return false;
+  for (const f of ["accountId", "key", "name"] as const) if (author[f] && me[f]) return author[f] === me[f];
+  return false;
+}
+
+export interface JiraComment {
+  id: string;
+  body: string;
+  author?: JiraUser;
+  created?: string;
+  updated?: string;
+  visibility?: { type: string; value: string };
+}
+
+/** Every comment on a story, oldest first (all pages). */
+export async function listComments(ctx: JiraContext, key: string): Promise<JiraComment[]> {
   const base = `/rest/api/2/issue/${encodeURIComponent(key)}/comment`;
+  const out: JiraComment[] = [];
   for (let startAt = 0; ; ) {
     const page = await jiraCall(ctx, "GET", `${base}?startAt=${startAt}&maxResults=100`);
     const comments: any[] = page.comments ?? [];
-    const hit = comments.find((cm) => typeof cm.body === "string" && cm.body.includes(marker));
-    if (hit) return { id: String(hit.id), body: hit.body };
+    for (const cm of comments) if (typeof cm.body === "string") out.push({ id: String(cm.id), body: cm.body, author: cm.author, created: cm.created, updated: cm.updated, visibility: cm.visibility });
     startAt += comments.length;
-    if (!comments.length || startAt >= (page.total ?? 0)) return undefined;
+    if (!comments.length || startAt >= (page.total ?? 0)) return out;
   }
+}
+
+/**
+ * The comments qa-sentinel's own user wrote on a story. Throws JiraIdentityError when Jira will not say who the token
+ * belongs to: callers that change or delete comments must not guess.
+ */
+export async function listOwnComments(ctx: JiraContext, key: string): Promise<JiraComment[]> {
+  const me = await requireMyself(ctx, "clean up older comments");
+  return (await listComments(ctx, key)).filter((cm) => isAuthor(cm.author, me));
+}
+
+/**
+ * The first comment on a story that is qa-sentinel's own (written by the token's user) and contains `marker`. Anyone
+ * can paste a marker into a comment; that must never get theirs edited. When Jira will not say who the token belongs
+ * to this THROWS (JiraIdentityError): no comment is edited, none is created. `ownOnly: false` is for read-only looks.
+ */
+export async function findIssueComment(ctx: JiraContext, key: string, marker: string, o: { ownOnly?: boolean } = {}): Promise<{ id: string; body: string } | undefined> {
+  const me = o.ownOnly === false ? undefined : await requireMyself(ctx);
+  const hit = (await listComments(ctx, key)).find((cm) => cm.body.includes(marker) && (!me || isAuthor(cm.author, me)));
+  return hit ? { id: hit.id, body: hit.body } : undefined;
+}
+
+/** Delete one comment (needs the permission to delete the token user's own comments; callers fall back to editing). */
+export async function deleteComment(ctx: JiraContext, key: string, id: string): Promise<void> {
+  await jiraCall(ctx, "DELETE", `/rest/api/2/issue/${encodeURIComponent(key)}/comment/${encodeURIComponent(id)}`);
 }
 
 /** Write a comment: replace `existingId`, or add a new one. */

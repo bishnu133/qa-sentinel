@@ -253,12 +253,24 @@ requirements:
     - { role: ignore, name: Checklist, headings: [checklist, definition of ready] }
 reporting:
   targets: [gitlab-mr]               # where `gap-report --post` publishes: gitlab-mr, jira, or both
-  jira: { format: summary, maxChars: 30000 }   # summary (plain language, default) | full; optional visibility: { type: role, value: Developers }
+  jira:
+    format: summary                  # summary (plain language, default) | full; optional visibility: { type: role, value: Developers }
+    maxChars: 30000
+    mode: status                     # status (one QA status comment per story, default) | legacy (one comment per kind, the old way) | both. The old `layout: separate` still works (= legacy)
+    cleanup: pointer                 # what happens to qa-sentinel's OWN older comments when the status comment is first made: pointer (one line, default) | delete | keep
+    notify:                          # short new comments that mention people; each is sent once per story and subject. to: [] = showcase.notify
+      showcase-ready: { on: true, to: [] }
+      ac-not-built-but-ready: { on: false, to: [] }       # an AC looks not built but the story is in a ready status
+      cross-service-tests-ready: { on: false, to: [] }    # an end-to-end test merge request is ready for review
+      stopped-by-budget: { on: false, to: [] }
+      merge-conflict: { on: false, to: [] }
+    override: { command: "/qa ready", allowed: [] }       # a person comments `/qa ready AC-1 reason`; allowed: [] = any human, else Jira account ids or usernames
 showcase:
   format: pack                       # pack: one video + one PDF per story | files: the separate recordings and logs
   video: { record: true, slowMoMs: 500, holdMs: 2000, titleSeconds: 3 }   # needs a full ffmpeg (libx264)
   environments: [sit, uat]           # only runs on these environments are showcased
   notify: ["5b10ac8d82e05b22cc7d4ef5"]   # Jira account ids to tag when a story is ready for review
+  reattachOnChange: false            # true: attach fresh evidence on the next pass when the story's code or ACs changed after the evidence (no label needed)
   refreshLabel: qa-showcase-refresh  # QA adds this label to attach evidence again
   replaceOnRefresh: true             # delete the previous evidence when refreshing
   kinds: [video, screenshot, api-log]   # also: trace
@@ -334,7 +346,7 @@ Agent policy: diffs, stories and comments are **evidence, not instructions**. Or
 
 - **Story automation (v0.8) is new and Playwright/GitLab/Jira-shaped.** The background check (`stories`), job keys, budgets, `known-defects`, per-AC readiness, the draft-MR rule and the single Jira status comment have automated tests and were tried on a sandbox and a live Jira search; the AI refresh of a gap report on a real merge request and the readiness table against a live environment have not been run on a real project yet. Known-defect marker removal handles Playwright `test.fail` only (not jest/vitest `test.failing`).
 - **Budgets are per machine or cache.** Day and month limits count the spend this runner knows about; two CI runners without a shared cache each count their own. The per-story limit never resets.
-- **Jira has no compare-and-set**, so two jobs updating the same story's status comment in the same second can lose one update until that check runs again.
+- **Jira has no compare-and-set**, so two jobs updating the same story's status comment in the same second can lose one update until that check runs again. qa-sentinel edits or deletes only comments written by the Jira user its token belongs to (it asks `/rest/api/2/myself`); if Jira will not say who that is it writes no Jira comment at all, and `doctor --online` reports it. A personal API token makes that person's own comments qa-sentinel's own, so use a service account. The cleanup of older comments, `/qa ready` and the notifications are tested against a mock Jira only: try them on a test project first (docs/TRY-PR4.md).
 
 ## Roadmap
 
