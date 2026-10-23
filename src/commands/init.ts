@@ -10,6 +10,7 @@ import { ensureDir, readJson, writeFileSafe } from "../fsutil.js";
 import { listTemplateDir, readTemplate, render, type TemplateVars } from "../templates.js";
 import { log } from "../log.js";
 import { suiteRunCommand } from "../layers.js";
+import { indexTests } from "../analysis/testIndex.js";
 
 export interface InitOptions {
   cwd: string;
@@ -412,21 +413,41 @@ function writeTestMap(cwd: string, c: Config, det: Detection) {
     log.dim("  kept     test-map.yaml");
     return;
   }
-  const services: Record<string, unknown> = {};
+  const services: Record<string, { path: string; openapi: string | null; endpoints: Record<string, string[]>; screens: Record<string, string[]> }> = {};
   for (const s of c.workspace.services) {
     services[s.name] = { path: s.path, openapi: s.openapi ?? null, endpoints: {}, screens: {} };
+  }
+  // Tests that are already tagged (@endpoint, @page) are listed in the map straight away (no AI), so `doctor` does not
+  // report a mismatch for each of them. A test goes under the service it names (@service), else the first service.
+  const mapped = new Set<string>();
+  const add = (into: Record<string, string[]>, key: string, file: string) => {
+    into[key] = [...new Set([...(into[key] ?? []), file])];
+    mapped.add(file);
+  };
+  if (c.workspace.services.length) {
+    let tests: ReturnType<typeof indexTests> = [];
+    try {
+      tests = indexTests(cwd, c);
+    } catch {
+      /* unreadable tests: the map stays empty and `learn` drafts it */
+    }
+    for (const t of tests) {
+      const svc = services[t.services.find((n) => services[n]) ?? c.workspace.services[0].name];
+      for (const ep of t.endpoints) add(svc.endpoints, ep, t.file);
+      for (const pg of t.pages) add(svc.screens, pg, t.file);
+    }
   }
   const doc = {
     version: 1,
     services,
-    unmapped: det.apiTestFiles,
+    unmapped: det.apiTestFiles.filter((f) => !mapped.has(f)),
   };
   const header =
     "# Traceability map: service → endpoint/screen → test files.\n" +
     "# Draft it with `qa-sentinel learn`, then review. Agents read and update this file.\n" +
     '# Example endpoint entry:  "POST /orders": [tests/api/orders/create-order.spec.ts]\n';
   fs.writeFileSync(file, header + YAML.stringify(doc));
-  log.dim("  created  test-map.yaml");
+  log.dim(`  created  test-map.yaml${mapped.size ? ` (${mapped.size} tagged test file(s) listed)` : ""}`);
 }
 
 function writeKbReadme(cwd: string, c: Config) {

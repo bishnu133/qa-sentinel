@@ -9,22 +9,24 @@ Steps 1 to 4 need **no AI, no Jira and no GitLab**. They use the ShopLite sandbo
 
 ## 1. Set up the sandbox
 
+Where to run: `local.mjs setup`, `run`, `merge` and `env` run from the sandbox folder (`~/qa-try2`). `gap-report` and `post-deploy` run from the test folder (`~/qa-try2/shoplite-local/qa-tests`). Each step says where it runs.
+
 1. `rm -rf ~/qa-try2 && mkdir -p ~/qa-try2 && cd ~/qa-try2`
-2. `node $QAS/sandbox/shoplite/local.mjs setup --level maintenance`
-3. `node $QAS/sandbox/shoplite/local.mjs run SHOP-106 --change-only`
+2. (still in `~/qa-try2`) `node $QAS/sandbox/shoplite/local.mjs setup --level maintenance`
+3. (in `~/qa-try2`) `node $QAS/sandbox/shoplite/local.mjs run SHOP-106 --change-only`
    This makes the developer change for story SHOP-106 (a branch in notifications-service).
 
 ## 2. Merge a story in two steps, with other work in between
 
-1. `node $QAS/sandbox/shoplite/local.mjs merge SHOP-106`
+1. (in `~/qa-try2`) `node $QAS/sandbox/shoplite/local.mjs merge SHOP-106`
    This merges part 1 of the story into main of notifications-service.
 2. `cd ~/qa-try2/shoplite-local/notifications-service`
 3. `echo other > unrelated.txt && git add unrelated.txt && git commit -m "SHOP-999 unrelated work"`
 4. `echo more > followup.txt && git add followup.txt && git commit -m "SHOP-106 follow-up: footer text"`
 5. `cd ../qa-tests`
-6. `node $QAS/dist/cli.js gap-report --story SHOP-106 --dry-run`
+6. (in `qa-tests`) `node $QAS/dist/cli.js gap-report --story SHOP-106 --dry-run`
    It does not call the AI. It only prints what it would ask. Look for the line `story SHOP-106: notifications-service (2 file(s))`: one part for the service with the files of both merge requests.
-7. `grep -n "^# =====\|^diff --git" $(ls -d .qa-sentinel/runs/*gap-story-SHOP-106 | tail -1)/change.diff`
+7. (in `qa-tests`) `grep -n "^# =====\|^diff --git" $(ls -d .qa-sentinel/runs/*gap-story-SHOP-106 | tail -1)/change.diff`
 
 Expect one line starting with `# =====` followed by two lines starting with `# -----` (one per merge request) and these files after them: `followup.txt` and `src/server.js` (in some order). There is no `unrelated.txt`. Before this change the follow-up commit made the first part disappear, or the unrelated work came in.
 
@@ -34,9 +36,9 @@ This step starts the sandbox environment on your laptop.
 
 1. `cd ~/qa-try2/shoplite-local/notifications-service`
 2. `echo fix > fix.txt && git add fix.txt && git commit -m "SHOP-210 fix: wrong footer"`
-3. `node $QAS/sandbox/shoplite/local.mjs env start` (run it from `~/qa-try2`; it starts the services at this commit)
+3. `cd ~/qa-try2 && node $QAS/sandbox/shoplite/local.mjs env start` (run it from `~/qa-try2`, the sandbox folder; it starts the services at this commit)
 4. `cd ~/qa-try2/shoplite-local/qa-tests`
-5. Make a test for the fix. Copy these lines into `tests/api/footer.spec.ts`:
+5. Make a test for the fix. Create the file `tests/api/footer.spec.ts` (it does not exist yet) and paste this whole content into it (the test fails without it):
    ```
    import { test, expect } from "@playwright/test";
    test("the footer fix holds @service:notifications-service @story:SHOP-106 @bug:SHOP-210 @ac:AC-1", async ({ request }) => {
@@ -44,7 +46,7 @@ This step starts the sandbox environment on your laptop.
      expect(res.ok()).toBe(true);
    });
    ```
-6. `N=../notifications-service; node $QAS/dist/cli.js post-deploy --env local --service notifications-service --sha $(git -C $N rev-parse HEAD) --before $(git -C $N rev-parse HEAD~1)`
+6. (in `qa-tests`) `N=../notifications-service; node $QAS/dist/cli.js post-deploy --env local --service notifications-service --sha $(git -C $N rev-parse HEAD) --before $(git -C $N rev-parse HEAD~1)`
 
 Expect `SHOP-210: every part is deployed on local; running 1 test(s)` and `SHOP-210: tests passed`. The key SHOP-210 was found in the deployed commit, and its `@bug:SHOP-210` test ran. Before this change a key with no `@story` test was dropped and nothing ran.
 With Jira connected the bug is looked up: if its parent is SHOP-106, the report says `re-run: fix SHOP-210 (Bug → SHOP-106) deployed` and runs every SHOP-106 test as well (see step 5).

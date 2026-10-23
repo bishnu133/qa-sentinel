@@ -91,17 +91,27 @@ const isShallow = (repo: string) => {
  * Is any of these commits reverted by a commit on `target`? Returns the reverting commit. A revert that is itself
  * reverted (the change landed again) does not count. Commits that are not in this clone are ignored.
  */
-export function findRevert(repo: string, shas: string | string[], target: string, limit = 1000): string | undefined {
+export interface RevertEntry {
+  commit: string;
+  reverts: string[];
+}
+
+/** The commits of `target` with the commits each one reverts: read once per run and shared (`suite` asks for many stories). */
+export function revertEntries(repo: string, target: string, limit = 1000): RevertEntry[] {
+  return git(repo, ["log", "-n", String(limit), "--format=%H%x09%B%x1e", target]).split("\x1e").map((x) => x.trim()).filter(Boolean).map((m) => {
+    const [commit, ...rest] = m.split("\t");
+    return { commit, reverts: revertedBy(rest.join("\t")) };
+  });
+}
+
+export function findRevert(repo: string, shas: string | string[], target: string, limit = 1000, known?: RevertEntry[]): string | undefined {
   const full: string[] = [];
   for (const sha of Array.isArray(shas) ? shas : [shas]) {
     if (!sha || sha.startsWith("-") || !ok(repo, ["cat-file", "-e", `${sha}^{commit}`])) continue;
     full.push(git(repo, ["rev-parse", "--verify", `${sha}^{commit}`]));
   }
   if (!full.length) return undefined;
-  const entries = git(repo, ["log", "-n", String(limit), "--format=%H%x09%B%x1e", target]).split("\x1e").map((x) => x.trim()).filter(Boolean).map((m) => {
-    const [commit, ...rest] = m.split("\t");
-    return { commit, reverts: revertedBy(rest.join("\t")) };
-  });
+  const entries = known ?? revertEntries(repo, target, limit);
   const revertedNow = (sha: string, depth: number): string | undefined =>
     entries.filter((e) => e.reverts.some((r) => sha.startsWith(r))).find((e) => depth > 5 || !revertedNow(e.commit, depth + 1))?.commit;
   for (const sha of full) {

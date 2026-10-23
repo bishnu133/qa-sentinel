@@ -4,7 +4,7 @@ import type { Config, ServiceConfig } from "../config.js";
 import { git, isGitRepo } from "../git.js";
 import { call, getAll, type GitLabContext } from "../scm/gitlab.js";
 import { extractMrKeys, extractStoryKeys, jiraKeyPattern } from "../requirements.js";
-import { findCherryPicks, findRevert } from "../release/git.js";
+import { findCherryPicks, findRevert, revertEntries, type RevertEntry } from "../release/git.js";
 
 /**
  * Feature manifest: one story, many services. Assembled automatically (nobody hand-writes YAML per feature):
@@ -271,13 +271,43 @@ async function gitlabContains(ctx: GitLabContext, project: string, sha: string, 
   }
 }
 
-export async function checkDeployment(part: ServicePart, s: ServiceConfig, environment: string, baseUrl: string, repo?: string, gitlab?: GitLabContext): Promise<ServicePart["deployed"]> {
+/**
+ * What one run already looked up, so N stories x M services do not make N x M lookups: the commit each service runs in an
+ * environment, and the revert list of each repository's target branch.
+ */
+export interface FeatureCache {
+  deployed: Map<string, Promise<{ sha?: string; error?: string }>>;
+  reverts: Map<string, RevertEntry[]>;
+  /** How many times the version endpoints and the commit logs were really asked (shown in tests and with --json). */
+  asked: { versionCalls: number; revertScans: number };
+}
+export const newFeatureCache = (): FeatureCache => ({ deployed: new Map(), reverts: new Map(), asked: { versionCalls: 0, revertScans: 0 } });
+
+async function readDeployedSha(s: ServiceConfig, baseUrl: string): Promise<{ sha?: string; error?: string }> {
+  const v = s.version!;
+  try {
+    const res = await fetch(`${baseUrl.replace(/\/$/, "")}${v.path}`, { headers: { Accept: "application/json" } });
+    if (!res.ok) return { error: `${v.path} answered ${res.status}` };
+    const deployed = String(pick(await res.json(), v.field) ?? "");
+    return deployed ? { sha: deployed } : { error: `no "${v.field}" in ${v.path}` };
+  } catch (e) {
+    return { error: (e as Error).message };
+  }
+}
+
+export async function checkDeployment(part: ServicePart, s: ServiceConfig, environment: string, baseUrl: string, repo?: string, gitlab?: GitLabContext, cache?: FeatureCache): Promise<ServicePart["deployed"]> {
   if (!s.version) return { environment, error: "no version endpoint configured (workspace.services[].version)" };
   try {
-    const res = await fetch(`${baseUrl.replace(/\/$/, "")}${s.version.path}`, { headers: { Accept: "application/json" } });
-    if (!res.ok) return { environment, error: `${s.version.path} answered ${res.status}` };
-    const deployed = String(pick(await res.json(), s.version.field) ?? "");
-    if (!deployed) return { environment, error: `no "${s.version.field}" in ${s.version.path}` };
+    const key = `${baseUrl}|${s.name}|${s.version.path}|${s.version.field}`;
+    let asked = cache?.deployed.get(key);
+    if (!asked) {
+      if (cache) cache.asked.versionCalls++;
+      asked = readDeployedSha(s, baseUrl);
+      cache?.deployed.set(key, asked);
+    }
+    const got = await asked;
+    if (got.error || !got.sha) return { environment, error: got.error ?? "no commit" };
+    const deployed = got.sha;
     // Same commit: deployed. Otherwise ask git whether the deployed commit contains the change; when that can't be
     // decided here (no clone, or the deployed commit isn't in it), it's unknown, never "not deployed".
     let includesChange: boolean | undefined = !!part.sha && (deployed.startsWith(part.sha) || part.sha.startsWith(deployed)) ? true : undefined;
@@ -345,6 +375,8 @@ export async function assembleFeature(i: {
   checkUnmerged?: boolean;
   /** The recent-MR scans of this run (shared by the stories of a merge request). */
   scanCache?: MrScanCache;
+  /** Deployed commits and revert lists of this run (shared by all stories of `suite`). */
+  cache?: FeatureCache;
 }): Promise<FeatureManifest> {
   const notes: string[] = [];
   const parts: ServicePart[] = [];
@@ -366,12 +398,22 @@ export async function assembleFeature(i: {
       }
       if (part.merged && part.sha && target) {
         try {
-          part.reverted = findRevert(repo, [part.sha, ...(part.mergeSha ? [part.mergeSha] : []), ...(part.squashSha ? [part.squashSha] : []), ...(part.related ?? [])], target);
+          let entries: RevertEntry[] | undefined;
+          if (i.cache) {
+            const k = `${repo}|${target}`;
+            entries = i.cache.reverts.get(k);
+            if (!entries) {
+              i.cache.asked.revertScans++;
+              entries = revertEntries(repo, target);
+              i.cache.reverts.set(k, entries);
+            }
+          }
+          part.reverted = findRevert(repo, [part.sha, ...(part.mergeSha ? [part.mergeSha] : []), ...(part.squashSha ? [part.squashSha] : []), ...(part.related ?? [])], target, 1000, entries);
         } catch (e) {
           notes.push(`${s.name}: could not check whether ${i.story} was reverted: ${(e as Error).message.split("\n")[0]}`);
         }
       }
-      if (i.environment && i.baseUrl && (part.merged || i.checkUnmerged) && !part.reverted) part.deployed = await checkDeployment(part, s, i.environment, i.baseUrl, fs.existsSync(repo) ? repo : undefined, i.gitlab);
+      if (i.environment && i.baseUrl && (part.merged || i.checkUnmerged) && !part.reverted) part.deployed = await checkDeployment(part, s, i.environment, i.baseUrl, fs.existsSync(repo) ? repo : undefined, i.gitlab, i.cache);
       parts.push(part);
     }
   }
