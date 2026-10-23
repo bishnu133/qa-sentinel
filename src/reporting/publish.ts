@@ -34,8 +34,11 @@ export async function publish(
           const source = c.reporting.jira.format === "summary" && i.jiraSummary ? i.jiraSummary : i.report;
           const body = capForJira(markdownToJiraWiki(source), c.reporting.jira.maxChars, artifact);
           const r = await postToStory(c, ctx, i.storyKey, { name: `gap-report:${i.service}`, wiki: body, legacyKind: i.service, cwd: i.cwd, env });
-          log.ok(`Jira ${i.storyKey}: comment ${r.action} (${r.url})`);
-          done.push("jira");
+          if (r.action === "skipped") log.warn(`Jira ${i.storyKey}: nothing posted (see the warning above)`);
+          else {
+            log.ok(`Jira ${i.storyKey}: comment ${r.action} (${r.url})`);
+            done.push("jira");
+          }
         }
       }
     } catch (e) {

@@ -37,7 +37,7 @@ test(\`rejects over-refund \${t} @ac:AC-2\`, async () => {});
 }
 
 function fakeJira() {
-  const state = { labels: [] as string[], property: undefined as any, attachments: [] as any[], comments: [] as any[], deleted: [] as string[] };
+  const state = { labels: [] as string[], property: undefined as any, attachments: [] as any[], comments: [] as any[], deleted: [] as string[], posts: 0, failNth: 0 };
   const server = http.createServer((req, res) => {
     const chunks: Buffer[] = [];
     req.on("data", (d) => chunks.push(d));
@@ -45,6 +45,7 @@ function fakeJira() {
       const body = Buffer.concat(chunks).toString();
       const u = req.url!;
       const json = (code: number, v: unknown) => (res.writeHead(code, { "content-type": "application/json" }), res.end(v === undefined ? "" : JSON.stringify(v)));
+      if (u.endsWith("/myself")) return json(200, { accountId: "bot" });
       if (req.method === "GET" && u.includes("fields=labels")) return json(200, { fields: { labels: state.labels } });
       if (req.method === "GET" && /\/issue\/SHOP-1\?fields=/.test(u)) return json(200, { key: "SHOP-1", fields: { summary: "Refunds", description: "h2. Acceptance criteria\n# Partial refunds work\n# Total never exceeds the amount", status: { name: "In Progress" } } });
       if (u.includes("/properties/")) {
@@ -61,7 +62,8 @@ function fakeJira() {
       }
       if (u.startsWith("/rest/api/2/attachment/") && req.method === "DELETE") return state.deleted.push(u.split("/").pop()!), json(204, undefined);
       if (u.includes("/comment") && req.method === "GET") return json(200, { startAt: 0, total: state.comments.length, comments: state.comments });
-      if (u.includes("/comment") && req.method === "POST") return state.comments.push({ id: String(state.comments.length + 1), ...JSON.parse(body) }), json(200, { id: String(state.comments.length) });
+      if (u.includes("/comment") && req.method === "POST" && ++state.posts === state.failNth) return json(403, { errorMessages: ["no"] });
+      if (u.includes("/comment") && req.method === "POST") return state.comments.push({ id: String(state.comments.length + 1), author: { accountId: "bot" }, ...JSON.parse(body) }), json(200, { id: String(state.comments.length) });
       if (u.includes("/comment/") && req.method === "PUT") return json(200, {});
       if (req.method === "PUT" && /\/issue\/SHOP-1$/.test(u)) return (state.labels = state.labels.filter((l) => !body.includes(l))), json(204, undefined);
       json(404, { u });
@@ -200,6 +202,62 @@ describe("showcase and the Jira status comment", () => {
       });
     } finally {
       a.server.close();
+    }
+  });
+
+  it("both mode: the mention is in the legacy comment only, so people are tagged once", async () => {
+    const { server, state, r } = await setup("showcase: { notify: [jsmith] }\nreporting: { jira: { mode: both } }\n");
+    try {
+      await withEnv(async () => {
+        await showcaseCommand({ cwd: r });
+        expect(state.comments).toHaveLength(2);
+        const status = state.comments.find((c) => c.body.includes("qa-sentinel:status"));
+        const legacy = state.comments.find((c) => !c.body.includes("qa-sentinel:status"));
+        expect(status.body).toContain("qa-sentinel:section=showcase");
+        expect(status.body).not.toContain("[~jsmith]");
+        expect(legacy.body).toContain("[~jsmith] this story is ready for your review");
+        expect(state.comments.filter((c) => c.body.includes("[~jsmith]"))).toHaveLength(1);
+      });
+    } finally {
+      server.close();
+    }
+  });
+
+  it("a mention that failed to post is posted on the next run, without attaching the evidence again", async () => {
+    const { server, state, r } = await setup("showcase: { notify: [jsmith] }\n");
+    try {
+      await withEnv(async () => {
+        state.failNth = 2; // the status comment goes through, the mention does not
+        await showcaseCommand({ cwd: r });
+        expect(state.comments.filter((c) => c.body.includes("[~jsmith]"))).toHaveLength(0);
+        expect(state.property.notifyPending).toBe(true);
+        expect(state.attachments).toHaveLength(2);
+        await showcaseCommand({ cwd: r });
+        expect(state.comments.filter((c) => c.body.includes("[~jsmith]"))).toHaveLength(1);
+        expect(state.property.notifyPending).toBeUndefined();
+        expect(state.attachments).toHaveLength(2); // not attached again
+        await showcaseCommand({ cwd: r });
+        expect(state.comments.filter((c) => c.body.includes("[~jsmith]"))).toHaveLength(1); // and not twice
+      });
+    } finally {
+      server.close();
+    }
+  });
+
+  it("a status comment that failed to post is posted on the next run too", async () => {
+    const { server, state, r } = await setup("");
+    try {
+      await withEnv(async () => {
+        state.failNth = 1;
+        await showcaseCommand({ cwd: r });
+        expect(state.comments).toHaveLength(0);
+        expect(state.property.notifyPending).toBe(true);
+        await showcaseCommand({ cwd: r });
+        expect(state.comments[0].body).toContain("qa-sentinel:section=showcase");
+        expect(state.attachments).toHaveLength(2);
+      });
+    } finally {
+      server.close();
     }
   });
 });

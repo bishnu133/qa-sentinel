@@ -12,6 +12,7 @@ export interface MockComment {
   body: string;
   author: MockUser;
   created: string;
+  updated?: string;
   visibility?: { type: string; value: string };
 }
 
@@ -25,7 +26,10 @@ export const EVE: MockUser = { accountId: "5eve0000000000000003", displayName: "
  * recorded in `touched` with the author of the comment they hit, so a test can assert that no PUT or DELETE ever
  * targets someone else's comment. Comment pages are 2 long to exercise paging.
  */
-export async function mockJira(o: { issues?: Record<string, Record<string, unknown>>; comments?: Record<string, MockComment[]>; me?: MockUser | null } = {}) {
+export async function mockJira(o: { issues?: Record<string, Record<string, unknown>>; comments?: Record<string, MockComment[]>; me?: MockUser | null; meStatus?: number } = {}) {
+  // The token really belongs to `owner`; /myself may refuse to say (me: null = 403, meStatus = any other status such as 500).
+  const owner = o.me ?? BOT;
+  const state = { meFails: o.me === null || o.meStatus !== undefined, meStatus: o.meStatus ?? 403 };
   const comments: Record<string, MockComment[]> = o.comments ?? {};
   const touched: { method: string; id: string; author: MockUser }[] = [];
   const calls: string[] = [];
@@ -42,7 +46,7 @@ export async function mockJira(o: { issues?: Record<string, Record<string, unkno
         res.writeHead(status, { "content-type": "application/json" });
         res.end(status === 204 ? "" : JSON.stringify(body));
       };
-      if (url.pathname === "/rest/api/2/myself") return o.me === null ? send(403, {}) : send(200, o.me ?? BOT);
+      if (url.pathname === "/rest/api/2/myself") return state.meFails ? send(state.meStatus, {}) : send(200, owner);
       const cm = url.pathname.match(/^\/rest\/api\/2\/issue\/([^/]+)\/comment(?:\/([^/]+))?$/);
       if (cm) {
         const key = decodeURIComponent(cm[1]);
@@ -54,7 +58,7 @@ export async function mockJira(o: { issues?: Record<string, Record<string, unkno
         }
         const payload = raw ? JSON.parse(raw) : {};
         if (req.method === "POST") {
-          const c: MockComment = { id: String(++seq), body: payload.body, author: o.me ?? BOT, created: next(), ...(payload.visibility ? { visibility: payload.visibility } : {}) };
+          const c: MockComment = { id: String(++seq), body: payload.body, author: owner, created: next(), ...(payload.visibility ? { visibility: payload.visibility } : {}) };
           list.push(c);
           return send(201, c);
         }
@@ -94,7 +98,14 @@ export async function mockJira(o: { issues?: Record<string, Record<string, unkno
       return c;
     },
     /** Writes (PUT/DELETE) that hit a comment the token user did not write. */
-    foreignWrites: () => touched.filter((t) => t.author.accountId !== (o.me ?? BOT).accountId),
+    foreignWrites: () => touched.filter((t) => t.author.accountId !== owner.accountId),
+    /** Make /myself work again (or fail with a status). */
+    setMeFails: (fails: boolean, status = 403) => {
+      state.meFails = fails;
+      state.meStatus = status;
+    },
+    /** Every write the mock saw (POST, PUT, DELETE on comments). */
+    writes: () => calls.filter((c) => /^(POST|PUT|DELETE) /.test(c)),
     close: () => new Promise<void>((ok) => server.close(() => ok())),
   };
 }

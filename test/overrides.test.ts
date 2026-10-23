@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { ConfigSchema } from "../src/config.js";
 import { parseOverrideLines, readOverrides, unreadyCommand } from "../src/stories/overrides.js";
+import { pendingWiki } from "../src/reporting/pending.js";
 import { acWriteReadiness } from "../src/feature/readiness.js";
 import { STATUS_MARKER } from "../src/reporting/statusComment.js";
 import { BOT, DANA, EVE, mockJira } from "./helpers/mockJira.js";
@@ -87,5 +88,53 @@ describe("/qa ready AC-n", () => {
     expect(acWriteReadiness(merged, undefined, ["AC-1"], { ...o, overrides: [{ ac: "AC-1" }] })[0].state).toBe("ready");
     const open = [{ service: "orders", merged: true, sha: "a1" }, { service: "payments", merged: false, sha: "b2" }] as never;
     expect(acWriteReadiness(open, undefined, ["AC-1"], { ...o, overrides: [{ ac: "AC-1" }] })[0].state).toBe("waiting-merge");
+  });
+
+  it("ignores the command inside {code}, {noformat}, {quote}, bq. lines and > quotes", () => {
+    const body = ["{code}", "/qa ready AC-1", "{code}", "{noformat}", "/qa ready AC-2", "{noformat}", "{quote}", "/qa ready AC-3", "{quote}", "bq. /qa ready AC-4", "> /qa ready AC-5", "{code:sh}/qa ready AC-6{code}", "/qa ready AC-7 for real"].join("\n");
+    expect(parseOverrideLines(body, "/qa ready")).toEqual([{ op: "ready", ac: "AC-7", reason: "for real" }]);
+  });
+
+  it("builds the take-back command for any command", () => {
+    expect(unreadyCommand("/qa ready")).toBe("/qa unready");
+    expect(unreadyCommand("/qa-ready")).toBe("/qa-unready");
+    expect(unreadyCommand("!qa-ok")).toBe("!qa-ok undo");
+    expect(parseOverrideLines("/qa-unready AC-1\n/qa-ready AC-2", "/qa-ready")).toEqual([{ op: "unready", ac: "AC-1" }, { op: "ready", ac: "AC-2" }]);
+  });
+
+  it("uses the time the comment was last edited as the time of the override", async () => {
+    const j = await jira();
+    const c = j.add("SHOP-1", "/qa ready AC-1", DANA, { updated: "2026-10-21T09:00:00.000+0000" });
+    expect((await readOverrides(cfg(), j.ctx, "SHOP-1"))[0].at).toBe("2026-10-21T09:00:00.000+0000");
+    expect(c.created).not.toBe(c.updated);
+  });
+});
+
+describe("the waiting section says what an override covers", () => {
+  const rec = (o: Record<string, unknown> = {}) => ({ crossService: {}, acEvidence: {}, overrides: [], conflict: undefined, ...o }) as never;
+  it("names the service that has no change, and flags an AC the story does not have", () => {
+    const text = pendingWiki(rec({ overrides: [{ ac: "AC-1", by: "Dana Tester", at: "2026-10-21T09:00:00Z", commentId: "1" }] }), {
+      waits: [{ ac: "AC-1", state: "ready", reason: "marked ready by a person (payments has no change)" }],
+      unknownOverrides: ["AC-99"],
+    })!;
+    expect(text).toContain("AC-1 marked ready by Dana Tester on 2026-10-21; this skips: payments has no change");
+    expect(text).toContain("AC-99 was marked ready, but this story has no such AC (ignored)");
+  });
+  it("lists what waiting ACs wait for, a held cross-service AC and a conflict; escapes a display name", () => {
+    const text = pendingWiki(
+      rec({
+        conflict: { branch: "qa-sentinel/story-SHOP-1", message: "merging main conflicts in a.ts", at: "t", key: "k" },
+        crossService: { "AC-3": { state: "held", heads: "h", acHash: "x", at: "t", reason: "storefront not merged" } },
+        overrides: [{ ac: "AC-1", by: "Eve [~admin] *bold*\nnewline", at: "2026-10-21T09:00:00Z", commentId: "1" }],
+      }),
+      { waits: [{ ac: "AC-2", state: "waiting-merge", reason: "not merged yet: payments !7", waitingFor: "the merge of payments !7" }, { ac: "AC-1", state: "waiting-merge", reason: "r" }] },
+    )!;
+    expect(text).toContain("cannot take the main branch");
+    expect(text).toContain("AC-3: end-to-end tests are held: storefront not merged");
+    expect(text).toContain("AC-2: tests wait for the merge of payments !7");
+    expect(text).not.toContain("AC-1: tests wait"); // overridden, shown on its own line
+    expect(text).toContain("Eve \\[\\~admin\\] \\*bold\\* newline");
+    expect(text).not.toContain("[~admin]");
+    expect(pendingWiki(rec(), {})).toBeNull();
   });
 });

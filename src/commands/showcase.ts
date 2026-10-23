@@ -18,7 +18,7 @@ import {
   setIssueProperty,
 } from "../scm/jira.js";
 import { jiraMode } from "../config.js";
-import { mentionOf, notifyStory } from "../reporting/notify.js";
+import { mentionOf, notifyStoryOutcome } from "../reporting/notify.js";
 import { postToStory } from "../reporting/statusComment.js";
 import { openStore } from "../stories/start.js";
 import { jiraIssueText, parseStoryFor } from "../requirements.js";
@@ -107,6 +107,14 @@ export async function showcaseCommand(o: ShowcaseOptions): Promise<number> {
       // The code or the ACs moved on after the evidence was attached.
       const older = Boolean(previous?.basis && basisNow && previous.basis !== basisNow);
       const refresh = o.force || labels.includes(c.showcase.refreshLabel) || (older && c.showcase.reattachOnChange);
+      if (previous?.notifyPending && !refresh) {
+        // The evidence is attached but the Jira comment or the mention did not go through last time: only that is tried again.
+        if (await postShowcase(c, ctx!, cwd, story, r, previous)) {
+          const { notifyPending: _done, ...rest } = previous;
+          await setIssueProperty(ctx, story, SHOWCASE_PROPERTY, rest);
+          log.ok(`  ${story}: the showcase comment and mention that failed last time were posted`);
+        }
+      }
       if (previous && !refresh) {
         log.dim(`  ${story}: already showcased on ${previous.attachedAt}; add the label "${c.showcase.refreshLabel}" to attach fresh evidence${older ? ". The evidence is older than the latest change" : ""}`);
         report.push(`_Already showcased on ${previous.attachedAt}; skipped.${older ? " Evidence older than the latest change: add the refresh label, or set showcase.reattachOnChange." : ""}_`, "");
@@ -128,17 +136,12 @@ export async function showcaseCommand(o: ShowcaseOptions): Promise<number> {
       }
       const done = [];
       for (const f of files) done.push(await attachFile(ctx, story, f.name, f.data, f.contentType));
-      const rec: ShowcaseRecord = { version: 1, attachedAt: at, environment, commit, attachments: done, tests: r.acs.flatMap((a) => a.tests.map((t) => t.test.id)), ...(basisNow ? { basis: basisNow } : {}) };
+      const rec: ShowcaseRecord = { version: 1, attachedAt: at, environment, commit, attachments: done, tests: r.acs.flatMap((a) => a.tests.map((t) => t.test.id)), ...(basisNow ? { basis: basisNow } : {}), ...(jiraMode(c) === "status" ? { notifyPending: true } : {}) };
       await setIssueProperty(ctx, story, SHOWCASE_PROPERTY, rec);
-      const mentions = c.showcase.notify.map(mentionOf);
-      const comment = markdownToJiraWiki(showcaseComment(r, rec, c.showcase.refreshLabel));
-      const ready = `this story is ready for your review: ${attachedWhat(done.map((d) => d.filename))} attached.`;
-      if (jiraMode(c) === "status") {
-        // The summary is a section of the status comment; the mention is a short new comment of its own (an edit notifies nobody).
-        await postToStory(c, ctx, story, { name: "showcase", wiki: comment, legacyKind: "showcase", legacyMarker: "qa-sentinel:showcase", cwd });
-        await notifyStory(cwd, c, story, "showcase-ready", ready, `${at}`);
-      } else {
-        await postToStory(c, ctx, story, { name: "showcase", wiki: mentions.length ? `${mentions.join(" ")} ${ready}\n\n${comment}` : comment, legacyKind: "showcase", legacyMarker: "qa-sentinel:showcase", cwd });
+      // The evidence is attached; the record says the Jira comment and the mention are still to come until they have gone through.
+      if (await postShowcase(c, ctx, cwd, story, r, rec) && rec.notifyPending) {
+        const { notifyPending: _done, ...rest } = rec;
+        await setIssueProperty(ctx, story, SHOWCASE_PROPERTY, rest);
       }
       if (labels.includes(c.showcase.refreshLabel)) await removeLabel(ctx, story, c.showcase.refreshLabel);
       attached++;
@@ -151,6 +154,21 @@ export async function showcaseCommand(o: ShowcaseOptions): Promise<number> {
   fs.writeFileSync(out, report.join("\n"));
   log.ok(`showcase: ${attached} stor${attached === 1 ? "y" : "ies"} attached · summary in ${path.relative(cwd, out)}`);
   return 0;
+}
+
+/**
+ * The showcase summary and the "ready for your review" mention. Status mode: a `showcase` section of the status comment
+ * (no mentions in it) and a separate short comment with the mention. Legacy: one comment with the mention inside. Both:
+ * the section without mentions and the legacy comment with them (one mention only). True when everything went through.
+ */
+async function postShowcase(c: Config, ctx: NonNullable<ReturnType<typeof jiraContext>>, cwd: string, story: string, r: StoryReadiness, rec: ShowcaseRecord): Promise<boolean> {
+  const comment = markdownToJiraWiki(showcaseComment(r, rec, c.showcase.refreshLabel));
+  const ready = `this story is ready for your review: ${attachedWhat(rec.attachments.map((d) => d.filename))} attached.`;
+  const mentions = c.showcase.notify.map(mentionOf);
+  const w = await postToStory(c, ctx, story, { name: "showcase", wiki: comment, legacyWiki: mentions.length ? `${mentions.join(" ")} ${ready}\n\n${comment}` : comment, legacyKind: "showcase", legacyMarker: "qa-sentinel:showcase", cwd });
+  if (w.action === "skipped") return false;
+  if (jiraMode(c) !== "status") return true;
+  return (await notifyStoryOutcome(cwd, c, story, "showcase-ready", ready, rec.attachedAt)) !== "failed";
 }
 
 /** The story's basis now, from its record (undefined when there is none). */

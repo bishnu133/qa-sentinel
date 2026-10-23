@@ -135,6 +135,8 @@ export interface ShowcaseRecord {
   tests: string[];
   /** The story's basis (merged code and ACs, from the story record) when the evidence was attached. */
   basis?: string;
+  /** The Jira comment or the mention did not go through yet: the next run tries only that again. */
+  notifyPending?: boolean;
 }
 
 export const SHOWCASE_PROPERTY = "qa-sentinel.showcase";

@@ -1,7 +1,8 @@
 import fs from "node:fs";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { ConfigSchema, writeConfig } from "../src/config.js";
+import { ConfigSchema, loadConfig, writeConfig } from "../src/config.js";
+import { postToStory } from "../src/reporting/statusComment.js";
 import { storiesCommand } from "../src/commands/stories.js";
 import { renderStatus, withSection, parseStatus, STATUS_MARKER } from "../src/reporting/statusComment.js";
 import { emptyRecord, fileStore } from "../src/stories/record.js";
@@ -16,9 +17,11 @@ describe("stories: the status comment is kept current with no AI", () => {
   let qa: string;
   let j: Awaited<ReturnType<typeof mockJira>>;
   const json: any[][] = [];
+  let issue: Record<string, unknown>;
   beforeEach(async () => {
     for (const [k, v] of Object.entries(GIT_ENV)) vi.stubEnv(k, v);
-    j = await mockJira({ issues: { "SHOP-101": { summary: "Delivery slots", issuetype: { name: "Story" }, status: { name: "Ready for QA" }, description: `## Acceptance criteria\n- AC-1: ${AC}\n`, labels: [], components: [] } } });
+    issue = { summary: "Delivery slots", issuetype: { name: "Story" }, status: { name: "Ready for QA" }, description: `## Acceptance criteria\n- AC-1: ${AC}\n`, labels: [], components: [] };
+    j = await mockJira({ issues: { "SHOP-101": issue } });
     qa = tmp("qas-storiesjira-");
     g(qa, "init", "-q", "-b", "main");
   });
@@ -102,7 +105,7 @@ describe("stories: the status comment is kept current with no AI", () => {
   });
 
   it("tells the people once when an AC looks not built but the story is in a ready status", async () => {
-    configure({ showcase: { notify: ["jsmith"] } }, { notify: { "ac-not-built-but-ready": { on: true } } });
+    configure({ showcase: { notify: ["jsmith"] } }, { notify: { "ac-not-built-but-ready": { on: true, to: ["jsmith"] } } });
     await seedRecord({ acEvidence: { "AC-1": { status: "not-found", at: "2026-10-22T10:00:00Z" } } });
     await run();
     await run();
@@ -116,5 +119,42 @@ describe("stories: the status comment is kept current with no AI", () => {
     await seedRecord();
     await run();
     expect(j.comments["SHOP-101"] ?? []).toHaveLength(0);
+  });
+
+  it("an AC changed in Jira marks the sections written before it, with no GitLab at all; the new basis was worked out when each section was written", async () => {
+    configure();
+    await run(); // the record learns the story's ACs and its basis
+    await postToStory(loadConfig(qa), j.ctx, "SHOP-101", { name: "post-deploy", wiki: "h3. Post-deploy\nok", legacyKind: "post-deploy", cwd: qa });
+    const mine = j.comments["SHOP-101"][0];
+    expect(mine.body).not.toContain("Out of date");
+    issue.description = `## Acceptance criteria\n- AC-1: A slot takes at most 4 orders.\n`;
+    await run();
+    expect(mine.body).toContain("Out of date");
+    expect(j.foreignWrites()).toEqual([]);
+  });
+
+  it("flags a /qa ready for an AC the story does not have and does not keep it as an override", async () => {
+    configure();
+    await seedRecord();
+    const mine = j.add("SHOP-101", renderStatus("SHOP-101", withSection([], "feature", "h3. Feature\nx", T)), BOT);
+    j.add("SHOP-101", "/qa ready AC-99 sure", DANA);
+    await run();
+    expect((await fileStore(qa).load("SHOP-101"))!.overrides).toEqual([]);
+    expect(parseStatus(mine.body).find((x) => x.name === "pending")!.wiki).toContain("AC-99 was marked ready, but this story has no such AC (ignored)");
+  });
+
+  it("with /myself failing, stories reads no overrides, edits nothing and still finishes", async () => {
+    await j.close();
+    j = await mockJira({ issues: { "SHOP-101": issue }, me: null });
+    configure();
+    await seedRecord();
+    j.add("SHOP-101", renderStatus("SHOP-101", withSection([], "post-deploy", "h3. P\nok", T, "00000000")), BOT);
+    j.add("SHOP-101", "/qa ready AC-1", DANA);
+    const body = j.comments["SHOP-101"][0].body;
+    const { code } = await run();
+    expect(code).toBe(0);
+    expect(j.writes()).toEqual([]);
+    expect(j.comments["SHOP-101"][0].body).toBe(body);
+    expect((await fileStore(qa).load("SHOP-101"))!.overrides).toEqual([]);
   });
 });

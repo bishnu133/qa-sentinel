@@ -3,8 +3,9 @@ import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ConfigSchema, jiraMode, writeConfig } from "../src/config.js";
 import { hotfixCommand } from "../src/commands/hotfix.js";
-import { STATUS_MARKER, cleanupLegacy, parseStatus, postToStory } from "../src/reporting/statusComment.js";
-import { findIssueComment, listOwnComments, upsertIssueComment } from "../src/scm/jira.js";
+import { STATUS_MARKER, parseStatus, postToStory, renderStatus, withSection } from "../src/reporting/statusComment.js";
+import { fileStore } from "../src/stories/record.js";
+import { findIssueComment, upsertIssueComment } from "../src/scm/jira.js";
 import { BOT, DANA, mockJira } from "./helpers/mockJira.js";
 import { cleanTmp, commit, g, tmp } from "./helpers/mocks.js";
 
@@ -66,8 +67,8 @@ describe("reporting.jira.mode", () => {
   });
 });
 
-describe("older comments on the first status write", () => {
-  const legacyBodies = ["h3. Gap orders\nold\n\n{color:#97a0af}qa-sentinel:gap-report:orders{color}", "h3. Feature\nold\n\n{color:#97a0af}qa-sentinel:feature{color}", "h3. Post-deploy\nold\n\n{color:#97a0af}qa-sentinel:post-deploy{color}"];
+describe("older comments move into the status comment", () => {
+  const legacyBodies = ["h3. Gap orders\nold gap text\n\n{color:#97a0af}qa-sentinel:gap-report:orders{color}", "h3. Feature\nold feature text\n\n{color:#97a0af}qa-sentinel:feature{color}", "h3. Post-deploy\nold post-deploy text\n\n{color:#97a0af}qa-sentinel:post-deploy{color}"];
   const seed = async () => {
     const j = await mockJira();
     const own = legacyBodies.map((b) => j.add("SHOP-1", b, BOT));
@@ -76,13 +77,20 @@ describe("older comments on the first status write", () => {
     const human = j.add("SHOP-1", "looks fine to me", DANA);
     return { j, own, foreign, human };
   };
+  const statusOf = (j: Awaited<ReturnType<typeof mockJira>>, id: string) => parseStatus(j.comments["SHOP-1"].find((x) => x.id === id)!.body);
 
-  it("pointer (default): our three become one-line pointers, the foreign one is untouched, a second run changes nothing", async () => {
+  it("pointer (default): the text is carried into the status comment first, then our three become one-line pointers; the foreign one is untouched; a second run changes nothing", async () => {
     const { j, own, foreign, human } = await seed();
     try {
       const c = cfg();
       const r = await postToStory(c, j.ctx, "SHOP-1", feature);
       expect(r.action).toBe("created");
+      // Nothing is lost: the fresh feature section is there, and the gap report and post-deploy text of the old comments became sections.
+      const sections = statusOf(j, r.id);
+      expect(sections.map((x) => x.name).sort()).toEqual(["feature", "gap-report:orders", "post-deploy"]);
+      expect(sections.find((x) => x.name === "gap-report:orders")!.wiki).toBe("h3. Gap orders\nold gap text");
+      expect(sections.find((x) => x.name === "post-deploy")!.wiki).toContain("old post-deploy text");
+      expect(sections.find((x) => x.name === "feature")!.wiki).toBe("h3. Feature\nok"); // the fresher run wins over the old comment
       const pointers = own.map((o) => j.comments["SHOP-1"].find((x) => x.id === o.id)!.body);
       for (const p of pointers) {
         expect(p.split("\n")).toHaveLength(1);
@@ -92,20 +100,20 @@ describe("older comments on the first status write", () => {
       expect(j.comments["SHOP-1"].find((x) => x.id === foreign.id)!.body).toContain("I copied this");
       expect(j.comments["SHOP-1"].find((x) => x.id === human.id)!.body).toBe("looks fine to me");
       expect(j.foreignWrites()).toEqual([]);
-      const writes = j.touched.length;
-      await cleanupLegacy(c, j.ctx, "SHOP-1", r.url);
-      await postToStory(c, j.ctx, "SHOP-1", feature); // the status comment exists now: updated, no cleanup
-      expect(j.touched.filter((t) => t.method === "PUT").length).toBe(writes + 1); // only the status comment itself
+      const writes = j.writes().length;
+      await postToStory(c, j.ctx, "SHOP-1", feature); // the status comment exists: one update, nothing else
+      expect(j.writes().length).toBe(writes + 1);
       expect(j.foreignWrites()).toEqual([]);
     } finally {
       await j.close();
     }
   });
 
-  it("delete: our three are deleted, the foreign comment and the human one stay", async () => {
+  it("delete: the text is carried first, then our three are deleted; the foreign comment and the human one stay", async () => {
     const { j, foreign, human } = await seed();
     try {
-      await postToStory(cfg({ cleanup: "delete" }), j.ctx, "SHOP-1", feature);
+      const r = await postToStory(cfg({ cleanup: "delete" }), j.ctx, "SHOP-1", feature);
+      expect(statusOf(j, r.id).map((x) => x.name).sort()).toEqual(["feature", "gap-report:orders", "post-deploy"]);
       const ids = j.comments["SHOP-1"].map((x) => x.id);
       expect(ids).toContain(foreign.id);
       expect(ids).toContain(human.id);
@@ -127,39 +135,117 @@ describe("older comments on the first status write", () => {
     }
   });
 
-  it("mode both and legacy never clean up", async () => {
+  it("an older comment of a kind the status comment has no section for is never pointed before its text is in the status comment", async () => {
+    const { j, own } = await seed();
+    try {
+      // The status comment write is made to fail after the first one: the old comments must stay as they were.
+      const realFetch = globalThis.fetch;
+      let puts = 0;
+      vi.stubGlobal("fetch", (url: string, init?: RequestInit) => (init?.method === "PUT" && ++puts === 1 ? Promise.resolve(new Response("no", { status: 403 })) : realFetch(url, init)));
+      await postToStory(cfg(), j.ctx, "SHOP-1", feature);
+      vi.unstubAllGlobals();
+      for (const o of own) expect(j.comments["SHOP-1"].find((x) => x.id === o.id)!.body).not.toContain("qa-sentinel:replaced");
+    } finally {
+      await j.close();
+    }
+  });
+
+  it("one old comment that cannot be changed: its text is in the status comment already, the others are done, and the next write retries", async () => {
+    const { j, own } = await seed();
+    const cwd = tmp("qas-cleanup-");
+    try {
+      const realFetch = globalThis.fetch;
+      let fail = true;
+      vi.stubGlobal("fetch", (url: string, init?: RequestInit) => (fail && init?.method === "PUT" && url.endsWith(`/comment/${own[2].id}`) ? Promise.resolve(new Response("no", { status: 403 })) : realFetch(url, init)));
+      const r = await postToStory(cfg(), j.ctx, "SHOP-1", { ...feature, cwd });
+      expect(statusOf(j, r.id).map((x) => x.name)).toContain("post-deploy"); // content kept in the status comment
+      expect(j.comments["SHOP-1"].find((x) => x.id === own[2].id)!.body).toContain("old post-deploy text"); // that one is still as it was
+      expect(j.comments["SHOP-1"].find((x) => x.id === own[0].id)!.body).toContain("qa-sentinel:replaced");
+      expect((await fileStore(cwd).load("SHOP-1"))?.legacyCleanedAt).toBeUndefined(); // not marked as done
+      fail = false;
+      await postToStory(cfg(), j.ctx, "SHOP-1", { ...feature, cwd });
+      expect(j.comments["SHOP-1"].find((x) => x.id === own[2].id)!.body).toContain("qa-sentinel:replaced");
+      expect((await fileStore(cwd).load("SHOP-1"))?.legacyCleanedAt).toBeDefined();
+      vi.unstubAllGlobals();
+    } finally {
+      vi.unstubAllGlobals();
+      await j.close();
+    }
+  });
+
+  it("a comment with a different visibility than the status comment is left alone (moving it would show it to more people)", async () => {
+    const j = await mockJira();
+    try {
+      const restricted = j.add("SHOP-1", legacyBodies[0], BOT, { visibility: { type: "role", value: "Administrators" } });
+      const r = await postToStory(cfg(), j.ctx, "SHOP-1", feature);
+      expect(j.comments["SHOP-1"].find((x) => x.id === restricted.id)!.body).toBe(legacyBodies[0]);
+      expect(statusOf(j, r.id).map((x) => x.name)).toEqual(["feature"]);
+    } finally {
+      await j.close();
+    }
+  });
+
+  it("a pointer keeps the visibility its comment had", async () => {
+    const j = await mockJira();
+    try {
+      const vis = { type: "role", value: "Developers" };
+      const old = j.add("SHOP-1", legacyBodies[0], BOT, { visibility: vis });
+      await postToStory(cfg({ visibility: vis }), j.ctx, "SHOP-1", feature);
+      expect(j.comments["SHOP-1"].find((x) => x.id === old.id)).toMatchObject({ visibility: vis });
+      expect(j.comments["SHOP-1"].find((x) => x.id === old.id)!.body).toContain("qa-sentinel:replaced");
+    } finally {
+      await j.close();
+    }
+  });
+
+  it("upgrade both -> status: the legacy comments kept up to date in `both` become pointers on the next status write", async () => {
+    const j = await mockJira();
+    const cwd = tmp("qas-upgrade-");
+    try {
+      await postToStory(cfg({ mode: "both" }), j.ctx, "SHOP-1", { ...feature, cwd });
+      expect(j.comments["SHOP-1"]).toHaveLength(2);
+      expect(j.comments["SHOP-1"].some((x) => x.body.includes("qa-sentinel:replaced"))).toBe(false);
+      // `both` never marks the cleanup as done, so switching to `status` cleans up on the next write (an update, not a creation).
+      const r = await postToStory(cfg({ mode: "status" }), j.ctx, "SHOP-1", { ...feature, wiki: "h3. Feature\nv2", cwd });
+      expect(r.action).toBe("updated");
+      const legacy = j.comments["SHOP-1"].find((x) => !x.body.includes(STATUS_MARKER))!;
+      expect(legacy.body).toContain(`Replaced by the QA status comment: ${r.url}`);
+      expect(statusOf(j, r.id).find((x) => x.name === "feature")!.wiki).toContain("v2");
+      expect((await fileStore(cwd).load("SHOP-1"))?.legacyCleanedAt).toBeDefined();
+    } finally {
+      await j.close();
+    }
+  });
+
+  it("an existing status comment from the current main plus old own comments: the first write of this version cleans up, once (the record remembers)", async () => {
+    const j = await mockJira();
+    const cwd = tmp("qas-upgrade-");
+    try {
+      const statusCm = j.add("SHOP-1", renderStatus("SHOP-1", withSection([], "post-deploy", "h3. P\nkept", new Date("2026-10-21T10:00:00Z"))), BOT);
+      const old = j.add("SHOP-1", legacyBodies[0], BOT);
+      const c = cfg();
+      const r = await postToStory(c, j.ctx, "SHOP-1", { ...feature, cwd });
+      expect(r).toMatchObject({ action: "updated", id: statusCm.id });
+      expect(j.comments["SHOP-1"].find((x) => x.id === old.id)!.body).toContain("qa-sentinel:replaced");
+      expect(statusOf(j, r.id).map((x) => x.name).sort()).toEqual(["feature", "gap-report:orders", "post-deploy"]);
+      // Marked done: a new legacy-looking own comment is not looked for on every write (one fewer read than without the record).
+      const gets = () => j.calls.filter((x) => x.startsWith("GET") && x.endsWith("/comment")).length;
+      const before = gets();
+      await postToStory(c, j.ctx, "SHOP-1", { ...feature, cwd });
+      const withRecord = gets() - before;
+      const before2 = gets();
+      await postToStory(c, j.ctx, "SHOP-1", feature); // no record: it looks again
+      expect(gets() - before2).toBeGreaterThan(withRecord);
+    } finally {
+      await j.close();
+    }
+  });
+
+  it("mode legacy and both never clean up", async () => {
     const { j } = await seed();
     try {
       await postToStory(cfg({ mode: "both" }), j.ctx, "SHOP-1", feature);
       expect(j.comments["SHOP-1"].filter((x) => x.body.includes("qa-sentinel:replaced"))).toHaveLength(0);
-    } finally {
-      await j.close();
-    }
-  });
-
-  it("when Jira will not say who the token belongs to, nothing older is touched", async () => {
-    const j = await mockJira({ me: null });
-    try {
-      j.add("SHOP-1", legacyBodies[1], BOT);
-      await postToStory(cfg(), j.ctx, "SHOP-1", feature);
-      expect(j.comments["SHOP-1"][0].body).toBe(legacyBodies[1]);
-      await expect(listOwnComments(j.ctx, "SHOP-1")).rejects.toThrow(/which user/);
-    } finally {
-      await j.close();
-    }
-  });
-
-  it("a delete that Jira refuses falls back to the pointer", async () => {
-    const { j, own } = await seed();
-    try {
-      const orig = j.comments["SHOP-1"];
-      // Make DELETE fail: wrap the server's handler by pointing at a context whose DELETE returns 403.
-      const ctx = { ...j.ctx };
-      const realFetch = globalThis.fetch;
-      vi.stubGlobal("fetch", (url: string, init?: RequestInit) => (init?.method === "DELETE" ? Promise.resolve(new Response("no", { status: 403 })) : realFetch(url, init)));
-      await postToStory(cfg({ cleanup: "delete" }), ctx, "SHOP-1", feature);
-      vi.unstubAllGlobals();
-      for (const o of own) expect(orig.find((x) => x.id === o.id)!.body).toContain("qa-sentinel:replaced");
     } finally {
       await j.close();
     }
@@ -230,9 +316,10 @@ describe("hotfix comment in legacy mode", () => {
       expect(list).toHaveLength(1);
       expect(list[0].body).toContain("qa-sentinel:hotfix-orders");
       expect(list[0].body).not.toContain("gap-report:hotfix");
-      // The cleanup knows this marker: in status mode a comment like it becomes a pointer.
+      // The cleanup knows this marker: in status mode a comment like it becomes a pointer and its text a hotfix section.
       const r = await postToStory(cfg(), j.ctx, "SHOP-9", feature);
       expect(list[0].body).toContain(`Replaced by the QA status comment: ${r.url}`);
+      expect(list.find((x) => x.id === r.id)!.body).toContain("qa-sentinel:section=hotfix:orders");
     } finally {
       await j.close();
     }

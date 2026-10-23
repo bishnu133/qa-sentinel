@@ -116,13 +116,15 @@ describe("trimming", () => {
     expect(fit.parts.filter((x) => x.state === "opened")).toHaveLength(3);
     expect(fit.parts.length).toBeLessThan(100);
   });
-  it("keeps the newest 5 results per environment and the newest 50 notifications", () => {
+  it("keeps the newest 5 results per environment and the newest 200 recent notifications (older than 180 days may be sent again)", () => {
     const results = Array.from({ length: 8 }, (_, i) => ({ environment: i % 2 ? "sit" : "uat", at: `2026-10-0${i + 1}T00:00:00Z`, basis: "b", status: "passed", tests: 1 }));
-    const notified = Array.from({ length: 60 }, (_, i) => ({ event: "e", key: `k${i}`, at: "2026-10-01T00:00:00Z" }));
+    const recent = T0.toISOString();
+    const notified = [...Array.from({ length: 5 }, (_, i) => ({ event: "e", key: `old${i}`, at: "2025-01-01T00:00:00Z" })), ...Array.from({ length: 210 }, (_, i) => ({ event: "e", key: `k${i}`, at: recent }))];
     const t = trimRecord({ ...emptyRecord("SHOP-12", T0), results, notified }, T0);
     expect(t.results.filter((r) => r.environment === "sit")).toHaveLength(4);
-    expect(t.notified).toHaveLength(50);
+    expect(t.notified).toHaveLength(200);
     expect(t.notified[0].key).toBe("k10");
+    expect(t.notified.some((n) => n.key.startsWith("old"))).toBe(false);
     const many = trimRecord({ ...emptyRecord("SHOP-12", T0), results: Array.from({ length: 9 }, (_, i) => ({ environment: "sit", at: `2026-10-0${i + 1}T00:00:00Z`, basis: "b", status: "passed", tests: 1 })) }, T0);
     expect(many.results).toHaveLength(5);
     expect(many.results[0].at).toBe("2026-10-09T00:00:00Z");

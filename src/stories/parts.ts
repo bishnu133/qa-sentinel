@@ -35,7 +35,8 @@ export const mergedShaOf = (p: RecordPart): string | undefined => p.mergeSha ?? 
  * hashes. When it changes, something reported about the story (a status, a result) was written against older code or ACs.
  */
 export function storyBasis(rec: Pick<StoryRecord, "parts">, acHashes: string[]): string {
-  const merged = rec.parts.filter((p) => p.state === "merged").map((p) => `${p.service}:${mergedShaOf(p) ?? ""}`).sort();
+  // A merge request is identified by its number, so filling in its merge commit later does not change the basis; work with no MR by its commit.
+  const merged = rec.parts.filter((p) => p.state === "merged").map((p) => `${p.service}:${p.iid ? `!${p.iid}` : mergedShaOf(p) ?? ""}`).sort();
   return digest([...merged, "--", ...[...acHashes].sort()]);
 }
 
@@ -77,4 +78,19 @@ export function inputToServicePart(p: RecordPart): ServicePart {
     ...(p.state === "closed" ? { dropped: true } : {}),
     ...(p.state === "reverted" ? { reverted: p.revertedBy ?? "reverted" } : {}),
   };
+}
+
+/** A digest of the AC hashes (undefined when the ACs are not known). */
+export const acDigest = (hashes: string[]): string | undefined => (hashes.length ? digest([...hashes].sort()) : undefined);
+
+/**
+ * The story's basis AS OF NOW, for a section about to be written: the record's parts plus the parts the caller has
+ * just seen (a merge the sweep has not recorded yet is included), and the AC hashes the record knows. Nothing is saved.
+ */
+export function basisNow(rec: StoryRecord | undefined, parts: ServicePart[] = [], now = new Date()): { basis?: string; acs?: string; parts: RecordPart[] } {
+  let r: StoryRecord = rec ?? ({ parts: [], acs: [] } as unknown as StoryRecord);
+  for (const p of parts) r = upsertPart(r, partToInput(p), now);
+  const hashes = r.acs.map((a) => a.hash);
+  const basis = r.parts.length || hashes.length ? storyBasis(r, hashes) : rec?.basis;
+  return { ...(basis ? { basis } : {}), ...(acDigest(hashes) ? { acs: acDigest(hashes) } : {}), parts: r.parts };
 }

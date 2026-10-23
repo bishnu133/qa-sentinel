@@ -78,7 +78,7 @@ export async function featureCommand(o: FeatureOptions): Promise<number> {
   if (o.post) {
     if (!jira) log.warn("--post: Jira is not configured");
     else {
-      const r = await postToStory(c, jira, story, { name: "feature", wiki: markdownToJiraWiki(md), legacyKind: "feature", legacyMarker: "qa-sentinel:feature", cwd });
+      const r = await postToStory(c, jira, story, { name: "feature", wiki: markdownToJiraWiki(md), legacyKind: "feature", legacyMarker: "qa-sentinel:feature", cwd, parts: manifest.parts });
       log.ok(`Jira ${story}: feature status ${r.action}`);
     }
   }

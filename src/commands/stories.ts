@@ -14,7 +14,7 @@ import { jiraMode } from "../config.js";
 import { notify } from "../reporting/notify.js";
 import { pendingWiki } from "../reporting/pending.js";
 import { refreshStaleness } from "../reporting/statusComment.js";
-import { storyBasis } from "../stories/parts.js";
+import { acDigest, storyBasis } from "../stories/parts.js";
 import { cloneServices } from "../stories/cloneServices.js";
 import { sweepMrs, sweepSince, writeSweepState } from "../stories/sweep.js";
 import { generateCommand, type GenerateOptions } from "./generate.js";
@@ -165,7 +165,7 @@ async function remember(store: RecordStore, key: string, input: StoryInput, a: A
     const jira = input.source === "jira" ? { status: input.status, issueType: input.issueType, url: input.url, labels: input.labels, ...(rec.jira?.updated ? { updated: rec.jira.updated } : {}) } : rec.jira;
     const lastCheck = { at: now.toISOString(), state: a.state, next: a.next, reasons: a.reasons };
     const nextAcs = acs.length ? acs : rec.acs;
-    const basis = rec.parts.length ? storyBasis(rec, nextAcs.map((x) => x.hash)) : rec.basis;
+    const basis = rec.parts.length || nextAcs.length ? storyBasis(rec, nextAcs.map((x) => x.hash)) : rec.basis;
     const unchanged = JSON.stringify([rec.jira, rec.acs, rec.lastCheck && { ...rec.lastCheck, at: "" }, rec.basis]) === JSON.stringify([jira, acs, { ...lastCheck, at: "" }, basis]);
     if (unchanged) return { before: existing, after: rec };
     // The ACs are only replaced when the story was readable; an unreadable story keeps the last good copy.
@@ -182,12 +182,12 @@ async function remember(store: RecordStore, key: string, input: StoryInput, a: A
  */
 async function reportOnJira(c: ReturnType<typeof loadConfig>, jira: JiraContext, store: RecordStore, a: Assessment, seen: { before?: StoryRecord; after: StoryRecord }): Promise<void> {
   const { before, after } = seen;
-  const facts = { jiraReady: a.jiraReady, jiraStatus: a.status, state: a.state };
+  const facts = { jiraReady: a.jiraReady, jiraStatus: a.status, state: a.state, waits: a.writeReadiness, unknownOverrides: a.unknownOverrides };
   if (jiraMode(c) !== "legacy") {
     const pending = pendingWiki(after, facts);
     if (before?.basis !== after.basis || pending !== (before ? pendingWiki(before, facts) : null)) {
       try {
-        const r = await refreshStaleness(jira, a.key, { basis: after.basis, rec: after, pending, visibility: c.reporting.jira.visibility });
+        const r = await refreshStaleness(jira, a.key, { basis: after.basis, acs: acDigest(after.acs.map((x) => x.hash)), rec: after, pending, visibility: c.reporting.jira.visibility });
         if (r === "updated") log.info(`${a.key}: status comment redrawn (out-of-date marks / waiting list)`);
       } catch (e) {
         log.warn(`${a.key}: status comment not refreshed: ${(e as Error).message.split("\n")[0]}`);
@@ -287,7 +287,7 @@ async function storiesRun(o: StoriesOptions): Promise<number> {
   const overridesOf = new Map<string, StoryRecord["overrides"]>();
   for (const input of inputs) {
     const facts = await gatherFacts({ cwd, c, store, policy, budgets: c.automation.budgets, records, gitlab, now, env, jira, noRecord: o.noRecord }, input, shared);
-    const a = { ...assessStory(facts), ...(facts.jiraReady !== undefined ? { jiraReady: facts.jiraReady } : {}), ...(facts.services ? { services: facts.services } : {}), ...(facts.unmappedComponents ? { unmappedComponents: facts.unmappedComponents } : {}), ...(facts.resolvedFrom ? { resolvedFrom: facts.resolvedFrom } : {}), ...(facts.writeReadiness ? { writeReadiness: facts.writeReadiness } : {}) };
+    const a = { ...assessStory(facts), ...(facts.jiraReady !== undefined ? { jiraReady: facts.jiraReady } : {}), ...(facts.services ? { services: facts.services } : {}), ...(facts.unmappedComponents ? { unmappedComponents: facts.unmappedComponents } : {}), ...(facts.resolvedFrom ? { resolvedFrom: facts.resolvedFrom } : {}), ...(facts.writeReadiness ? { writeReadiness: facts.writeReadiness } : {}), ...(facts.unknownOverrides?.length ? { unknownOverrides: facts.unknownOverrides } : {}) };
     list.push(a);
     if (facts.crossReady?.length) crossReady.set(a.key, facts.crossReady);
     const acs = facts.acs.map((x) => ({ id: x.id, hash: acHash(x.text) }));

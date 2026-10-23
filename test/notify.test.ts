@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { ConfigSchema } from "../src/config.js";
-import { mentionOf, notify, notifyStory, recipients } from "../src/reporting/notify.js";
+import { mentionOf, notify, notifyOutcome, notifyStory, recipients } from "../src/reporting/notify.js";
 import { emptyRecord, fileStore } from "../src/stories/record.js";
 import { startJob } from "../src/stories/start.js";
 import { mockJira } from "./helpers/mockJira.js";
@@ -46,9 +46,13 @@ describe("notifications", () => {
       expect(off.reporting.jira.notify["showcase-ready"].on).toBe(true);
       const base = { ctx: j.ctx, store, story: "SHOP-1", text: "x", key: "k" };
       expect(await notify({ ...base, c: off, event: "merge-conflict" })).toBe(false);
+      // Only showcase-ready falls back to showcase.notify; the other events with to: [] tell nobody.
       const on = cfg({ notify: { "merge-conflict": { on: true } } }, { notify: ["jsmith"] });
-      expect(recipients(on, "merge-conflict")).toEqual(["jsmith"]);
-      expect(await notify({ ...base, c: on, event: "merge-conflict" })).toBe(true);
+      expect(recipients(on, "merge-conflict")).toEqual([]);
+      expect(recipients(on, "showcase-ready")).toEqual(["jsmith"]);
+      expect(await notify({ ...base, c: on, event: "merge-conflict" })).toBe(false);
+      expect(j.comments["SHOP-1"] ?? []).toHaveLength(0);
+      expect(await notify({ ...base, c: on, event: "showcase-ready" })).toBe(true);
       expect(j.comments["SHOP-1"][0].body).toContain("[~jsmith]");
       const nobody = cfg({ notify: { "stopped-by-budget": { on: true } } });
       expect(await notify({ ...base, c: nobody, event: "stopped-by-budget" })).toBe(false);
@@ -65,7 +69,8 @@ describe("notifications", () => {
     const ctx = { ...j.ctx };
     await j.close();
     expect(await notify({ c, ctx, store, story: "SHOP-1", event: "stopped-by-budget", text: "x", key: "k" })).toBe(false);
-    expect(await store.load("SHOP-1")).toBeUndefined();
+    // The mark was taken back, so the next run tries again.
+    expect((await store.load("SHOP-1"))?.notified ?? []).toEqual([]);
   });
 
   it("notifyStory does nothing without Jira credentials", async () => {
@@ -88,6 +93,38 @@ describe("notifications", () => {
       }
       expect(j.comments["SHOP-1"]).toHaveLength(1);
       expect(j.comments["SHOP-1"][0].body).toContain("[~jsmith] qa-sentinel stopped before starting AI work on this story: AI budget:");
+    } finally {
+      await j.close();
+    }
+  });
+
+  it("when the record cannot be saved nothing is posted (it would be repeated on every run); when the post fails the mark is taken back", async () => {
+    const j = await mockJira();
+    const real = fileStore(tmp("qas-notify-"));
+    try {
+      const c = cfg({ notify: { "merge-conflict": { on: true, to: ["jsmith"] } } });
+      const o = { c, ctx: j.ctx, story: "SHOP-1", event: "merge-conflict" as const, text: "x", key: "k" };
+      const broken = { ...real, save: async () => { throw new Error("disk full"); } };
+      expect(await notifyOutcome({ ...o, store: broken })).toBe("failed");
+      expect(await notifyOutcome({ ...o, store: broken })).toBe("failed");
+      expect(j.comments["SHOP-1"] ?? []).toHaveLength(0);
+      expect(await notifyOutcome({ ...o, store: real })).toBe("sent");
+      expect(await notifyOutcome({ ...o, store: real })).toBe("duplicate");
+      expect(j.comments["SHOP-1"]).toHaveLength(1);
+    } finally {
+      await j.close();
+    }
+  });
+
+  it("a later conflict on a new branch tip has a new key and tells again", async () => {
+    const j = await mockJira();
+    const store = fileStore(tmp("qas-notify-"));
+    try {
+      const c = cfg({ notify: { "merge-conflict": { on: true, to: ["jsmith"] } } });
+      const o = { c, ctx: j.ctx, store, story: "SHOP-1", event: "merge-conflict" as const, text: "x" };
+      expect(await notify({ ...o, key: "qa-sentinel/story-SHOP-1@aaaa+bbbb" })).toBe(true);
+      expect(await notify({ ...o, key: "qa-sentinel/story-SHOP-1@aaaa+bbbb" })).toBe(false);
+      expect(await notify({ ...o, key: "qa-sentinel/story-SHOP-1@cccc+bbbb" })).toBe(true);
     } finally {
       await j.close();
     }

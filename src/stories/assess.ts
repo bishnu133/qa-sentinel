@@ -46,7 +46,9 @@ export interface StoryFacts {
   /** How the story was reached when it was asked for through a bug, task or sub-task ("SHOP-210 (Bug) → SHOP-12 via parent"). */
   resolvedFrom?: string;
   /** Write-time readiness per AC: which ACs' tests can be written now. */
-  writeReadiness?: { ac: string; kind: "single" | "cross"; state: string; reason: string }[];
+  writeReadiness?: { ac: string; kind: "single" | "cross"; state: string; reason: string; waitingFor?: string }[];
+  /** `/qa ready` comments naming an AC the story does not have (ignored). */
+  unknownOverrides?: string[];
   /** Cross-service ACs that are ready to get their end-to-end tests and have none written for the current commits. */
   crossReady?: string[];
   /** ACs whose tests an earlier run already wrote on the story's test branch (for this AC text), even if no tagged test shows it (the plan found nothing to change). */
@@ -93,6 +95,7 @@ export interface Assessment {
   unmappedComponents?: string[];
   resolvedFrom?: string;
   writeReadiness?: StoryFacts["writeReadiness"];
+  unknownOverrides?: string[];
 }
 
 const isTriage = (t: IndexedTest) => t.status === "fixme" || t.status === "skip";

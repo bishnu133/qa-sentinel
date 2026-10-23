@@ -1,6 +1,8 @@
 import fs from "node:fs";
 import path from "node:path";
-import { loadConfig } from "../config.js";
+import { jiraMode, loadConfig } from "../config.js";
+import { pendingWiki } from "../reporting/pending.js";
+import { refreshStaleness } from "../reporting/statusComment.js";
 import { changeSet, commitMessages, ensureAtCommit, git, hasChanges, isGitRepo, resolveSha, showFile, workingChanges } from "../git.js";
 import { checkExpectationLock, expectedDirOf } from "../expected/lock.js";
 import { acTrailer } from "../expected/commits.js";
@@ -47,7 +49,7 @@ import { applyDeploymentGate, deploymentStates, notDeployed } from "../deploymen
 import { bugsFromDiscrepancies, fileBugs } from "../bugs/bugs.js";
 import { jiraContext } from "../scm/jira.js";
 import { runCommandsFor } from "../layers.js";
-import type { ServiceConfig } from "../config.js";
+import type { Config, ServiceConfig } from "../config.js";
 import { type ChangeSet, atLeast } from "../git.js";
 import { type StoryPart, combinedChange, storyParts } from "../story.js";
 import { layers } from "../layers.js";
@@ -342,7 +344,7 @@ async function generateRun(o: GenerateOptions, ctl: JobControl): Promise<number>
     if (!prep.ok) {
       log.fail(prep.message);
       ctl.outcome = `blocked-${prep.reason}`;
-      if (prep.reason === "conflict" && storyKey) await notifyStory(cwd, c, storyKey, "merge-conflict", `the test branch ${prep.branch} cannot take ${c.ci.targetBranch}: ${prep.message}`, prep.branch, penv, ctl.store);
+      if (prep.reason === "conflict" && storyKey) await reportConflict(cwd, c, storyKey, prep.branch, prep.message, penv, ctl.store);
       if (ctx && testProject !== undefined) {
         try {
           const mr = await latestMrForBranch(ctx, testProject, prep.branch, c.ci.targetBranch);
@@ -838,6 +840,7 @@ async function recordStoryRun(store: RecordStore, story: string, i: { scope: Sto
         else if (r.kind === "cross" && (map[r.ac]?.state !== "written" || map[r.ac].acHash !== hash)) map[r.ac] = { state: "held", heads, acHash: hash, at, reason: i.scope.heldAcs.get(r.ac) ?? r.reason };
       }
       for (const st of i.plan.requirementStatus) if (i.scope.acScope.includes(st.id)) rec.acEvidence[st.id] = { status: st.status, at, runId: i.runId };
+      delete rec.conflict; // the branch took the main branch: any earlier conflict is over
       rec.updatedAt = at;
       await store.save(rec);
     });
@@ -861,6 +864,36 @@ async function resetWrittenRecords(store: RecordStore, story: string): Promise<v
   } catch (e) {
     log.warn(`could not reset the story record for ${story}: ${(e as Error).message}`);
   }
+}
+
+/**
+ * The story's test branch cannot take the main branch: remembered in the story record (the status comment's pending
+ * section shows it until a run goes through) and the people who asked to know are told, again when the branch or main has
+ * moved on since (the notification key holds both tips). Best effort; the run itself is already blocked.
+ */
+async function reportConflict(cwd: string, c: Config, story: string, branch: string, message: string, env: NodeJS.ProcessEnv, store: RecordStore | undefined): Promise<void> {
+  const tip = (ref: string) => {
+    try {
+      return git(cwd, ["rev-parse", "-q", "--verify", ref]).slice(0, 10);
+    } catch {
+      return "?";
+    }
+  };
+  const key = `${branch}@${tip(`origin/${branch}`)}+${tip(`origin/${c.ci.targetBranch}`)}`;
+  const st = store ?? openStore(cwd, c, env);
+  try {
+    await st.locked(story, async () => {
+      const rec = (await st.load(story)) ?? emptyRecord(story);
+      const at = new Date().toISOString();
+      await st.save({ ...rec, conflict: { branch, message: message.slice(0, 300), at, key }, updatedAt: at });
+    });
+    const ctx = jiraContext(c.requirements.jira.baseUrl, env);
+    const rec = await st.load(story);
+    if (ctx && rec && jiraMode(c) !== "legacy") await refreshStaleness(ctx, story, { pending: pendingWiki(rec, {}), visibility: c.reporting.jira.visibility, basis: rec.basis, rec });
+  } catch (e) {
+    log.warn(`could not show the merge conflict on ${story}: ${(e as Error).message.split("\n")[0]}`);
+  }
+  await notifyStory(cwd, c, story, "merge-conflict", `the test branch ${branch} cannot take ${c.ci.targetBranch}: ${message}`, key, env, st);
 }
 
 async function recordAgentMr(store: RecordStore, story: string, mr: { branch: string; iid: number; url: string; headSha: string }): Promise<void> {

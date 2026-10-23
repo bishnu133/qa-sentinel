@@ -166,7 +166,8 @@ export async function gatherFacts(g: GatherContext, input: StoryInput, shared: {
 
   // What would stop an AI step from starting: its own job, or the budget.
   const hashes = acs.map((a) => acHash(a.text));
-  const overrides = await currentOverrides(g, key, rec);
+  const ovr = await currentOverrides(g, key, rec, new Set(acs.map((a) => a.id.toUpperCase())));
+  const overrides = ovr.known;
   const limits: StoryFacts["limits"] = {};
   const needed = expected.error ? [] : acsNeedingProposal(expected.file, acs).filter((a) => a.needsProposal);
   if (needed.length) {
@@ -187,7 +188,7 @@ export async function gatherFacts(g: GatherContext, input: StoryInput, shared: {
   let writtenOnBranch: string[] | undefined;
   if (c.generation.scope === "story" && !expected.error && parts.length) {
     const rows = acWriteReadiness(parts, expected.file, acs.map((a) => a.id), { jiraReady: input.ready, mode: c.generation.crossService, components: servicesFromComponents(c, input.components).services, overrides, staleDays: c.generation.staleMrDays, now });
-    writeReadiness = rows.map((r) => ({ ac: r.ac, kind: r.kind, state: r.state, reason: r.reason }));
+    writeReadiness = rows.map((r) => ({ ac: r.ac, kind: r.kind, state: r.state, reason: r.reason, waitingFor: r.waitingFor }));
     const text = new Map(acs.map((a) => [a.id, a.text]));
     // Tests written on the story's branch count, also when the plan wrote nothing for an AC (the record says so). Gone with the branch when its merge request was closed.
     if (view?.live || view === undefined) {
@@ -196,24 +197,30 @@ export async function gatherFacts(g: GatherContext, input: StoryInput, shared: {
     crossReady = rows.filter((r) => r.kind === "cross" && r.state === "ready" && !acWritten(rec, r, parts, text.get(r.ac) ?? "", acHash)).map((r) => r.ac);
   }
   const generateSettled = gens.some((j) => j.state === "done" && j.outcome === "no-changes-needed");
-  return { ...base, expected, trace, code, limits: Object.fromEntries(Object.entries(limits).filter(([, v]) => v)), generateSettled, ...(writeReadiness ? { writeReadiness } : {}), ...(crossReady?.length ? { crossReady } : {}), ...(writtenOnBranch?.length ? { writtenOnBranch } : {}) };
+  return { ...base, expected, trace, code, limits: Object.fromEntries(Object.entries(limits).filter(([, v]) => v)), generateSettled, ...(writeReadiness ? { writeReadiness } : {}), ...(crossReady?.length ? { crossReady } : {}), ...(writtenOnBranch?.length ? { writtenOnBranch } : {}), ...(ovr.unknown.length ? { unknownOverrides: ovr.unknown } : {}) };
 }
 
-/** The `/qa ready AC-n` overrides on the story now. A Jira problem leaves the stored ones in force (the record is a cache, the check must go on). */
-async function currentOverrides(g: GatherContext, key: string, rec: StoryRecord | undefined): Promise<StoryRecord["overrides"] | undefined> {
-  if (!g.jira) return rec?.overrides;
+/**
+ * The `/qa ready AC-n` overrides on the story now: those naming an AC the story has (`known`, kept in the record) and
+ * those that do not (`unknown`, ignored and shown). A Jira problem leaves the stored ones in force (the record is a
+ * cache, the check must go on).
+ */
+async function currentOverrides(g: GatherContext, key: string, rec: StoryRecord | undefined, acIds: Set<string>): Promise<{ known: StoryRecord["overrides"] | undefined; unknown: string[] }> {
+  if (!g.jira) return { known: rec?.overrides, unknown: [] };
   try {
-    const now = await readOverrides(g.c, g.jira, key, rec?.overrides ?? []);
-    if (!sameOverrides(now, rec?.overrides ?? []) && !g.noRecord && SAFE_KEY.test(key)) {
+    const all = await readOverrides(g.c, g.jira, key, rec?.overrides ?? []);
+    const known = all.filter((o) => acIds.has(o.ac.toUpperCase()));
+    const unknown = all.filter((o) => !acIds.has(o.ac.toUpperCase())).map((o) => o.ac);
+    if (!sameOverrides(known, rec?.overrides ?? []) && !g.noRecord && SAFE_KEY.test(key)) {
       await g.store.locked(key, async () => {
         const fresh = (await g.store.load(key)) ?? emptyRecord(key, g.now);
-        await g.store.save({ ...fresh, overrides: now, updatedAt: (g.now ?? new Date()).toISOString() });
+        await g.store.save({ ...fresh, overrides: known, updatedAt: (g.now ?? new Date()).toISOString() });
       });
     }
-    return now;
+    return { known, unknown };
   } catch (e) {
     log.warn(`${key}: /qa ready comments not read (${(e as Error).message.split("\n")[0]})`);
-    return rec?.overrides;
+    return { known: rec?.overrides, unknown: [] };
   }
 }
 

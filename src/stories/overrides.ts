@@ -15,15 +15,27 @@ type Override = StoryRecord["overrides"][number];
 
 const esc = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
-/** "/qa ready" -> "/qa unready": the last word with "un" in front. */
-export const unreadyCommand = (command: string) => command.trim().replace(/(\S+)$/, "un$1");
+/** "/qa ready" -> "/qa unready", "/qa-ready" -> "/qa-unready"; a command not ending in "ready" gets " undo" ("!ok" -> "!ok undo"). */
+export const unreadyCommand = (command: string) => (/ready$/i.test(command.trim()) ? command.trim().replace(/ready$/i, (m) => `un${m}`) : `${command.trim()} undo`);
 
 /** The override lines of one comment body, in order. */
 export function parseOverrideLines(body: string, command: string): { op: "ready" | "unready"; ac: string; reason?: string }[] {
   const ready = new RegExp(`^\\s*${esc(command.trim())}\\s+(AC-\\d+)(?:\\s+(.*))?$`, "i");
   const unready = new RegExp(`^\\s*${esc(unreadyCommand(command))}\\s+(AC-\\d+)(?:\\s+(.*))?$`, "i");
   const out: { op: "ready" | "unready"; ac: string; reason?: string }[] = [];
+  // Text in {code}, {noformat} and {quote} blocks, "bq." lines and "> " quotes is quoted, not said.
+  let block: string | undefined;
   for (const line of body.split(/\r?\n/)) {
+    const tags = [...line.matchAll(/\{(code|noformat|quote)(?::[^}]*)?\}/g)].map((t) => t[1]);
+    if (block) {
+      if (tags.includes(block)) block = undefined;
+      continue;
+    }
+    if (tags.length) {
+      if (tags.length === 1) block = tags[0];
+      continue;
+    }
+    if (/^\s*(bq\.|>)/.test(line)) continue;
     const m = unready.exec(line) ?? undefined;
     if (m) {
       out.push({ op: "unready", ac: m[1].toUpperCase() });
@@ -54,13 +66,16 @@ export async function readOverrides(c: Config, ctx: JiraContext, story: string, 
     for (const l of parseOverrideLines(cm.body, command)) {
       if (!allowedBy(allowed, cm.author)) continue;
       if (l.op === "unready") active.delete(l.ac);
-      else active.set(l.ac, { ac: l.ac, by: cm.author?.displayName ?? cm.author?.name ?? cm.author?.accountId ?? "someone", at: cm.created ?? new Date(0).toISOString(), commentId: cm.id });
+      else active.set(l.ac, { ac: l.ac, by: cm.author?.displayName ?? cm.author?.name ?? cm.author?.accountId ?? "someone", at: cm.updated ?? cm.created ?? new Date(0).toISOString(), commentId: cm.id });
     }
   }
   return [...active.values()].sort((a, b) => a.ac.localeCompare(b.ac, undefined, { numeric: true }));
 }
 
 /** One line per override for the status comment. */
-export const overrideLines = (o: Override[]) => o.map((x) => `${x.ac} marked ready by ${x.by} on ${x.at.slice(0, 10)}`);
+export const overrideLines = (o: Override[]) => o.map((x) => `${x.ac} marked ready by ${escapeWiki(x.by)} on ${x.at.slice(0, 10)}`);
+
+/** A person's display name in wiki text: no markup, no new lines. */
+export const escapeWiki = (t: string, max = 80) => t.replace(/[\r\n]+/g, " ").slice(0, max).replace(/([{}[\]|*_~^+\\])/g, "\\$1");
 
 export const sameOverrides = (a: Override[], b: Override[]) => JSON.stringify(a.map((x) => [x.ac, x.by, x.commentId])) === JSON.stringify(b.map((x) => [x.ac, x.by, x.commentId]));

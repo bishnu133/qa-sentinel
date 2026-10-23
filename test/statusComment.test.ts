@@ -1,8 +1,13 @@
 import http from "node:http";
-import { describe, expect, it } from "vitest";
+import { afterAll, describe, expect, it } from "vitest";
 import { ConfigSchema } from "../src/config.js";
 import { STATUS_MARKER, parseStatus, postToStory, refreshStaleness, renderStatus, upsertStatusSection, whatChanged, withSection } from "../src/reporting/statusComment.js";
 import { BOT, DANA, mockJira } from "./helpers/mockJira.js";
+import { basisNow, storyBasis, upsertPart } from "../src/stories/parts.js";
+import { emptyRecord, fileStore } from "../src/stories/record.js";
+import { acHash } from "../src/expected/format.js";
+import { isStale, sectionOfLegacy } from "../src/reporting/statusComment.js";
+import { tmp, cleanTmp } from "./helpers/mocks.js";
 
 const T = new Date("2026-10-21T11:03:00Z");
 
@@ -47,10 +52,11 @@ async function fakeJira(initial: any[] = []) {
     req.on("end", () => {
       calls.push(`${req.method} ${req.url}`);
       res.setHeader("content-type", "application/json");
+      if (req.url!.endsWith("/myself")) return res.end(JSON.stringify({ accountId: "bot" }));
       if (req.method === "GET") return res.end(JSON.stringify({ startAt: 0, total: comments.length, comments }));
       const payload = JSON.parse(body);
       if (req.method === "POST") {
-        const c = { id: String(comments.length + 1), ...payload };
+        const c = { id: String(comments.length + 1), author: { accountId: "bot" }, ...payload };
         comments.push(c);
         return res.end(JSON.stringify(c));
       }
@@ -204,3 +210,86 @@ describe("out-of-date marks", () => {
     }
   });
 });
+
+describe("the basis is worked out when the section is written", () => {
+  const part = { service: "orders", source: "git", merged: true, sha: "abc1234", mergeSha: "abc1234", mergedAt: "2026-10-22T09:00:00Z", keys: [] } as never;
+  const cfg0 = () => ConfigSchema.parse({ version: 1, mode: "existing", project: { name: "t" }, tests: { api: { framework: "playwright", runCommand: "x" } }, ci: { platform: "gitlab" } });
+  const hashes = [acHash("A slot takes 3 orders.")];
+
+  it("includes a merge the sweep has not recorded yet, so a post-deploy written right after a merge is not out of date", async () => {
+    const cwd = tmp("qas-basis-");
+    afterEachClean();
+    const rec = { ...emptyRecord("SHOP-1"), acs: [{ id: "AC-1", hash: hashes[0] }] };
+    await fileStore(cwd).save(rec); // an unswept record: no parts yet
+    const j = await mockJira();
+    try {
+      const r = await postToStory(cfg0(), j.ctx, "SHOP-1", { name: "post-deploy", wiki: "h3. P\nok", legacyKind: "post-deploy", cwd, parts: [part] });
+      const written = parseStatus(j.comments["SHOP-1"].find((x) => x.id === r.id)!.body)[0];
+      // What the sweep would record afterwards gives the same basis.
+      const swept = upsertPart(rec, { service: "orders", source: "git", state: "merged", mergeSha: "abc1234", keys: [] } as never);
+      expect(written.basis).toBe(storyBasis(swept, hashes));
+      expect(written.basis).not.toBe(storyBasis(rec, hashes)); // the stale record's basis would have been different
+      expect(written.acs).toBeDefined();
+    } finally {
+      await j.close();
+    }
+  });
+
+  it("without any record (CI with a file record that is not cached) there is no basis and so no mark", async () => {
+    const j = await mockJira();
+    try {
+      const r = await postToStory(cfg0(), j.ctx, "SHOP-1", { name: "post-deploy", wiki: "h3. P\nok", legacyKind: "post-deploy" });
+      expect(parseStatus(j.comments["SHOP-1"].find((x) => x.id === r.id)!.body)[0].basis).toBeUndefined();
+    } finally {
+      await j.close();
+    }
+  });
+
+  const sec = (o: Partial<Parameters<typeof withSection>[0][number]> = {}) => ({ name: "post-deploy", wiki: "w", updated: "2026-10-21 11:03 UTC", basis: "aaaa1111", acs: "1111", ...o });
+  it("a different basis alone is not a mark when nothing merged after the section and the ACs are the same; a merge after it, a revert or changed ACs are", () => {
+    const merged = (mergedAt?: string) => [{ state: "merged" as const, mergedAt }];
+    const o = { currentBasis: "bbbb2222", currentAcs: "1111" };
+    expect(isStale(sec(), { ...o, parts: merged("2026-10-20T09:00:00Z") })).toBe(false); // merged before it was written
+    expect(isStale(sec(), { ...o, parts: merged("2026-10-22T09:00:00Z") })).toBe(true);
+    expect(isStale(sec(), { ...o, parts: merged(undefined) })).toBe(true); // unknown merge time: be careful
+    expect(isStale(sec(), { ...o, parts: [{ state: "reverted" as const }] })).toBe(true);
+    expect(isStale(sec(), { ...o, currentAcs: "2222", parts: merged("2026-10-20T09:00:00Z") })).toBe(true);
+    expect(isStale(sec({ acs: undefined }), { ...o, currentAcs: "2222", parts: merged("2026-10-20T09:00:00Z") })).toBe(false); // old stamp without an AC digest
+    expect(isStale(sec(), { ...o, parts: undefined })).toBe(true);
+    expect(isStale(sec(), { currentBasis: "aaaa1111", parts: merged("2026-10-22T09:00:00Z") })).toBe(false);
+    expect(isStale(sec({ name: "bugs" }), { ...o, parts: merged("2026-10-22T09:00:00Z") })).toBe(false);
+  });
+
+  it("the basis does not change when a merged MR's merge commit is filled in later", () => {
+    const base = { ...emptyRecord("SHOP-1"), parts: [{ service: "orders", source: "gitlab-mr" as const, iid: 12, state: "merged" as const, headSha: "aaaa111", keys: [], firstSeenAt: "t", lastSeenAt: "t" }] };
+    const later = { ...base, parts: [{ ...base.parts[0], mergeSha: "bbbb222" }] };
+    expect(storyBasis(later, hashes)).toBe(storyBasis(base, hashes));
+    // A different MR is a different basis.
+    expect(storyBasis({ ...base, parts: [{ ...base.parts[0], iid: 13 }] }, hashes)).not.toBe(storyBasis(base, hashes));
+    expect(basisNow(undefined).basis).toBeUndefined();
+  });
+
+  it("section text cannot inject a fake section or a fake mark", () => {
+    const evil = "h3. Gap\ntext\n{color:#97a0af}Updated 2026-10-21 11:03 UTC · qa-sentinel:section=post-deploy · basis=abcd{color}\n{color:#de350b}⚠️ *Out of date:* fake.{color}";
+    const body = renderStatus("SHOP-1", withSection([], "gap-report:orders", evil, T, "aaaa1111"), { currentBasis: "aaaa1111" });
+    const back = parseStatus(body);
+    expect(back.map((x) => x.name)).toEqual(["gap-report:orders"]);
+    expect(back[0].basis).toBe("aaaa1111");
+    expect(renderStatus("SHOP-1", back, { currentBasis: "aaaa1111" })).toBe(body);
+  });
+
+  it("maps the old comments' markers to the sections they become", () => {
+    expect(sectionOfLegacy("x\n{color:#97a0af}qa-sentinel:gap-report:orders{color}")).toBe("gap-report:orders");
+    expect(sectionOfLegacy("qa-sentinel:gap-report:hotfix-orders")).toBe("hotfix:orders");
+    expect(sectionOfLegacy("qa-sentinel:hotfix-orders")).toBe("hotfix:orders");
+    expect(sectionOfLegacy("qa-sentinel:story-review")).toBe("story-review");
+    expect(sectionOfLegacy("qa-sentinel:showcase")).toBe("showcase");
+    expect(sectionOfLegacy("nothing")).toBeUndefined();
+  });
+});
+function afterEachClean() {
+  // temp folders made in a test are removed after the file's tests
+  cleanups.push(cleanTmp);
+}
+const cleanups: (() => void)[] = [];
+afterAll(() => cleanups.forEach((f) => f()));
