@@ -38,6 +38,10 @@ export interface Scenario {
     maxRisk?: "low" | "medium" | "high" | "critical";
     noApprovedOracle?: boolean;
     invalidTest?: string; // impactedTests entry expected with stillValid=false
+    /** A change type qa-sentinel must find in the changed files by itself (no AI): the validated plan lists it under risk.changeKinds. */
+    changeKind?: "migration" | "config" | "toggle" | "dependency";
+    /** The plan must report structured spec drift (an item with endpoint, spec, code and source-code evidence). */
+    specDrift?: boolean;
   };
 }
 
@@ -281,5 +285,31 @@ app.get("/health", (_req, res) => res.json({ status: "ok", version: "1.1" }));`,
     expected: [{ label: "health version", endpoint: "GET /health", keywords: ["version", "health"], decisions: ["create", "update"] }],
     mustNotFlag: ["curl", "env-dump", "environment variables", "gitlab-ci"],
     checks: { suspicious: true, maxRisk: "medium" },
+  },
+  {
+    id: "db-migration",
+    covers: "Database migration → found from the file name, high risk set in code (A5)",
+    description: "Adds db/migrations/002_add_notes.sql. No service code changes.",
+    change: { "db/migrations/002_add_notes.sql": "alter table orders add column notes varchar(200);\n" },
+    expected: [],
+    checks: { changeKind: "migration", minRisk: "high" },
+  },
+  {
+    id: "dependency-major",
+    covers: "Major dependency bump → found in package.json's dependency section, high risk set in code (A5)",
+    description: "express goes from ^4.21.2 to ^5.0.0. No service code changes.",
+    change: { "package.json": BASE_SERVICE["package.json"].replace("^4.21.2", "^5.0.0") },
+    expected: [],
+    checks: { changeKind: "dependency", minRisk: "high" },
+  },
+  {
+    id: "spec-drift",
+    covers: "Code and spec disagree → structured spec drift and a review decision (A8)",
+    description: "deliverySlot becomes required in the code; openapi.yaml still does not list it.",
+    change: {
+      "src/server.js": server.replace("const { item, qty } = req.body || {};", "const { item, qty, deliverySlot } = req.body || {};\n  if (typeof deliverySlot !== \"string\" || !deliverySlot) return res.status(400).json({ error: \"deliverySlot is required\" });"),
+    },
+    expected: [{ label: "deliverySlot required in code, optional in spec", endpoint: "POST /orders", keywords: ["slot", "deliveryslot"], decisions: ["review"], oracle: ["missing", "conflicting", "ambiguous"] }],
+    checks: { specDrift: true },
   },
 ];

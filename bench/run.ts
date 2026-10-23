@@ -185,6 +185,8 @@ export function score(s: Scenario, plan: any, r: ScenarioResult): ScenarioResult
   if (ck.maxRisk) r.checks.push({ name: `risk ≤ ${ck.maxRisk}`, pass: RISK.indexOf(plan.risk.overall) <= RISK.indexOf(ck.maxRisk), detail: plan.risk.overall });
   if (ck.noApprovedOracle) r.checks.push({ name: "no change claimed approved without requirements", pass: plan.changes.every((c: any) => c.oracleStatus !== "approved") });
   if (ck.invalidTest) r.checks.push({ name: `flags ${path.basename(ck.invalidTest)} as no longer valid`, pass: plan.impactedTests.some((t: any) => t.file === ck.invalidTest && t.stillValid === false) });
+  if (ck.changeKind) r.checks.push({ name: `change type ${ck.changeKind} found in code`, pass: (plan.risk.changeKinds ?? []).some((k: any) => k.kind === ck.changeKind) });
+  if (ck.specDrift) r.checks.push({ name: "spec drift reported with code evidence", pass: (plan.specDrift ?? []).some((d: any) => typeof d !== "string" && d.evidence?.some((e: any) => e.source === "source-code" && e.file && e.line)) });
   return r;
 }
 

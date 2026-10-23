@@ -422,7 +422,7 @@ async function gapReportBody(o: GapReportOptions, wrap: (e: AgentEngine) => Agen
   if (outcome.status === "valid" && outcome.plan && outcome.risked) {
     // Facts computed in code from the test repo: which existing tests to run, and what already proves the story.
     const index = indexTests(cwd, c);
-    const select = (svc: string) => selectRegression({ c, service: svc, plan: outcome.plan!, risked: outcome.risked!.changes, contract: outcome.contract, index, map: readTestMap(cwd) });
+    const select = (svc: string) => selectRegression({ c, service: svc, plan: outcome.plan!, risked: outcome.risked!.changes, changeKinds: outcome.risked!.changeKinds, contract: outcome.contract, index, map: readTestMap(cwd) });
     // Story mode: each service's own fallbacks and consumers count, merged into one selection.
     const selection = parts ? mergeSelections(parts.map((p) => select(p.service.name))) : select(service.name);
     fs.writeFileSync(path.join(run.dir, "regression.json"), JSON.stringify(selection, null, 2));
