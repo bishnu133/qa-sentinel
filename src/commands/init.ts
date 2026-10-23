@@ -407,7 +407,8 @@ export function writeWebScaffold(cwd: string, c: Config, vars: TemplateVars): [s
   return results;
 }
 
-function writeTestMap(cwd: string, c: Config, det: Detection) {
+/** Exported for tests. */
+export function writeTestMap(cwd: string, c: Config, det: Pick<Detection, "apiTestFiles">) {
   const file = path.join(cwd, "test-map.yaml");
   if (fs.existsSync(file)) {
     log.dim("  kept     test-map.yaml");
@@ -418,8 +419,9 @@ function writeTestMap(cwd: string, c: Config, det: Detection) {
     services[s.name] = { path: s.path, openapi: s.openapi ?? null, endpoints: {}, screens: {} };
   }
   // Tests that are already tagged (@endpoint, @page) are listed in the map straight away (no AI), so `doctor` does not
-  // report a mismatch for each of them. A test goes under the service it names (@service), else the first service.
+  // report a mismatch for each of them. Which service: see below.
   const mapped = new Set<string>();
+  const leftOver = new Set<string>();
   const add = (into: Record<string, string[]>, key: string, file: string) => {
     into[key] = [...new Set([...(into[key] ?? []), file])];
     mapped.add(file);
@@ -431,16 +433,28 @@ function writeTestMap(cwd: string, c: Config, det: Detection) {
     } catch {
       /* unreadable tests: the map stays empty and `learn` drafts it */
     }
+    // A test goes under the service it names (@service). Without one: a page or screen goes under the first web (or mobile) service,
+    // an endpoint under the first service that is not a web front end. If there is none, the file stays in `unmapped` for `learn`.
+    const kindOf = (n: string) => c.workspace.services.find((x) => x.name === n)?.kind;
+    const firstWith = (pred: (k: string | undefined) => boolean) => c.workspace.services.find((x) => pred(x.kind))?.name;
     for (const t of tests) {
-      const svc = services[t.services.find((n) => services[n]) ?? c.workspace.services[0].name];
-      for (const ep of t.endpoints) add(svc.endpoints, ep, t.file);
-      for (const pg of t.pages) add(svc.screens, pg, t.file);
+      const named = t.services.find((n) => services[n]);
+      if (t.endpoints.length) {
+        const n = named ?? firstWith((k) => k !== "web" && k !== "mobile");
+        if (n) for (const ep of t.endpoints) add(services[n].endpoints, ep, t.file);
+        else leftOver.add(t.file);
+      }
+      if (t.pages.length) {
+        const n = named && (kindOf(named) === "web" || kindOf(named) === "mobile") ? named : (firstWith((k) => k === "web") ?? firstWith((k) => k === "mobile") ?? named);
+        if (n) for (const pg of t.pages) add(services[n].screens, pg, t.file);
+        else leftOver.add(t.file);
+      }
     }
   }
   const doc = {
     version: 1,
     services,
-    unmapped: det.apiTestFiles.filter((f) => !mapped.has(f)),
+    unmapped: [...new Set([...det.apiTestFiles.filter((f) => !mapped.has(f)), ...leftOver])],
   };
   const header =
     "# Traceability map: service → endpoint/screen → test files.\n" +

@@ -74,13 +74,13 @@ describe("suite --run: select by title where the runner takes no file:line", () 
   });
   it("Mocha: files plus --grep --invert", () => {
     const [m] = suiteRunCommands(cfg({}, "npx mocha"), tests, ["SHOP-7"]);
-    expect(m.command).toBe(`npx mocha --grep '@story:(?:SHOP-7)(?![\\w-])' --invert tests/api/a.test.ts tests/api/b.test.ts`);
+    expect(m.command).toBe(`npx mocha --grep '@story:(?:[^\\s,]+,)*(?:SHOP-7)(?![\\w-])' --invert tests/api/a.test.ts tests/api/b.test.ts`);
   });
   it("Jest and Vitest: -t with a negative pattern; no filter when nothing is held back", () => {
     const [j] = suiteRunCommands(cfg({}, "npx jest"), tests, ["SHOP-7"]);
-    expect(j.command).toBe(`npx jest -t '^(?!.*@story:(?:SHOP-7)(?![\\w-])).*$' tests/api/a.test.ts tests/api/b.test.ts`);
+    expect(j.command).toBe(`npx jest --runTestsByPath -t '^(?!.*@story:(?:[^\\s,]+,)*(?:SHOP-7)(?![\\w-])).*$' tests/api/a.test.ts tests/api/b.test.ts`);
     expect(suiteRunCommands(cfg({}, "npx vitest run"), tests, [])[0].command).toBe("npx vitest run tests/api/a.test.ts tests/api/b.test.ts");
-    expect(suiteRunCommands(cfg({}, "npm run test"), tests, ["SHOP-7"], { test: "jest" })[0].command).toContain("npm run test -- -t ");
+    expect(suiteRunCommands(cfg({}, "npm run test"), tests, ["SHOP-7"], { test: "jest" })[0].command).toContain("npm run test -- --runTestsByPath -t ");
   });
   it("WebdriverIO runs whole files and says so", () => {
     const [w] = suiteRunCommands(cfg({}, "npx wdio run wdio.conf.ts"), tests, ["SHOP-7"]);

@@ -127,7 +127,7 @@ export function runCommandsFor(c: Config, files: string[]): string[] {
 }
 
 /** The pattern that matches the title of a test of a held-back story (`@story:A` but not `@story:A-1`). */
-export const heldBackPattern = (stories: string[]): string => `@story:(?:${stories.map((s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|")})(?![\\w-])`;
+export const heldBackPattern = (stories: string[]): string => `@story:(?:[^\\s,]+,)*(?:${stories.map((s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|")})(?![\\w-])`;
 
 export interface SuiteRunCommand {
   command: string;
@@ -152,8 +152,11 @@ export function suiteRunCommands(c: Config, tests: { file: string; line: number 
     const re = heldStories.length ? heldBackPattern(heldStories) : undefined;
     if (runner === "mocha" || runner === "jest" || runner === "vitest") {
       const filter = !re ? "" : runner === "mocha" ? ` --grep ${shellWord(re)} --invert` : ` -t ${shellWord(`^(?!.*${re}).*$`)}`;
-      const sep = /\b(?:npm|pnpm)\s/.test(g.l.runCommand) && !/\s--(\s|$)/.test(g.l.runCommand) ? " --" : "";
-      out.push({ command: `${g.l.runCommand}${sep}${filter} ${files.map(shellWord).join(" ")}` });
+      // npm needs `--` before the runner's own options; pnpm and yarn pass them on (a `--` would reach the runner and end its options).
+      const sep = /\bnpm\s/.test(g.l.runCommand) && !/\s--(\s|$)/.test(g.l.runCommand) ? " --" : "";
+      // Jest takes its file arguments as regular expressions; --runTestsByPath makes them plain paths.
+      const byPath = runner === "jest" ? " --runTestsByPath" : "";
+      out.push({ command: `${g.l.runCommand}${sep}${byPath}${filter} ${files.map(shellWord).join(" ")}` });
     } else if (runner === "wdio" || g.l.specArg) {
       out.push({ command: `${g.l.runCommand} ${specArgs(g.l, files)}`, note: `${g.l.layer}: ${runner ?? "this runner"} takes whole files, so every test in ${files.length} file(s) runs, including any of a held-back story in the same file` });
     }
