@@ -155,9 +155,12 @@ export function changesSince(repo: string, base: string): FileChange[] {
   return [...out, ...untracked.filter((u) => !out.some((o) => o.path === u.path))];
 }
 
-/** Files changed between two commits (no working tree). */
+/**
+ * Files changed between two commits (no working tree), in the WHOLE repository: in a monorepo the test repo is a
+ * folder, and a change outside it (../ci/deploy.sh) must still reach the write policy, which sees it as outside.
+ */
 export function changesBetween(repo: string, from: string, to: string): FileChange[] {
-  const raw = execFileSync("git", ["diff", "--name-status", "-z", "-M", from, to, "--", "."], { cwd: repo, encoding: "utf8" });
+  const raw = execFileSync("git", ["diff", "--name-status", "-z", "-M", from, to], { cwd: repo, encoding: "utf8" });
   const parts = raw.split("\0").filter(Boolean);
   const out: FileChange[] = [];
   for (let i = 0; i < parts.length; i++) {
@@ -169,6 +172,19 @@ export function changesBetween(repo: string, from: string, to: string): FileChan
       out.push({ path: fromRoot(repo, parts[i + 1]), status: letter });
       i += 1;
     }
+  }
+  return out;
+}
+
+/** Paths whose mode in `to` is a symbolic link (120000) or a submodule (160000): the write policy never allows an agent to add those. */
+export function specialModes(repo: string, from: string, to: string): { path: string; kind: "symlink" | "submodule" }[] {
+  const raw = execFileSync("git", ["diff", "--raw", "-z", "--no-renames", from, to], { cwd: repo, encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
+  const parts = raw.split("\0").filter(Boolean);
+  const out: { path: string; kind: "symlink" | "submodule" }[] = [];
+  for (let i = 0; i + 1 < parts.length; i += 2) {
+    const newMode = parts[i].split(" ")[1];
+    if (newMode === "120000") out.push({ path: fromRoot(repo, parts[i + 1]), kind: "symlink" });
+    else if (newMode === "160000") out.push({ path: fromRoot(repo, parts[i + 1]), kind: "submodule" });
   }
   return out;
 }

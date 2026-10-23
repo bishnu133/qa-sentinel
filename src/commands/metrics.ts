@@ -63,14 +63,20 @@ const p90Of = (xs: number[]) => (xs.length ? [...xs].sort((a, b) => a - b)[Math.
  * rounded to $5. Shown only from 10 stories (perStory) or 10 days (perDay, perMonth).
  */
 export function suggestAutomationBudgets(records: StoryRecord[]): AutomationBudgetSuggestion {
-  // The same story in two folders (the repo and a downloaded cache): the newest copy counts once.
-  const newest = new Map<string, StoryRecord>();
-  for (const r of records) {
-    const seen = newest.get(r.key);
-    if (!seen || r.updatedAt > seen.updatedAt) newest.set(r.key, r);
-  }
-  const recs = [...newest.values()];
-  const costs = recs.filter((r) => Object.values(r.jobs).some((j) => j.kind === "generate")).map((r) => r.totalCostUsd);
+  // The same story in two folders (the repo and a downloaded cache): the copies are merged, not one dropped. A job (same key)
+  // seen twice is the same job, so the newer copy counts once; jobs and ledger entries only one copy has are added.
+  const byKey = new Map<string, StoryRecord[]>();
+  for (const r of records) byKey.set(r.key, [...(byKey.get(r.key) ?? []), r]);
+  const recs = [...byKey.values()].map((copies) => {
+    const jobs: StoryRecord["jobs"] = {};
+    for (const r of copies) for (const [k, j] of Object.entries(r.jobs)) if (!jobs[k] || (j.finishedAt ?? j.startedAt) > (jobs[k].finishedAt ?? jobs[k].startedAt)) jobs[k] = j;
+    const ledger = new Map<string, StoryRecord["ledger"][number]>();
+    for (const r of copies) for (const e of r.ledger) ledger.set(`${e.at}|${e.job}|${e.costUsd}`, e);
+    const summed = Object.values(jobs).reduce((t, j) => t + j.costUsd, 0);
+    return { ...copies[0], jobs, ledger: [...ledger.values()], totalCostUsd: Math.max(summed, ...copies.map((r) => r.totalCostUsd)) };
+  });
+  // A story that only ran dry ($0) says nothing about what a story costs.
+  const costs = recs.filter((r) => Object.values(r.jobs).some((j) => j.kind === "generate") && r.totalCostUsd > 0).map((r) => r.totalCostUsd);
   const daily = new Map<string, number>();
   for (const r of recs) for (const e of r.ledger) daily.set(e.at.slice(0, 10), (daily.get(e.at.slice(0, 10)) ?? 0) + e.costUsd);
   const days = [...daily.values()].filter((v) => v > 0);

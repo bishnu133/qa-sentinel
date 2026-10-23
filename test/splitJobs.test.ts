@@ -4,6 +4,7 @@ import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { afterEach, describe, expect, it } from "vitest";
 import YAML from "yaml";
+import { spawnSync } from "node:child_process";
 import { initCommand } from "../src/commands/init.js";
 
 const made: string[] = [];
@@ -53,6 +54,40 @@ describe("split CI jobs (opt-in QA_SPLIT_JOBS)", () => {
     expect(ps).toContain('publish --run all');
     expect(ps).toMatch(/unset ANTHROPIC_API_KEY/);
     expect(ps).not.toContain("claude-code");
+  });
+  it("the analysis job has its own after_script: it sources nothing from the work tree in split mode and drops the publish secrets (an unset in script does not reach after_script)", async () => {
+    const { tests } = await rendered();
+    const gen = tests["qa-generate"];
+    expect(Array.isArray(gen.after_script)).toBe(true);
+    const after = gen.after_script.filter((x: unknown) => typeof x === "string") as string[];
+    const block = after.find((x) => x.includes('QA_SPLIT_JOBS'))!;
+    expect(block).toContain("unset QA_SENTINEL_GITLAB_WRITE_TOKEN");
+    // The only place the work-tree file is sourced is the non-split branch.
+    const split = block.slice(0, block.indexOf("elif"));
+    expect(split).not.toMatch(/(^|\s)\.\s+"?\$CI_PROJECT_DIR\/\.qa-env\.sh/);
+    expect(block.slice(block.indexOf("elif"))).toContain(".qa-env.sh");
+    // Run it for real: a hostile .qa-env.sh (written by generated code) is not executed, and the write token is gone.
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "qas-after-"));
+    made.push(dir);
+    const marker = path.join(dir, "pwned");
+    fs.writeFileSync(path.join(dir, ".qa-env.sh"), `touch ${marker}\nexport QA_BASE_URL='https://qa.example'; touch ${marker}\n`);
+    const url = /export (\w+)="\$qa_url"/.exec(block)![1];
+    const r = spawnSync("sh", ["-c", `${block}\necho "token=\${QA_SENTINEL_GITLAB_WRITE_TOKEN:-gone} jira=\${QA_JIRA_PUBLISH_PAT:-gone} url=\${${url}:-none}"`], { encoding: "utf8", env: { PATH: process.env.PATH, CI_PROJECT_DIR: dir, QA_SPLIT_JOBS: "true", QA_SENTINEL_GITLAB_WRITE_TOKEN: "w", QA_JIRA_PUBLISH_PAT: "p" } });
+    expect(fs.existsSync(marker)).toBe(false);
+    expect(r.stdout.trim()).toBe("token=gone jira=gone url=none");
+    // A well-formed line is read as text (not executed).
+    fs.writeFileSync(path.join(dir, ".qa-env.sh"), `export ${url}='https://qa.example/x'\n`);
+    const ok = spawnSync("sh", ["-c", `${block}\necho "url=\${${url}:-none}"`], { encoding: "utf8", env: { PATH: process.env.PATH, CI_PROJECT_DIR: dir, QA_SPLIT_JOBS: "true" } });
+    expect(ok.stdout.trim()).toBe("url=https://qa.example/x");
+  });
+  it("publish jobs run one at a time, in their own environment, with full history, and pick the Jira publishing login themselves", async () => {
+    const { tests, service } = await rendered();
+    expect(tests["qa-generate-publish"].resource_group).toBe("qa-sentinel-generate");
+    expect(tests["qa-generate-publish"].variables.GIT_DEPTH).toBe(0);
+    expect(service["qa-gap-report-publish"].resource_group).toContain("qa-gap-report-publish");
+    expect(service["qa-gap-report-publish"].resource_group).toContain("$CI_MERGE_REQUEST_IID");
+    for (const [job, env] of [[tests["qa-generate-publish"], "qa-publish"], [service["qa-gap-report-publish"], "qa-publish"], [tests["qa-generate"], "qa-analysis"], [service["qa-gap-report"], "qa-analysis"]] as const) expect(job.environment).toMatchObject({ name: env, action: "prepare" });
+    for (const job of [tests["qa-generate-publish"], service["qa-gap-report-publish"]]) expect(scriptOf(job)).not.toMatch(/export JIRA_(PAT|API_TOKEN|EMAIL)=/);
   });
   it("nothing changes at the intelligence level for the default (non-split) gap report job", async () => {
     const { service, tests } = await rendered("intelligence");

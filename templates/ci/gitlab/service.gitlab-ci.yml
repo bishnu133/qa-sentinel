@@ -69,6 +69,10 @@ qa-gap-report:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
   allow_failure: true
   interruptible: true
+  # Scope the model key to this environment (Environment scope = qa-analysis) so the publish job never gets it.
+  environment:
+    name: qa-analysis
+    action: prepare
   script:
     # Split jobs (QA_SPLIT_JOBS: "true"): this job keeps the model key and a read-only token and only DEFERS the posting;
     # qa-gap-report-publish below holds the write token and no model key.
@@ -107,6 +111,12 @@ qa-gap-report-publish:
 {{/if}}
     - if: $QA_SPLIT_JOBS == "true" && $CI_PIPELINE_SOURCE == "merge_request_event"
   allow_failure: true
+  # One publish at a time per merge request (a rerun or a second push does not race the first).
+  resource_group: qa-gap-report-publish-$CI_MERGE_REQUEST_IID
+  # Scope the write token and the Jira publishing login to this environment (Environment scope = qa-publish).
+  environment:
+    name: qa-publish
+    action: prepare
   variables:
     QA_TESTS_DIR: "/tmp/qa-tests{{#if testsSubdir}}/{{testsSubdir}}{{/if}}"
   script:
@@ -116,8 +126,7 @@ qa-gap-report-publish:
     - mkdir -p "$QA_TESTS_DIR/.qa-sentinel/runs" && cp -r qa-runs/. "$QA_TESTS_DIR/.qa-sentinel/runs/"
     - export QA_SENTINEL_GITLAB_TOKEN="${QA_SENTINEL_GITLAB_WRITE_TOKEN:?qa-gap-report-publish needs QA_SENTINEL_GITLAB_WRITE_TOKEN (api)}"
     - unset ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN ANTHROPIC_BASE_URL CLAUDE_CODE_USE_BEDROCK CLAUDE_CODE_USE_VERTEX AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN
-    - if [ -n "$QA_JIRA_PUBLISH_PAT" ]; then export JIRA_PAT="$QA_JIRA_PUBLISH_PAT"; fi
-    - if [ -n "$QA_JIRA_PUBLISH_API_TOKEN" ]; then export JIRA_API_TOKEN="$QA_JIRA_PUBLISH_API_TOKEN" JIRA_EMAIL="$QA_JIRA_PUBLISH_EMAIL"; fi
+    # The Jira publishing login (QA_JIRA_PUBLISH_*) is picked by `qa-sentinel publish` itself; the read login (JIRA_*) is not used for writing.
     - qa-sentinel -C "$QA_TESTS_DIR" publish --run all
 
 {{#if isMaintenance}}

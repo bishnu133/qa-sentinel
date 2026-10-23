@@ -113,7 +113,7 @@ export async function gapReportCommand(o: GapReportOptions): Promise<GapResult> 
 /** The AI part of one report, counted against the story's budget. */
 function runPrepared(o: GapReportOptions, c: ReturnType<typeof loadConfig>, cwd: string, s: Prepared): Promise<GapResult> {
   return withSpend(
-    { cwd, c, story: o.story ?? o.forFeature, label: "gap-report", skip: o.dryRun },
+    { cwd, c, story: o.story ?? o.forFeature, label: "gap-report", skip: o.dryRun, local: o.deferPublish },
     (exitCode, message) => ({ report: "", skipped: true, exitCode, ...(message ? { reason: message } : {}) }),
     (wrap) => gapReportBody(o, wrap, s),
     (r) => r.exitCode,
@@ -171,7 +171,7 @@ async function draftGate(o: GapReportOptions, c: ReturnType<typeof loadConfig>, 
   fs.writeFileSync(out, report);
   // Say so on the MR: marking it ready does not start a pipeline by itself, and nobody should think a report exists.
   if (o.deferPublish && o.post && c.reporting.targets.includes("gitlab-mr") && mr.project) {
-    deferInNewRun(cwd, "gap-report", "gap-waiting", [{ type: "report", report, service: o.service, mr: { ...mr }, targets: ["gitlab-mr"] }]);
+    deferInNewRun(cwd, "gap-report", "gap-waiting", [{ type: "report", report, service: o.service, targets: ["gitlab-mr"] }]);
     log.ok("merge request is a draft; the waiting note is left for `qa-sentinel publish`");
     return { report, skipped: true, exitCode: 0 };
   }
@@ -283,7 +283,7 @@ async function gapReportEach(o: GapReportOptions, c: ReturnType<typeof loadConfi
   // The stamp goes on only when every story was analysed: a failed or refused one must be tried again on the next push.
   if (o.post && !o.dryRun && c.reporting.targets.includes("gitlab-mr")) {
     const stamp = allOk && combined && head ? stampOf(combined, head) : undefined;
-    if (o.deferPublish) deferInNewRun(cwd, "gap-report", "gap-joined", [{ type: "report", report, service: o.service, mr: { ...mr }, targets: ["gitlab-mr"], ...(stamp ? { stamp } : {}) }]);
+    if (o.deferPublish) deferInNewRun(cwd, "gap-report", "gap-joined", [{ type: "report", report, service: o.service, targets: ["gitlab-mr"], ...(stamp ? { stamp } : {}) }]);
     else await publish(c, { report, service: o.service, mr, targets: ["gitlab-mr"], ...(stamp ? { stamp } : {}) });
   }
   return { report, skipped, exitCode };
@@ -526,9 +526,9 @@ async function gapReportBody(o: GapReportOptions, wrap: (e: AgentEngine) => Agen
   if (o.deferPublish && o.post) {
     // The write steps wait for `qa-sentinel publish` (write tokens, no model key); this run needs none of them.
     deferSteps(run.dir, "gap-report", run.id, [
-      ...(seen ? [{ type: "mr-seen" as const, args: seen }] : []),
-      { type: "report" as const, report, jiraSummary, service: service.name, storyKey: req.storyKey, mr: { ...mr }, ...(postTargets ? { targets: postTargets } : {}), ...(stampNow ? { stamp: stampNow } : {}) },
-      ...(bugCandidates && req.storyKey ? [{ type: "bugs" as const, story: req.storyKey, candidates: bugCandidates }] : []),
+      ...(seen ? [{ type: "mr-seen" as const, args: { feature: seen.feature, ...(seen.workKey ? { workKey: seen.workKey } : {}), service: seen.service, ...(seen.headSha ? { headSha: seen.headSha } : {}), keys: seen.keys } }] : []),
+      { type: "report" as const, report, jiraSummary, service: service.name, ...(req.storyKey ? { storyKey: req.storyKey } : {}), ...(postTargets ? { targets: postTargets } : {}), ...(stampNow ? { stamp: stampNow } : {}) },
+      ...(bugCandidates && req.storyKey ? [{ type: "bugs" as const, story: req.storyKey, candidates: JSON.parse(JSON.stringify(bugCandidates)) as Record<string, unknown>[] }] : []),
     ]);
     log.ok(`publishing deferred: ${path.relative(cwd, path.join(run.dir, "publish.json"))} (run \`qa-sentinel publish --run ${run.id}\`)`);
     return { report, skipped: false, exitCode };

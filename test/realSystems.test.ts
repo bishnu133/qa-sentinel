@@ -2,11 +2,14 @@ import fs from "node:fs";
 import http from "node:http";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { log } from "../src/log.js";
+import { remoteFor } from "../src/generation/storyBranch.js";
 import { ConfigSchema, writeConfig } from "../src/config.js";
 import { fetchIssue, jiraContext, searchStories, serverInfo, jiraFlavour, storyAttachments, downloadAttachment, jiraAuthAmbiguous } from "../src/scm/jira.js";
 import { call, createOrUpdateMergeRequest, gitlabContext, pushUrl, rawFile } from "../src/scm/gitlab.js";
 import { jiraFlavourChecks, runChecks } from "../src/commands/doctor.js";
+import { publishEnv } from "../src/commands/publish.js";
 import { mentionOf } from "../src/reporting/notify.js";
 import { wrapTestCommand } from "../src/wrapper.js";
 import { buildClaudeArgs } from "../src/claude.js";
@@ -213,6 +216,30 @@ describe("self-hosted GitLab under a sub-path", () => {
     expect((bad as Error).message).toMatch(/failed: 502 \(a web page, not JSON/);
     expect((bad as Error).message).not.toContain("<html>");
   });
+  it("rawFile says a login page is not the file; an HTML file served as text/plain is still the file", async () => {
+    const gl = await listen((_req, res, url) => {
+      if (url.pathname.includes("sso")) {
+        res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+        return res.end("<html><body>Sign in</body></html>");
+      }
+      res.writeHead(200, { "content-type": "text/plain; charset=utf-8" });
+      res.end("<!doctype html><html>a real html file</html>");
+    });
+    const ctx = { apiUrl: `${gl.url}/gitlab/api/v4`, token: "tok" };
+    await expect(rawFile(ctx, "g/p", "sso.yaml", "main")).rejects.toThrow(/answered with a web page, not the file \(a login or SSO proxy/);
+    expect(await rawFile(ctx, "g/p", "page.html", "main")).toContain("a real html file");
+  });
+  it("warns once when the push URL is plain http://", () => {
+    const warn = vi.spyOn(log, "warn").mockImplementation(() => undefined);
+    const c = ConfigSchema.parse({ version: 1, mode: "existing", project: { name: "t" }, tests: { api: { framework: "playwright", runCommand: "x" } }, ci: { platform: "gitlab", gitlabUrl: "http://gl.internal:8080/gitlab", testRepoProject: "g/p" } });
+    expect(remoteFor(c, { QA_SENTINEL_GITLAB_TOKEN: "tok" })).toBe("http://oauth2:tok@gl.internal:8080/gitlab/g/p.git");
+    remoteFor(c, { QA_SENTINEL_GITLAB_TOKEN: "tok" });
+    expect(warn.mock.calls.filter((x) => /plain http/.test(String(x[0])))).toHaveLength(1);
+    warn.mockRestore();
+  });
+  it("strips every trailing slash of ci.gitlabUrl", () => {
+    expect(gitlabContext("https://corp.example/gitlab///", { QA_SENTINEL_GITLAB_TOKEN: "t" })!.apiUrl).toBe("https://corp.example/gitlab/api/v4");
+  });
   it("keeps the cause when the connection fails (a closed socket here; TLS and proxy errors the same way)", async () => {
     const gl = await listen((req) => req.socket.destroy());
     const err = (await call({ apiUrl: `${gl.url}/gitlab/api/v4`, token: "tok" }, "GET", "/user", undefined, 1).catch((e: Error) => e)) as Error;
@@ -220,6 +247,23 @@ describe("self-hosted GitLab under a sub-path", () => {
     expect(err.message).not.toBe("fetch failed");
     const raw = (await rawFile({ apiUrl: `${gl.url}/gitlab/api/v4`, token: "t" }, "g/p", "a", "main").catch((e: Error) => e)) as Error;
     expect(raw.message).toMatch(/failed: /);
+  });
+});
+
+describe("the Jira login used for publishing", () => {
+  it("uses only the QA_JIRA_PUBLISH_* login when any is set, so a Cloud read login (JIRA_EMAIL) is not picked up by `auto`", () => {
+    const env = { JIRA_EMAIL: "read@corp.example", JIRA_API_TOKEN: "read-token", QA_JIRA_PUBLISH_PAT: "write-pat" };
+    const p = publishEnv(env);
+    expect(p.JIRA_EMAIL).toBeUndefined();
+    expect(p.JIRA_API_TOKEN).toBeUndefined();
+    expect(p.JIRA_PAT).toBe("write-pat");
+    const ctx = jiraContext({ baseUrl: "https://jira.corp.example", auth: "auto" }, p)!;
+    expect(ctx.authHeader).toBe("Bearer write-pat");
+    // Cloud publishing login.
+    const cloud = jiraContext({ baseUrl: "https://x.atlassian.net", auth: "auto" }, publishEnv({ JIRA_PAT: "read-pat", QA_JIRA_PUBLISH_EMAIL: "bot@x", QA_JIRA_PUBLISH_API_TOKEN: "t" }))!;
+    expect(cloud.authHeader).toBe(`Basic ${Buffer.from("bot@x:t").toString("base64")}`);
+    // Nothing set: the job's own login is unchanged.
+    expect(publishEnv({ JIRA_PAT: "p" })).toEqual({ JIRA_PAT: "p" });
   });
 });
 
@@ -244,13 +288,23 @@ describe("verification.wrapCommand", () => {
     // The exit code passes through.
     expect(spawnSync(wrapTestCommand(c, "exit 3"), { shell: true }).status).toBe(3);
   });
-  it("doctor runs the wrapper with `true` and reports whether it works", () => {
+  it("doctor tests the wrapper with a command that has spaces and quotes and exits 7, so a wrapper that breaks real commands fails", () => {
     const dir = tmp("qas-wrapdoc-");
     const base = { version: 1, mode: "existing", project: { name: "t" }, tests: { api: { framework: "playwright", runCommand: "x" } }, ci: { platform: "gitlab" } };
-    writeConfig(dir, ConfigSchema.parse({ ...base, verification: { wrapCommand: "sh -c {cmd}" } }));
-    expect(runChecks(dir, {}).find((c) => /wrapCommand/.test(c.label))?.level).toBe("ok");
-    writeConfig(dir, ConfigSchema.parse({ ...base, verification: { wrapCommand: "definitely-not-a-wrapper-xyz {cmd}" } }));
-    expect(runChecks(dir, {}).find((c) => /wrapCommand/.test(c.label))?.level).toBe("fail");
+    const level = (wrapCommand: string) => {
+      writeConfig(dir, ConfigSchema.parse({ ...base, verification: { wrapCommand } }));
+      return runChecks(dir, {}).find((c) => /wrapCommand/.test(c.label));
+    };
+    expect(level("sh -c {cmd}")?.level).toBe("ok");
+    expect(level("definitely-not-a-wrapper-xyz {cmd}")?.level).toBe("fail");
+    // Passes `true` but swallows the exit code: a failing test would look green.
+    const swallow = level("sh -c {cmd} || true");
+    expect(swallow?.level).toBe("fail");
+    expect(swallow?.hint).toMatch(/exit 0/);
+    // Does not run the command at all (prints it).
+    expect(level("echo {cmd} #")?.level).toBe("fail");
+    // Without sh -c the quoted word is taken as a program name.
+    expect(level("env {cmd}")?.level).toBe("fail");
   });
 });
 
@@ -292,6 +346,30 @@ describe("wrapCommand reaches the real test runs", () => {
     expect(r.checks.find((x) => x.name === "tests")?.status).toBe("passed");
     expect(fs.readFileSync(log, "utf8")).toBe("wrapped\n");
     expect(fs.readFileSync(path.join(repo, "ran.log"), "utf8")).toBe("tests/api/my dir/orders.spec.js\n"); // the quoting survived the space
+  });
+  it("suite --run and feature --run run the tests inside the wrapper", async () => {
+    const { suiteCommand } = await import("../src/commands/suite.js");
+    const { featureCommand } = await import("../src/commands/feature.js");
+    const repo = tmp("qas-wrapsf-");
+    const log = path.join(repo, "wrapper.log");
+    fs.mkdirSync(path.join(repo, "tests/api"), { recursive: true });
+    fs.writeFileSync(path.join(repo, "runner.js"), "process.exit(0);\n");
+    fs.writeFileSync(path.join(repo, "tests/api/a.spec.ts"), `import { test } from "@playwright/test";\ntest("baseline", async () => {});\ntest("one @story:SHOP-1", async () => {});\n`);
+    writeConfig(
+      repo,
+      ConfigSchema.parse({
+        version: 1,
+        mode: "existing",
+        project: { name: "p" },
+        tests: { api: { framework: "playwright", dir: "tests/api", runCommand: "node runner.js" } },
+        ci: { platform: "gitlab" },
+        verification: { wrapCommand: `echo wrapped >> ${JSON.stringify(log)} && sh -c {cmd}` },
+      }),
+    );
+    expect(await suiteCommand({ cwd: repo, tag: "v1", run: true, out: "qa-suite" })).toBe(0);
+    expect(fs.readFileSync(log, "utf8")).toBe("wrapped\n");
+    expect(await featureCommand({ cwd: repo, story: "SHOP-1", run: true, force: true })).toBe(0);
+    expect(fs.readFileSync(log, "utf8")).toBe("wrapped\nwrapped\n");
   });
   it("doctor says an enabled sandbox with no allowed domains cannot reach the QA environment", () => {
     const dir = tmp("qas-sbxdoc-");
