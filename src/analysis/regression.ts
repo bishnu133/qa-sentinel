@@ -5,6 +5,7 @@ import { type IndexedTest, normPage } from "./testIndex.js";
 import { runCommandsFor } from "../layers.js";
 import type { TestPlan } from "../plan/schema.js";
 import type { RiskedChange } from "../plan/risk.js";
+import type { ChangeKindFinding } from "./changeKinds.js";
 
 /**
  * Regression selection, computed in code: which EXISTING tests should run for this change, and why.
@@ -49,6 +50,8 @@ export function selectRegression(i: {
   service: string;
   plan?: TestPlan;
   risked?: RiskedChange[];
+  /** Change types found in the code: a migration or a dependency change can touch anything, so the service's whole suite runs. */
+  changeKinds?: ChangeKindFinding[];
   contract?: ContractDiff;
   index: IndexedTest[];
   map: MapLike;
@@ -124,10 +127,14 @@ export function selectRegression(i: {
   // 4. Changes we can't pin to an endpoint → the service's whole suite.
   const unpinned = (i.plan?.changes ?? []).filter((ch) => ch.type !== "suspicious-instruction" && !ch.endpoint && !ch.page);
   let serviceWide = false;
-  if (unpinned.length || (!picked.size && !endpoints.size && !pages.size)) {
+  const wide = (i.changeKinds ?? []).filter((k) => (k.kind === "migration" || k.kind === "dependency") && (!k.service || k.service === i.service));
+  const noSignal = !picked.size && !endpoints.size && !pages.size;
+  if (unpinned.length || wide.length || noSignal) {
     serviceWide = true;
-    for (const t of serviceTests(i.service)) add(t, "service-wide", unpinned.length ? `${unpinned.map((u) => u.id).join(", ")}: not tied to one endpoint or page` : "no endpoint- or page-level signal");
-    notes.push(unpinned.length ? `${unpinned.length} change(s) not tied to an endpoint or page: ran selection over the whole ${i.service} suite` : "no endpoint- or page-level signal: selected the whole service suite");
+    const why = unpinned.length ? `${unpinned.map((u) => u.id).join(", ")}: not tied to one endpoint or page` : wide.length ? `${wide[0].kind} change: ${wide[0].file}` : "no endpoint- or page-level signal";
+    for (const t of serviceTests(i.service)) add(t, "service-wide", why);
+    if (wide.length) notes.push(`${wide[0].kind === "migration" ? "database migration" : "dependency change"} (${wide.slice(0, 3).map((k) => k.file).join(", ")}) can affect any endpoint: selected the whole ${i.service} suite`);
+    else notes.push(unpinned.length ? `${unpinned.length} change(s) not tied to an endpoint or page: ran selection over the whole ${i.service} suite` : "no endpoint- or page-level signal: selected the whole service suite");
   }
 
   // Cucumber scenarios are run by the team's BDD job: listed in the notes, not in the commands.

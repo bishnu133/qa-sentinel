@@ -742,6 +742,7 @@ async function generateRun(o: GenerateOptions, ctl: JobControl): Promise<number>
     `qa-sentinel::${verification.status.toLowerCase()}`,
     `risk::${planned.risked.overall}`,
     ...(discrepancies.length ? ["qa-sentinel::discrepancy"] : []),
+    ...(planned.plan?.specDrift.length ? ["qa-sentinel::spec-drift"] : []),
     ...(review.review?.tests.some((t) => t.verdict === "weak" || t.verdict === "wrong-oracle") ? ["qa-sentinel::weak-tests"] : []),
   ];
   if (o.push && o.deferPublish) {
