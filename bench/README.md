@@ -37,6 +37,15 @@ Matching: a plan change belongs to the first expectation whose endpoint matches 
 | Test-data collision | generation-level; planned with the generation benchmark |
 | Feature spans three microservices | not yet supported (feature manifests, v0.4); will be added as a failing case first |
 
+## Risk and gap scenarios (PR 7)
+| Scenario | What it measures |
+| --- | --- |
+| `db-migration` | qa-sentinel finds the migration from the file name and sets high risk in code (the check does not depend on what the AI says) |
+| `dependency-major` | a major bump in `package.json` is found and sets high risk in code |
+| `spec-drift` | the plan reports the code-vs-spec disagreement as a structured item with code evidence, and decides `review` |
+
+The first two are mostly deterministic (the AI only has to produce a valid plan). Risk from history (A7) and access-control scenarios (A6) need a team history file and configured roles, so they are covered by unit tests, not by this benchmark.
+
 ## Adding a scenario
 Add an entry to `scenarios.ts`: the developer's change as file overrides of the base service, optional story and
 test overrides, the expected changes (most specific first), and checks. Agree the expectations with a QA engineer

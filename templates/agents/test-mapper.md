@@ -30,7 +30,7 @@ For each change with `observable: true`:
 | `reuse` | `covered`; existing tests are enough. List which to run. |
 | `update` | `outdated` or `partial`, and a spec for this endpoint exists; change it rather than duplicating it |
 | `create` | `missing`, or a new endpoint or resource |
-| `review` | `oracleStatus` is `conflicting`, or `ambiguous` and the expected value matters. A human must decide; the author writes the test to the requirement and marks it fixme. |
+| `review` | `oracleStatus` is `conflicting`, or `ambiguous` and the expected value matters. A human must decide; the author writes the test to the requirement and marks it fixme. Also `review` for an endpoint where the spec and the code disagree (`specDrift`): the test is written to the spec. |
 | `skip` | `internal` or not observable. You must give evidence for why no verification is needed. |
 
 qa-sentinel rejects contradictions: `reuse` without `covered`, `covered` without `reuse`, `update` without an existing spec, a decision with no scenarios where tests must be written, or test files that do not exist.

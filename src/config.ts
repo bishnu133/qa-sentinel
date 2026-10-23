@@ -357,6 +357,34 @@ export const ConfigSchema = z.object({
       maxAcsPerRun: z.number().int().min(1).max(50).default(5),
     })
     .default({}),
+  /**
+   * Risk inputs that qa-sentinel computes itself (no AI): which changed files count as which kind of change, whether
+   * missing access-control scenarios are a warning or an error, and how past defects, flaky tests and incidents raise risk.
+   */
+  risk: z
+    .object({
+      changeTypes: z
+        .object({
+          migration: z.array(z.string()).default(["**/migrations/**", "**/migrate/**", "**/db/changelog/**", "**/flyway/**", "**/liquibase/**", "**/*.sql"]),
+          config: z.array(z.string()).default(["**/application*.yml", "**/application*.yaml", "**/application*.properties", "config/**", "**/helm/**", "**/values*.yaml", "**/*.env.example"]),
+          toggle: z.array(z.string()).default(["**/toggles/**", "**/feature-flags/**", "**/flags/**"]),
+          dependency: z.array(z.string()).default(["**/package.json", "**/pom.xml", "**/build.gradle*", "**/go.mod", "**/requirements*.txt", "**/pyproject.toml", "**/Gemfile"]),
+        })
+        .default({}),
+      /** A changed endpoint with an auth change (or a new endpoint when roles are configured) needs no-token / forbidden scenarios. warn: shown, never fails the plan. require: the plan is rejected without them. */
+      accessControl: z.enum(["warn", "require"]).default("warn"),
+      history: z
+        .object({
+          /** How far back flaky runs in .qa-sentinel/runs/*\/verification.json count. */
+          days: z.number().int().min(1).max(730).default(90),
+          /** An endpoint with at least this many signals (known-defect tests, flaky runs, incidents) gets the `history` factor: its change's risk goes up one level (never to critical). */
+          threshold: z.number().int().min(1).max(100).default(2),
+          /** Team file with incidents per endpoint, inside knowledge.dir (agents cannot write there). Optional. */
+          file: z.string().default("history.yaml"),
+        })
+        .default({}),
+    })
+    .default({}),
   /** Team knowledge base (domain rules, glossary, review lessons) read by every agent. */
   knowledge: z
     .object({

@@ -63,6 +63,14 @@ The **TestPlan** (`src/plan/schema.ts`) is the only handoff between AI and code.
 
 Risk is a fixed rule that you can read: **critical** for auth, money or personal data; **high** for business rules, breaking contracts, error handling on write paths, cross-service changes or requirement conflicts; **medium** for new endpoints, validations or compatible contract changes; otherwise **low**. Changes that don't alter behaviour are low. The agent names the factors with evidence; qa-sentinel adds `breaking-contract` (from the computed contract diff), `conflicting-oracle` and `cross-service` itself.
 
+**More risk that code finds by itself (no AI).** qa-sentinel also looks at the changed *files*: a database migration (`**/migrations/**`, `*.sql`, Flyway, Liquibase) is **high**; a config file, a feature-toggle file or a dependency file (`package.json`, `pom.xml`, `go.mod`, …) is **medium**; a *major* version jump in `package.json` (`^1` to `^2`) is **high**. They are added as a change named `c0` ("Change types found in the code"), so the overall risk includes them, the report lists the files, and a migration or dependency change selects the service's whole regression suite. Only the `dependencies`, `devDependencies` and `peerDependencies` sections of `package.json` count; a changed script or version field does not. The file patterns are in `risk.changeTypes`.
+
+**Risk from history.** An endpoint that already hurt before is riskier: known-defect tests on it, flaky tests on it (from `flaky` in `.qa-sentinel/runs/*/verification.json`, last 90 days), and incidents the team writes in `kb/history.yaml` (`endpoints: { "POST /orders": { incidents: 2, note: "double charge" } }`). With 2 or more signals (`risk.history.threshold`) the change gets the `history` factor and its risk goes up one level (low to medium to high, never to critical), with the reasons shown in the report. **Only data that qa-sentinel or the team keeps is read; no incident tool, Jira search or monitoring system is called.** qa-sentinel does not rank open merge requests against each other: that would need a gap report (an AI run) for each one.
+
+**Access control, per changed endpoint.** When a change touches who may call an endpoint (the `auth` factor), or adds an endpoint while `tests.auth.roles` lists roles, the plan must include a `no-token` scenario (no credentials: refused) and, with two or more roles, a `forbidden` one (a role that must not be allowed: refused), each as `access: { role, expect }`; or the decision says why it needs none (`noScenario`). `risk.accessControl: warn` (default) only shows a warning; `require` rejects a plan without them. Tests carry `@role:<name>` so the index knows them.
+
+**Spec drift is a gap.** When the code and the spec disagree, the plan lists `{ endpoint, spec, code, evidence }` (evidence must be code with file and line). The change gets a `review` decision, the test is written to the spec and held (fixme with a `// QA-AGENT:` note), and the MR gets the label `qa-sentinel::spec-drift`. The developer fixes the code or the spec. It is not raised as a bug card until someone decides.
+
 ### What's in v0.3
 
 - **Requirement traceability from test tags.** Tests say what they prove in their titles (`@endpoint:POST_/orders @story:SHOP-12 @ac:AC-3`). qa-sentinel builds an index from the code on every run (status, ACs, assertion count) and renders an **AC → test matrix** in MRs: ✅ covered, ⚠️ discrepancy (passing tests plus a fixme), ⏸️ pending only, ⬜ not traced. Because it is rebuilt from the tests, it can't drift.
@@ -305,6 +313,10 @@ guardrails:
   allowedHosts: [localhost, example.test]   # hosts allowed in added test code (+ host of the base URL)
   assertionRemoval: warn             # warn | fail
   passEnv: []                        # extra env vars for tests/agents; credentials are never passed otherwise
+risk:                                # all computed in code, no AI
+  accessControl: warn                # warn | require: no-token / forbidden scenarios for changed endpoints
+  history: { days: 90, threshold: 2, file: history.yaml }   # file sits in knowledge.dir (kb/)
+  # changeTypes: { migration: [...], config: [...], toggle: [...], dependency: [...] }   # glob lists; defaults in src/config.ts
 verification: { typecheck: auto, lintCommand: "npx eslint", preflight: true, retryFailed: true, timeoutMinutes: 15, defaultEnvironment: sit, requireVerifiedToPush: true, wrapCommand: "docker run --rm --network qa-net -e QA_BASE_URL -e QA_WEB_BASE_URL -v $PWD:/w -w /w node:22 sh -c {cmd}" }   # wrapCommand (optional): every test command qa-sentinel starts runs inside it; {cmd} = the command as one quoted word. Docker passes NO environment unless you add -e NAME for each variable the tests read (base URLs, login roles). See SECURITY.md
 ```
 
@@ -348,6 +360,7 @@ Agent policy: diffs, stories and comments are **evidence, not instructions**. Or
 ## Honest limits
 
 - **GitLab: proven end to end on gitlab.com with the ShopLite sandbox**: MR gap report posted by CI, and after merge, generation in the test repo (VERIFIED) opening a QA agent MR. Jenkins is not yet proven on a real server.
+- **History risk reads only what is kept here.** It counts known-defect tests, flaky runs in the run folders (which exist only where `.qa-sentinel/runs/` is kept, e.g. a CI cache) and `kb/history.yaml`. It does not read Jira, an incident tool or monitoring. Flaky names are matched to tests by title. Change types come from file names (`package.json` is read for its dependency sections; other dependency files count by name only), so a rename-only edit of a `.sql` file still counts. Not proven on a real large service.
 - The agent still decides coverage and decisions. Code validates them, forces conflicts to review and computes risk, but cannot prove a coverage judgement. The benchmark measures this; 8 scenarios is a start, not proof.
 - **Output quality follows input quality.** OpenAPI specs, consistent tags and a reviewed `test-map.yaml` make the biggest difference; `doctor` tells you what's missing.
 - **No acceptance criteria → weaker tests.** Without a story, tests can only check what the code does.

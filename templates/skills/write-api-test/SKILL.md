@@ -50,6 +50,14 @@ Until then, mirror the closest existing spec in `{{apiDir}}` exactly: imports, c
 - Independent tests: no ordering, no shared mutable records.
 - Clear failure messages; no `console.log` left behind.
 
+## Access control
+For an endpoint that decides who may call it, write one test per role and per outcome the plan asks for (scenarios with `access`):
+- Log in with the project's auth helpers (`tests.auth` in the config); never put a credential in a test.
+- `no-token`: call with no credentials at all and assert the refusal (401, or what the service returns), plus that no data came back.
+- `forbidden`: log in as a role that must not be allowed and assert the refusal (403), and that the data did not change.
+- `allowed`: log in as a role that may call it and assert the success and the values.
+- Tag each test with the role: `@role:<role name>` (`@role:none` for no token), next to `@service`, `@endpoint`, `@story`.
+
 ## Never
 - Sleeps or fixed waits, secrets in code, production URLs, disabling TLS checks.
 - Removing or loosening assertions without saying so in the summary.
