@@ -17,12 +17,14 @@ Two files, two repos:
 
 Set `QA_SPLIT_JOBS: "true"` (a CI/CD variable) and the work is done by two jobs instead of one:
 
-| Job | Has | Does not have | Does |
+| Job | Has | Should not have | Does |
 | --- | --- | --- | --- |
-| `qa-generate`, `qa-gap-report` (analysis) | the model key; `QA_SENTINEL_GITLAB_READ_TOKEN` (read_api + read_repository; the gap report needs read_api only); the Jira login for reading | the GitLab write token, the Jira publishing login | plan, write and verify the tests; leave the branch as `branch.bundle` and the rest in `publish.json` (`--defer-publish`) |
-| `qa-generate-publish`, `qa-gap-report-publish` | `QA_SENTINEL_GITLAB_WRITE_TOKEN` (api + write_repository); optionally `QA_JIRA_PUBLISH_PAT` (or `QA_JIRA_PUBLISH_EMAIL` + `QA_JIRA_PUBLISH_API_TOKEN`) | the model key | `qa-sentinel publish`: checks the bundle against the agent write policy again, pushes it, opens or updates the merge request, comments on the MR and in Jira, writes the story record |
+| `qa-generate`, `qa-gap-report` (analysis) | the model key; `QA_SENTINEL_GITLAB_READ_TOKEN` (read_api + read_repository; the gap report needs read_api only); the Jira login for reading | the GitLab write token, the Jira publishing login | plan, write and verify the tests; leave the branch as `branch.bundle` and every write in `publish.json` (`--defer-publish`). It writes no GitLab or Jira object, and keeps the story record in files |
+| `qa-generate-publish`, `qa-gap-report-publish` | `QA_SENTINEL_GITLAB_WRITE_TOKEN` (api + write_repository); optionally `QA_JIRA_PUBLISH_PAT` (or `QA_JIRA_PUBLISH_EMAIL` + `QA_JIRA_PUBLISH_API_TOKEN`); the non-secret base URL variables | the model key | `qa-sentinel publish`: re-checks the bundle against the agent write policy from a base it computes itself, pushes one `qa-sentinel/...` branch with a lease, opens or updates the merge request in the project from its own config, comments on the MR and in Jira, writes the story record |
 
-Not proven by us on a real GitLab (see docs/TRY-PR5.md). GitLab shows every project variable to every job, so the jobs `unset` the other half's secrets in their first lines; that keeps them from the programs the job starts, not from the job's variable list. To keep a secret out of a job completely, scope the variable to an environment (Settings › CI/CD › Variables › Environment scope) and give the job that environment (check how your GitLab version matches variables to jobs before relying on it).
+The run folder the analysis job hands over is **untrusted**: `publish` takes the project, the merge request, the target branch and the remote from its own config and CI variables, never from `publish.json`. The publish jobs run one at a time (`resource_group`), with full history (`GIT_DEPTH: 0`), in the environment `qa-publish`; the analysis jobs run in `qa-analysis`.
+
+Variables: GitLab lists every project variable to every job, and an `unset` in a script cannot reach `after_script` (a new shell). The analysis job therefore has its own `after_script` that drops the publish secrets and reads `.qa-env.sh` as text instead of running it. To keep a secret out of a job entirely, give the variable an **environment scope** (Settings › CI/CD › Variables): `qa-publish` for the write token and the Jira publishing login, `qa-analysis` for the model key; or protect them. Check how your GitLab version matches variables to jobs before relying on it; we have not run this on a real GitLab (docs/TRY-PR5.md). The status `VERIFIED` that publish writes into the MR and Jira is the analysis job's claim: `qa-agent-mr-checks` is the independent gate.
 Without `QA_SPLIT_JOBS` nothing changes: one job does everything with `QA_SENTINEL_GITLAB_TOKEN`.
 
 ## Setup checklist

@@ -8,7 +8,7 @@ import { type FileChange, showFile, workingChanges } from "./git.js";
 
 export interface Finding {
   level: "violation" | "warning";
-  rule: "blocked-path" | "outside-allowed" | "service-repo-modified" | "url-host" | "secret" | "assertion-removed" | "test-deleted" | "traceability" | "test-data" | "fixed-wait" | "expectation-changed" | "expectation-removed" | "expected-file-invalid" | "ac-test-disabled" | "expectation-override" | "known-defect-by-agent" | "expected-value-missing";
+  rule: "blocked-path" | "outside-allowed" | "service-repo-modified" | "url-host" | "secret" | "assertion-removed" | "test-deleted" | "traceability" | "test-data" | "fixed-wait" | "expectation-changed" | "expectation-removed" | "expected-file-invalid" | "ac-test-disabled" | "expectation-override" | "known-defect-by-agent" | "expected-value-missing" | "symlink" | "submodule" | "artifact-committed";
   file: string;
   message: string;
 }
@@ -47,6 +47,11 @@ export function learnPolicy(c?: Config): WritePolicy {
     allowed: [...LEARN_FILES, ...(c?.tests.web.enabled ? [".claude/skills/write-web-test/SKILL.md"] : []), ...(c?.tests.mobile.enabled ? [".claude/skills/write-mobile-test/SKILL.md"] : [])],
     blocked: [],
   };
+}
+
+/** Symbolic links and submodule links added by an agent: they can point outside the repository or pull in other code, so they are never allowed. */
+export function checkSpecialModes(found: { path: string; kind: "symlink" | "submodule" }[]): Finding[] {
+  return found.map((f) => ({ level: "violation" as const, rule: f.kind, file: f.path, message: f.kind === "symlink" ? "a symbolic link (mode 120000) may not be added by the agent" : "a submodule link (mode 160000) may not be added by the agent" }));
 }
 
 /** Path rules: blocked always wins; everything else must be allowed. Deletions and both sides of renames count. */
@@ -94,6 +99,8 @@ export function addedLines(repo: string, ref: string, file: string): string[] {
 
 function readSafe(file: string): string | undefined {
   try {
+    // A symbolic link is never followed: its target may be a file outside the repo (and the link itself is refused by checkSpecialModes).
+    if (fs.lstatSync(file).isSymbolicLink()) return undefined;
     return fs.readFileSync(file, "utf8");
   } catch {
     return undefined;

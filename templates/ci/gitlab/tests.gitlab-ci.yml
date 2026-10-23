@@ -7,7 +7,7 @@
 # CI/CD variables: ANTHROPIC_API_KEY (or Bedrock/Vertex: see service.gitlab-ci.yml), QA_SENTINEL_GITLAB_TOKEN (api + write_repository), {{baseUrlEnv}}{{#if webEnabled}}, {{webBaseUrlEnv}} (web){{/if}}{{#if mobileEnabled}}, QA_APPIUM_URL + QA_APP or QA_APP_PACKAGE/QA_BUNDLE_ID + QA_MOBILE_PLATFORM (mobile){{/if}}
 # Allow this project's CI_JOB_TOKEN to read the service repos (Settings › CI/CD › Job token permissions).
 #
-# Security notes:
+# Security notes (read "Honest limits" in SECURITY.md first):
 # - qa-sentinel never passes QA_SENTINEL_GITLAB_TOKEN or CI_JOB_TOKEN to the agent or to test runs, and pushes
 #   with a one-off URL (the token is never written to .git/config).
 # - Split jobs (opt-in, QA_SPLIT_JOBS: "true"): qa-generate then runs with the model key and a READ-only GitLab token
@@ -84,6 +84,27 @@ qa-generate:
   # ONE write-enabled generation at a time for the whole test repo: services share test-map.yaml, clients and fixtures.
   resource_group: qa-sentinel-generate
   timeout: 45m
+  # Scope the model key to this environment (Settings > CI/CD > Variables > Environment scope = qa-analysis) so other jobs never get it.
+  environment:
+    name: qa-analysis
+    action: prepare
+  # Its OWN after_script, not .qa-node's: that one runs in a new shell (an `unset` in the script does not reach it) and runs
+  # a file from the work tree, which code the agent wrote could have replaced. Here nothing from the work tree is run:
+  # in split mode the secrets of the publish job are dropped, and the environment URL is read as text, not sourced.
+  after_script:
+    - cd "$CI_PROJECT_DIR/{{testsPrefix}}."
+    - |
+      if [ "$QA_SPLIT_JOBS" = "true" ]; then
+        unset QA_SENTINEL_GITLAB_WRITE_TOKEN QA_JIRA_PUBLISH_PAT QA_JIRA_PUBLISH_EMAIL QA_JIRA_PUBLISH_API_TOKEN
+        qa_url="$(sed -n "s/^export {{baseUrlEnv}}='\(.*\)'$/\1/p" "$CI_PROJECT_DIR/.qa-env.sh" 2>/dev/null | head -n 1)"
+        case "$qa_url" in https://*|http://*) case "$qa_url" in *[!A-Za-z0-9._:/@%?=\&~+-]*) qa_url="" ;; esac ;; *) qa_url="" ;; esac
+        if [ -n "$qa_url" ]; then export {{baseUrlEnv}}="$qa_url"; fi
+      elif [ -f "$CI_PROJECT_DIR/.qa-env.sh" ]; then
+        . "$CI_PROJECT_DIR/.qa-env.sh"
+      fi
+    - if ls "{{ledgerDir}}"/*.jsonl >/dev/null 2>&1; then export QA_INSTALL_SKIP=0; else export QA_INSTALL_SKIP=1; fi
+    - !reference [.qa-sentinel-install, script]
+    - if [ "$QA_INSTALL_SKIP" = "0" ]; then qa-sentinel data sweep --older-than 0 --out qa-data-sweep.md || echo "WARNING qa-sentinel – test data was left behind on the test environment (see above and qa-data-sweep.md)"; fi
   script:
     - npm i -g --no-audit --no-fund --loglevel=error @anthropic-ai/claude-code
     - !reference [.qa-sentinel-install, script]
@@ -138,6 +159,12 @@ qa-generate-publish:
   # Pushes are one at a time, with the generation they belong to.
   resource_group: qa-sentinel-generate
   timeout: 15m
+  variables:
+    GIT_DEPTH: 0   # the publish job finds the base of the bundle itself (merge-base with the freshly fetched target branch)
+  # Scope the write token and the Jira publishing login to this environment (Environment scope = qa-publish); no other job gets them.
+  environment:
+    name: qa-publish
+    action: prepare
   script:
     - !reference [.qa-sentinel-install, script]
 {{#if testsSubdir}}
@@ -145,8 +172,7 @@ qa-generate-publish:
 {{/if}}
     - export QA_SENTINEL_GITLAB_TOKEN="${QA_SENTINEL_GITLAB_WRITE_TOKEN:?qa-generate-publish needs QA_SENTINEL_GITLAB_WRITE_TOKEN (api + write_repository)}"
     - unset ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN ANTHROPIC_BASE_URL CLAUDE_CODE_USE_BEDROCK CLAUDE_CODE_USE_VERTEX AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN
-    - if [ -n "$QA_JIRA_PUBLISH_PAT" ]; then export JIRA_PAT="$QA_JIRA_PUBLISH_PAT"; fi
-    - if [ -n "$QA_JIRA_PUBLISH_API_TOKEN" ]; then export JIRA_API_TOKEN="$QA_JIRA_PUBLISH_API_TOKEN" JIRA_EMAIL="$QA_JIRA_PUBLISH_EMAIL"; fi
+    # The Jira publishing login (QA_JIRA_PUBLISH_*) is picked by `qa-sentinel publish` itself; the read login (JIRA_*) is not used for writing.
     - git remote set-url origin "${CI_SERVER_URL}/${CI_PROJECT_PATH}.git"   # strip the job token GitLab put in .git/config
     # The policy check runs inside publish: the bundle is checked against the agent write policy before anything is pushed.
     - qa-sentinel publish --run all

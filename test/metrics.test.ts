@@ -244,6 +244,21 @@ describe("budget suggestions from story records", () => {
     expect(s.notes.join(" ")).toMatch(/needs 10 stories with a generate job \(found 9\)/);
     expect(s.notes.join(" ")).toMatch(/need 10 days with AI spend \(found 9\)/);
   });
+  it("a story seen in two folders with different jobs is summed (a job in both counts once); $0 dry-run stories are not samples", async () => {
+    const { suggestAutomationBudgets } = await import("../src/commands/metrics.js");
+    const a = await rec("SHOP-1", 3);
+    const b = await rec("SHOP-1", 4);
+    a.jobs = { g1: { key: "g1", kind: "generate", state: "done", startedAt: "2026-10-01T00:00:00Z", attempts: 1, costUsd: 3 }, shared: { key: "shared", kind: "generate", state: "done", startedAt: "2026-10-02T00:00:00Z", attempts: 1, costUsd: 1 } };
+    b.jobs = { g2: { key: "g2", kind: "generate", state: "done", startedAt: "2026-10-03T00:00:00Z", attempts: 1, costUsd: 4 }, shared: { key: "shared", kind: "generate", state: "done", startedAt: "2026-10-02T00:00:00Z", attempts: 1, costUsd: 1 } };
+    a.totalCostUsd = 4;
+    b.totalCostUsd = 5;
+    const others = await Promise.all(Array.from({ length: 9 }, (_, i) => rec(`SHOP-${10 + i}`, 1, { days: [`2026-10-${String(i + 1).padStart(2, "0")}`] })));
+    const dry = await Promise.all(Array.from({ length: 5 }, (_, i) => rec(`SHOP-${50 + i}`, 0)));
+    const eight = await rec("SHOP-2", 8);
+    const s = suggestAutomationBudgets([a, b, eight, ...others, ...dry]);
+    expect(s.stories).toBe(11); // SHOP-1 once (3 + 1 + 4 = 8), SHOP-2, nine others; the five $0 stories are left out
+    expect(s.perStoryUsd).toBe(12); // p90 of [1 x 9, 8, 8] is 8 (SHOP-1 summed, not dropped) -> x 1.5
+  });
   it("is part of the report and the JSON, and --records reads a folder of downloaded records read only", async () => {
     const { computeMetrics, metricsMarkdown } = await import("../src/commands/metrics.js");
     const { readRecordsFrom } = await import("../src/stories/record.js");

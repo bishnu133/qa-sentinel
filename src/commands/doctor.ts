@@ -178,10 +178,14 @@ export function runChecks(cwd: string, env: NodeJS.ProcessEnv = process.env): Ch
       add("warn", "requirements.storyKeyPattern matches every project key", `${c.requirements.storyKeyPattern} doesn't match ${c.requirements.jira.projectKeys.filter((k) => !new RegExp(`^(?:${c.requirements.storyKeyPattern})$`).test(`${k}-1`)).join(", ")}`);
   }
   if (c.verification.wrapCommand) {
-    // The wrapper is run once with `true`: proves it starts and passes the exit code through, not that it isolates anything.
-    const r = spawnSync(wrapTestCommand(c, "true"), { shell: true, encoding: "utf8", timeout: 60_000 });
-    if (r.status === 0) add("ok", "verification.wrapCommand runs a command", "it starts, and the exit code passes through; what it isolates is up to the wrapper (see docs/SECURITY.md)");
-    else add("fail", "verification.wrapCommand runs a command", `\`${wrapTestCommand(c, "true")}\` ${r.error ? `failed: ${r.error.message}` : `exited ${r.status}`}${r.stderr ? `: ${r.stderr.trim().slice(0, 160)}` : ""}`);
+    // A command with spaces and quotes that exits 7: the wrapper must run it as one command, print its output, and pass the exit code through
+    // (`true` would pass a wrapper that drops arguments or always exits 0). It does not prove that the wrapper isolates anything.
+    const probe = `printf '%s' 'a b "c" d'"'"'e'; exit 7`;
+    const want = `a b "c" d'e`;
+    const shown = wrapTestCommand(c, probe);
+    const r = spawnSync(shown, { shell: true, encoding: "utf8", timeout: 60_000 });
+    if (r.status === 7 && (r.stdout ?? "").includes(want)) add("ok", "verification.wrapCommand runs a command", "a command with spaces and quotes ran, its output came back and its exit code (7) passed through; what the wrapper isolates is up to the wrapper (see SECURITY.md)");
+    else add("fail", "verification.wrapCommand runs a command", r.error ? `failed to start: ${r.error.message}` : r.status !== 7 ? `a test command that exits 7 came back as exit ${r.status}: the wrapper must pass the exit code through (a failing test would look green)${r.stderr ? `: ${r.stderr.trim().slice(0, 160)}` : ""}` : "the command's output did not come back whole: check the quoting around {cmd} (use sh -c {cmd})");
   }
   if (c.agent.sandbox.enabled) {
     // Claude Code's Bash sandbox: on Linux it needs bubblewrap and socat (macOS has Seatbelt built in). Native Windows runs commands unsandboxed.

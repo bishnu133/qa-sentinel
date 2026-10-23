@@ -8,8 +8,9 @@ import { type JobHandle, beginJob, budgetedEngine, endJob, jobPolicy } from "./j
 import { type JobKind, NO_STORY, type RecordStore, fileStore, jiraStore } from "./record.js";
 
 /** The configured record store. A Jira store that can't be set up (no credentials, no URL) falls back to files, with a warning. */
-export function openStore(cwd: string, c: Config, env: NodeJS.ProcessEnv = process.env): RecordStore {
-  if (c.automation.record === "jira") {
+export function openStore(cwd: string, c: Config, env: NodeJS.ProcessEnv = process.env, local = false): RecordStore {
+  // `local`: the analysis job of the split CI jobs. It holds no Jira write login, so it keeps its record in files only (the publish job writes the Jira side).
+  if (c.automation.record === "jira" && !local) {
     const ctx = jiraContext(c.requirements.jira, env);
     if (ctx) return jiraStore(cwd, ctx);
     log.warn("automation.record is jira, but there is no Jira URL or credentials here: the story record is kept in files only");
@@ -33,6 +34,8 @@ export interface StartJobOptions {
   env?: NodeJS.ProcessEnv;
   /** See BeginOptions.exclusive. */
   exclusive?: boolean;
+  /** Split CI jobs, analysis side: story record in files only, and no note to Jira (see openStore). */
+  local?: boolean;
 }
 
 /**
@@ -40,7 +43,7 @@ export interface StartJobOptions {
  * with an exit code: 0 when the same work is done or running (nothing to do), EXIT_LIMIT when a limit stopped it.
  */
 export async function startJob(o: StartJobOptions): Promise<JobStart> {
-  const store = openStore(o.cwd, o.c, o.env);
+  const store = openStore(o.cwd, o.c, o.env, o.local);
   let r;
   try {
     r = await beginJob(store, { story: o.story, kind: o.kind, key: o.key, policy: jobPolicy(o.c, { force: o.force, once: o.once }, o.env), budgets: o.c.automation.budgets, ...(o.exclusive ? { exclusive: true } : {}) });
@@ -58,7 +61,7 @@ export async function startJob(o: StartJobOptions): Promise<JobStart> {
     return { run: false, exitCode: 0, message: r.message };
   }
   log.fail(r.message);
-  if (r.reason === "budget" && o.story !== NO_STORY) await notifyStory(o.cwd, o.c, o.story, "stopped-by-budget", `qa-sentinel stopped before starting AI work on this story: ${r.message}`, o.key, o.env, store);
+  if (r.reason === "budget" && o.story !== NO_STORY && !o.local) await notifyStory(o.cwd, o.c, o.story, "stopped-by-budget", `qa-sentinel stopped before starting AI work on this story: ${r.message}`, o.key, o.env, store);
   return { run: false, exitCode: EXIT_LIMIT, message: r.message };
 }
 
@@ -87,14 +90,14 @@ export { endJob };
  * engine; `refused` builds the command's result when a limit stops it.
  */
 export async function withSpend<T>(
-  o: { cwd: string; c: Config; story?: string; label: string; skip?: boolean; env?: NodeJS.ProcessEnv },
+  o: { cwd: string; c: Config; story?: string; label: string; skip?: boolean; env?: NodeJS.ProcessEnv; local?: boolean },
   refused: (exitCode: number, message?: string) => T,
   run: (wrap: (e: AgentEngine) => AgentEngine, handle?: JobHandle) => Promise<T>,
   exitCodeOf: (t: T) => number,
 ): Promise<T> {
   if (o.skip) return run((e) => e);
   const story = (o.story ?? "").toUpperCase() || NO_STORY;
-  const start = await startJob({ cwd: o.cwd, c: o.c, story, kind: "other", key: `other:${o.label}:${Date.now().toString(36)}-${process.pid}`, env: o.env });
+  const start = await startJob({ cwd: o.cwd, c: o.c, story, kind: "other", key: `other:${o.label}:${Date.now().toString(36)}-${process.pid}`, env: o.env, local: o.local });
   if (!start.run) return refused(start.exitCode, start.message);
   try {
     const result = await run((e) => budgetedEngine(e, start.handle), start.handle);

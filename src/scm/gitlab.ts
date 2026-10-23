@@ -15,7 +15,7 @@ export function gitlabToken(env: NodeJS.ProcessEnv = process.env): string | unde
 export function gitlabContext(gitlabUrl: string, env: NodeJS.ProcessEnv = process.env): GitLabContext | undefined {
   const token = gitlabToken(env);
   if (!token) return undefined;
-  const apiUrl = env.CI_API_V4_URL ?? `${gitlabUrl.replace(/\/$/, "")}/api/v4`;
+  const apiUrl = env.CI_API_V4_URL ?? `${gitlabUrl.replace(/\/+$/, "")}/api/v4`;
   return { apiUrl, token };
 }
 
@@ -243,6 +243,8 @@ export async function rawFile(ctx: GitLabContext, project: string | number, file
   const res = await netFetch(`${ctx.apiUrl}/projects/${enc(project)}/repository/files/${enc(file)}/raw?ref=${enc(ref)}`, { headers: { "PRIVATE-TOKEN": ctx.token } });
   if (res.status === 404) return undefined;
   if (!res.ok) throw new GitLabError(`GitLab GET ${file} in ${project}: ${res.status}`, res.status);
+  // GitLab serves raw files as text/plain. A web page (single sign-on, a proxy login) comes as text/html and would be taken for the file.
+  if (/text\/html/i.test(res.headers.get("content-type") ?? "")) throw new GitLabError(`GitLab GET ${file} in ${project} answered with a web page, not the file (${WEB_PAGE_HINT})`, res.status);
   return res.text();
 }
 

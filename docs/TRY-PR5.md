@@ -9,9 +9,9 @@ Only fake servers on 127.0.0.1 were used.
 
 1. `export QAS=~/Documents/qa-sentinel`
 2. `cd $QAS && git fetch origin && git checkout pr5-hardening && npm ci && npm run build`
-3. `npx vitest run test/realSystems.test.ts test/publish.test.ts test/splitJobs.test.ts test/metrics.test.ts`
+3. `npx vitest run test/realSystems.test.ts test/publish.test.ts test/bundlePolicy.test.ts test/splitJobs.test.ts test/metrics.test.ts`
 
-Expect: 4 files, all passing. `realSystems` has 21 tests, `publish` has 5, `splitJobs` has 3.
+Expect: 5 files, all passing `realSystems` 26 tests, `publish` 17, `bundlePolicy` 6, `splitJobs` 5, `metrics` 11. `publish.test.ts` and `bundlePolicy.test.ts` try to fool `qa-sentinel publish` with hand-made `publish.json` and `branch.bundle` files (a fake base commit, a branch called `main`, another project, a symlink, a submodule, a hidden change in a merge commit, a moved story branch, two publishes at once).
 The tests start a fake Jira Data Center (token login, `/rest/api/2`) and a fake GitLab under a sub-path
 (`http://127.0.0.1:PORT/gitlab`) on your own computer. They need no internet and no git name or e-mail.
 
@@ -40,10 +40,12 @@ The tests start a fake Jira Data Center (token login, `/rest/api/2`) and a fake 
 2. Set the CI variable `QA_SPLIT_JOBS` to `true`.
 3. Make two tokens: a read one (`read_api` and `read_repository`) and a write one (`api` and `write_repository`).
    Save them as `QA_SENTINEL_GITLAB_READ_TOKEN` and `QA_SENTINEL_GITLAB_WRITE_TOKEN`.
-4. Keep the model key only in the analysis job's variables. Scope variables to the environments as the template README says.
-5. Run the pipeline. Expect: `qa-generate` (or `qa-gap-report`) makes a `publish.json` and a `branch.bundle` in its artifacts and writes nothing. Then `qa-generate-publish` pushes and opens the MR.
-6. Open the log of the publish job. Expect: no model key and no agent run.
-7. To test the safety check, put a forbidden file (for example under a path your write policy denies) into the bundle by hand. Expect: publish refuses.
+4. Give each variable an **environment scope** (Settings, CI/CD, Variables): the model key gets `qa-analysis`; the write token and the Jira publishing login (`QA_JIRA_PUBLISH_PAT`, or `QA_JIRA_PUBLISH_EMAIL` and `QA_JIRA_PUBLISH_API_TOKEN`) get `qa-publish`. The jobs name these environments. This step is the real separation. Without it, GitLab shows every variable to every job.
+5. The publish job also needs the non-secret test URL variables (for example `QA_BASE_URL`), so the check of URLs in the new tests knows your test environment.
+6. Run the pipeline. Expect: `qa-generate` (or `qa-gap-report`) makes a `publish.json` and a `branch.bundle` in its artifacts and writes nothing to GitLab or Jira. Then `qa-generate-publish` pushes and opens the MR.
+7. Open the log of the analysis job and the publish job. Check that the write token variable is not in the analysis job's list of variables, and the model key is not in the publish job's. Write down what you saw. We could not check this ourselves.
+8. Open the log of the publish job. Expect: no model key and no agent run.
+9. To test the safety check, edit `publish.json` in a copy of the artifact: add `"project": "99"`, or change the branch to `main`. Expect: publish refuses and pushes nothing.
 
 ### R4. Cost growth on a large service (needs a big service and its past run data; costs nothing new, reads old files)
 

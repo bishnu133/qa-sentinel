@@ -29,8 +29,8 @@ export interface BranchCommit {
 }
 
 /** Non-merge commits on the branch since `base`, oldest first, with what each changed (computed once). */
-export function branchCommits(repo: string, base: string): BranchCommit[] {
-  const raw = git(repo, ["log", "--reverse", "--no-merges", "--format=%H%x09%an <%ae>%x00%B%x1e", `${base}..HEAD`, "--", "."]);
+export function branchCommits(repo: string, base: string, head = "HEAD", allAgent = false, exclude?: string): BranchCommit[] {
+  const raw = git(repo, ["log", "--reverse", "--no-merges", "--format=%H%x09%an <%ae>%x00%B%x1e", `${base}..${head}`, ...(exclude ? [`^${exclude}`] : [])]);
   return raw
     .split("\x1e")
     .map((r) => r.trim())
@@ -38,7 +38,7 @@ export function branchCommits(repo: string, base: string): BranchCommit[] {
     .map((r) => {
       const [head, body = ""] = r.split("\0");
       const [sha, author] = head.split("\t");
-      return { sha, author, body, agent: AGENT_COMMIT.test(body), changes: changesBetween(repo, `${sha}^`, sha).filter((x) => !matchesAny(x.path, ARTIFACT_GLOBS)) };
+      return { sha, author, body, agent: allAgent || AGENT_COMMIT.test(body), changes: changesBetween(repo, `${sha}^`, sha).filter((x) => !matchesAny(x.path, ARTIFACT_GLOBS)) };
     });
 }
 
@@ -104,10 +104,11 @@ function trailerAcs(commits: BranchCommit[]): Map<string, CurrentAc[]> {
  * made a change of that kind to the same test or AC; otherwise a person made it, which is accepted and listed as an
  * override. A person who rewrites qa-sentinel's commit takes it over: it shows as their override, never hidden.
  */
-export async function lockByAuthor(repo: string, c: Config, base: string): Promise<Finding[]> {
-  const commits = branchCommits(repo, base);
+export async function lockByAuthor(repo: string, c: Config, base: string, o: { head?: string; allAgent?: boolean; /** Commits reachable from this ref (the target branch merged into the story branch) are other people's, not the branch's. */ exclude?: string } = {}): Promise<Finding[]> {
+  const head = o.head ?? "HEAD";
+  const commits = branchCommits(repo, base, head, o.allAgent, o.exclude);
   if (!commits.length) return [];
-  const net = changesBetween(repo, base, "HEAD").filter((x) => !matchesAny(x.path, ARTIFACT_GLOBS));
+  const net = changesBetween(repo, base, head).filter((x) => !matchesAny(x.path, ARTIFACT_GLOBS));
   const fromJira = await currentAcsFor(c, storiesTouched(repo, c.tests.expectedDir, base, net));
   const currentAcs = new Map([...trailerAcs(commits), ...fromJira]);
   // What is locked is always decided from the branch base: a person's commit in between can't open it for the AI.
@@ -118,8 +119,8 @@ export async function lockByAuthor(repo: string, c: Config, base: string): Promi
   const lockedBy = (f: string) => showFile(repo, base, f) ?? (created.has(f) ? showFile(repo, created.get(f)!, f) : undefined);
   const lock = (changes: FileChange[], from: string, to: string) => checkExpectationLockDetailed({ expectedDir: c.tests.expectedDir, changes, before: (f) => showFile(repo, from, f), after: (f) => showFile(repo, to, f), lockedBy, currentAcs });
   const found = [
-    ...lock(net, base, "HEAD"),
-    ...[...created].filter(([f]) => net.some((x) => x.path === f)).flatMap(([f, sha]) => lock([{ path: f, status: showFile(repo, "HEAD", f) === undefined ? "D" : "M" }], sha, "HEAD")),
+    ...lock(net, base, head),
+    ...[...created].filter(([f]) => net.some((x) => x.path === f)).flatMap(([f, sha]) => lock([{ path: f, status: showFile(repo, head, f) === undefined ? "D" : "M" }], sha, head)),
   ];
   // test.fail added by qa-sentinel's own commits (only a person marks a known defect).
   const defects = commits

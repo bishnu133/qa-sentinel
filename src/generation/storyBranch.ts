@@ -31,8 +31,14 @@ const isAncestor = (cwd: string, a: string, b: string, env?: NodeJS.ProcessEnv) 
 /** Where to fetch from and push to: the test repo's project with the token in a one-off URL (never in .git/config), else `origin`. */
 export function remoteFor(c: Config, env: NodeJS.ProcessEnv = process.env): string {
   const projectPath = c.ci.testRepoProject && !/^\d+$/.test(c.ci.testRepoProject) ? c.ci.testRepoProject : env.CI_PROJECT_PATH;
-  return pushUrl(c.ci.gitlabUrl, projectPath, env) ?? "origin";
+  const url = pushUrl(c.ci.gitlabUrl, projectPath, env);
+  if (url?.startsWith("http://") && !warnedHttp) {
+    warnedHttp = true;
+    log.warn("the push URL is plain http://: the GitLab token travels unencrypted. Use https:// in ci.gitlabUrl.");
+  }
+  return url ?? "origin";
 }
+let warnedHttp = false;
 
 export interface RemoteBranch {
   /** The commit the branch is at on the server (undefined: there is no such branch, or the server could not be reached). */
