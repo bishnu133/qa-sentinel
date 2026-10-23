@@ -3,10 +3,11 @@ import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { loadConfig } from "../config.js";
 import { indexTests } from "../analysis/testIndex.js";
-import { activeParts, assembleFeature, revertedParts, type FeatureManifest } from "../feature/manifest.js";
+import { activeParts, assembleFeature, newFeatureCache, revertedParts, type FeatureManifest } from "../feature/manifest.js";
 import { inRef, safeRef } from "../release/git.js";
 import { gitlabContext } from "../scm/gitlab.js";
-import { runCommandsFor } from "../layers.js";
+import { suiteRunCommands } from "../layers.js";
+import { packageScripts } from "../verification.js";
 import { testEnv, useEnvironment } from "../run.js";
 import { log } from "../log.js";
 import { wrapTestCommand } from "../wrapper.js";
@@ -77,7 +78,10 @@ export async function suiteCommand(o: SuiteOptions): Promise<number> {
   const tag = o.tag ? { ref: o.tag, inRef: (service: string, sha: string) => { const s = c.workspace.services.find((x) => x.name === service); return s ? inRef(path.resolve(cwd, s.path), sha, o.tag!) : undefined; } } : undefined;
 
   const verdicts = new Map<string, StoryVerdict>();
-  for (const story of stories) verdicts.set(story, judgeStory(await assembleFeature({ c, cwd, story, gitlab: gl, environment, baseUrl, checkUnmerged: true }), tag));
+  // One lookup per service and one revert scan per repository for the whole run, not one per story.
+  const cache = newFeatureCache();
+  const scanCache = new Map();
+  for (const story of stories) verdicts.set(story, judgeStory(await assembleFeature({ c, cwd, story, gitlab: gl, environment, baseUrl, checkUnmerged: true, cache, scanCache }), tag));
 
   const run: typeof active = [];
   const left: { test: (typeof active)[number]; why: string }[] = [];
@@ -86,6 +90,7 @@ export async function suiteCommand(o: SuiteOptions): Promise<number> {
     if (held.length) left.push({ test: t, why: held.map((v) => `${v.story}: ${v.why}`).join("; ") });
     else run.push(t);
   }
+  const scenarios = run.filter((t) => t.bdd);
   const where = o.env ? `on ${o.env}` : `in ${o.tag}`;
   const md = [
     `### Suite for what is ${o.env ? "deployed" : "released"} ${where}`,
@@ -96,11 +101,12 @@ export async function suiteCommand(o: SuiteOptions): Promise<number> {
     "| --- | --- | --- |",
     ...[...verdicts.values()].map((v) => `| ${v.story} | ${v.state === "included" ? "✅" : v.state === "held-back" ? "⏸️ held back" : "❔ unknown (runs)"} | ${v.why} |`),
     ...(left.length ? ["", "Left out:", ...left.map((l) => `- \`${l.test.file}:${l.test.line}\` ${l.test.title} (${l.why})`)] : []),
+    ...(scenarios.length ? ["", `Cucumber scenarios (${scenarios.length}; qa-sentinel does not run them, your BDD job does):`, ...scenarios.map((t) => `- \`${t.file}:${t.line}\` ${t.title}`)] : []),
   ].join("\n");
   const base = path.resolve(cwd, o.out ?? "qa-suite");
   fs.writeFileSync(`${base}.md`, md + "\n");
-  fs.writeFileSync(`${base}.txt`, run.map((t) => `${t.file}:${t.line}`).join("\n") + (run.length ? "\n" : ""));
-  if (o.json) process.stdout.write(JSON.stringify({ where, run: run.map((t) => `${t.file}:${t.line}`), leftOut: left.map((l) => ({ test: `${l.test.file}:${l.test.line}`, why: l.why })), stories: [...verdicts.values()] }, null, 2) + "\n");
+  fs.writeFileSync(`${base}.txt`, run.filter((t) => !t.bdd).map((t) => `${t.file}:${t.line}`).join("\n") + (run.some((t) => !t.bdd) ? "\n" : ""));
+  if (o.json) process.stdout.write(JSON.stringify({ where, run: run.filter((t) => !t.bdd).map((t) => `${t.file}:${t.line}`), cucumber: scenarios.map((t) => `${t.file}:${t.line}`), leftOut: left.map((l) => ({ test: `${l.test.file}:${l.test.line}`, why: l.why })), stories: [...verdicts.values()] }, null, 2) + "\n");
   else log.info(md + `\n\nwritten to ${path.basename(base)}.md and ${path.basename(base)}.txt (file:line list for the runner)`);
 
   if (!o.run) return 0;
@@ -108,10 +114,16 @@ export async function suiteCommand(o: SuiteOptions): Promise<number> {
     log.warn("no tests to run");
     return 2;
   }
-  const bdd = active.filter((t) => t.bdd && run.includes(t)).length;
-  if (bdd) log.warn(`${bdd} Cucumber scenario(s) are in the list but not run here: run them with your BDD job`);
+  if (scenarios.length) log.warn(`${scenarios.length} Cucumber scenario(s) are listed separately and not run here: run them with your BDD job`);
+  const plain = run.filter((t) => !t.bdd);
+  if (!plain.length) {
+    log.warn("only Cucumber scenarios were selected: nothing to run here");
+    return 0;
+  }
+  const held = [...verdicts.values()].filter((v) => v.state === "held-back").map((v) => v.story);
   let status = 0;
-  for (const cmd of runCommandsFor(c, run.filter((t) => !t.bdd).map((t) => `${t.file}:${t.line}`))) {
+  for (const { command: cmd, note } of suiteRunCommands(c, plain, held, packageScripts(cwd))) {
+    if (note) log.warn(note);
     const r = spawnSync(wrapTestCommand(c, cmd), { cwd, shell: true, stdio: "inherit", env: testEnv(c, process.env, { healing: true }) });
     if ((r.status ?? 1) !== 0) status = r.status ?? 1;
   }

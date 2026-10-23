@@ -137,17 +137,26 @@ export function runChecks(cwd: string, env: NodeJS.ProcessEnv = process.env): Ch
   if (!fs.existsSync(mapFile)) add("warn", "test-map.yaml present", "run `qa-sentinel learn`");
   else {
     const map = YAML.parse(fs.readFileSync(mapFile, "utf8")) ?? {};
-    const services = Object.values<any>(map.services ?? {});
-    const mapped = services.filter((s) => Object.keys(s?.endpoints ?? {}).length > 0 || Object.keys(s?.screens ?? {}).length > 0).length;
-    const level: Level = services.length && mapped === services.length ? "ok" : "warn";
-    add(level, `test-map: ${mapped}/${services.length} services have endpoints or screens mapped`, level === "warn" ? "run `qa-sentinel learn`" : undefined);
+    const entries = Object.entries<any>(map.services ?? {});
+    const mapped = entries.filter(([, s]) => Object.keys(s?.endpoints ?? {}).length > 0 || Object.keys(s?.screens ?? {}).length > 0).length;
+    const level: Level = entries.length && mapped === entries.length ? "ok" : "warn";
+    add(level, `test-map: ${mapped}/${entries.length} services have endpoints or screens mapped`, level === "warn" ? "run `qa-sentinel learn`" : undefined);
+    // The map and the config must name the same services (a service added to the config later is never in the map).
+    const inConfig = c.workspace.services.map((s) => s.name);
+    const notInMap = inConfig.filter((n) => !(n in (map.services ?? {})));
+    const notInConfig = entries.map(([n]) => n).filter((n) => inConfig.length && !inConfig.includes(n));
+    if (notInMap.length) add("warn", "test-map.yaml lists every service of the config", `not in test-map.yaml: ${notInMap.join(", ")}; add them (or run \`qa-sentinel learn\`)`);
+    if (notInConfig.length) add("warn", "test-map.yaml lists only services of the config", `not in the config: ${notInConfig.join(", ")}; remove them from test-map.yaml or add them to workspace.services`);
   }
   const index = indexTests(cwd, c);
   if (index.length) {
     const tagged = index.filter((t) => t.endpoints.length || t.pages.length).length;
     add(tagged === index.length ? "ok" : "warn", `test tags: ${tagged}/${index.length} tests have @endpoint, @page or @screen`, tagged === index.length ? undefined : "tag tests so impact analysis and traceability can find them (`qa-sentinel trace`)");
-    const mismatches = checkTestMap(index, readTestMap(cwd), cwd).filter((f) => f.level === "warning").length;
-    if (mismatches) add("warn", `test-map.yaml agrees with test tags`, `${mismatches} mismatch(es); run \`qa-sentinel trace\``);
+    const map = readTestMap(cwd);
+    const empty = !!map && !Object.values(map.services ?? {}).some((s) => Object.keys(s?.endpoints ?? {}).length || Object.keys(s?.screens ?? {}).length);
+    const found = checkTestMap(index, map, cwd).filter((f) => f.level === "warning");
+    if (empty && found.length) add("warn", "test-map.yaml agrees with test tags", `test-map.yaml is empty but ${index.filter((t) => t.endpoints.length || t.pages.length).length} test(s) are tagged: run \`qa-sentinel learn\` to fill it (one line here instead of ${found.length} mismatches)`);
+    else if (found.length) add("warn", "test-map.yaml agrees with test tags", `${found.length} mismatch(es), e.g. ${found[0].message}; \`qa-sentinel trace\` lists all, \`qa-sentinel learn\` redrafts the map`);
   }
 
   if (env[c.tests.api.baseUrlEnv]) add("ok", `${c.tests.api.baseUrlEnv} set`);

@@ -167,6 +167,17 @@ export function withRecordParts(m: FeatureManifest, rec: StoryRecord, c: Config,
   return { ...m, parts, notes, ...(dropped.length ? { dropped } : {}), status: featureStatus(parts, m.environment) };
 }
 
+/** One label for a service's ranges: "orders !12 merged, orders !14 open" -> "orders !12 merged, !14 open"; the same label for several ranges is said once ("feature/x merged (3 changes)"). */
+export function rangesLabel(service: string, labels: string[]): string {
+  if (labels.length === 1) return labels[0];
+  const counts = new Map<string, number>();
+  for (const l of labels) {
+    const rest = l.startsWith(service) ? l.slice(service.length).trim() : l;
+    counts.set(rest, (counts.get(rest) ?? 0) + 1);
+  }
+  return `${service} ${[...counts].map(([rest, n]) => (n > 1 ? `${rest} (${n} changes)` : rest)).join(", ")}`;
+}
+
 /** A merged MR's diff base, from GitLab's single-MR endpoint (the list endpoint has no diff_refs). */
 async function diffRefsOf(gitlab: GitLabContext | undefined, service: ServiceConfig, iid: number): Promise<ServicePart["diffRefs"] | undefined> {
   if (!gitlab || !service.gitlabProject) return undefined;
@@ -243,7 +254,7 @@ export async function storyParts(i: { c: Config; cwd: string; story: string; git
     const files = [...new Set(sets.flatMap((x) => x.files))];
     const diff = sets.length === 1 ? sets[0].diff : sets.map((x) => `# ----- ${x.base.slice(0, 8)}..${x.head.slice(0, 8)} -----\n${x.diff}`).join("\n");
     const cs: ChangeSet = { base: sets[0].base, head: sets[0].head, files, diff };
-    parts.push({ service, repo, cs, heads: sets.map((x) => x.head), relevant: files.filter((f) => !matchesAny(f, i.c.agent.skipPaths)), merged: ranges.every((r) => r.merged), label: ranges.length === 1 ? ranges[0].label : `${service.name} ${ranges.map((r) => r.label.slice(service.name.length).trim()).join(", ")}` });
+    parts.push({ service, repo, cs, heads: sets.map((x) => x.head), relevant: files.filter((f) => !matchesAny(f, i.c.agent.skipPaths)), merged: ranges.every((r) => r.merged), label: rangesLabel(service.name, ranges.map((r) => r.label)) });
   }
   return { parts, manifest, notes };
 }

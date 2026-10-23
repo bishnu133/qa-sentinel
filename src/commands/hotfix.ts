@@ -6,6 +6,7 @@ import { findService } from "../run.js";
 import { postToStory } from "../reporting/statusComment.js";
 import { jiraContext, markdownToJiraWiki } from "../scm/jira.js";
 import { log } from "../log.js";
+import { EXIT_STILL_WAITING } from "./postDeploy.js";
 
 export interface HotfixOptions {
   cwd: string;
@@ -18,6 +19,13 @@ export interface HotfixOptions {
   story?: string;
   post?: boolean;
   json?: boolean;
+  /** Exit 75 (the same "still waiting" code as post-deploy) while a hotfix commit is not on the main branch yet. */
+  failIfWaiting?: boolean;
+  /** Also exit 1 when a commit is on the main branch but no tests were written from it `graceDays` after it landed. Includes failIfWaiting. */
+  strict?: boolean;
+  graceDays?: number;
+  /** For tests: the clock. */
+  now?: Date;
 }
 
 export type HotfixState = "waiting-for-cherry-pick" | "cherry-picked" | "on-target";
@@ -117,6 +125,26 @@ export async function hotfixCommand(o: HotfixOptions): Promise<number> {
     else {
       const r = await postToStory(c, jira, story, { name: `hotfix:${service.name}`, wiki: markdownToJiraWiki(md), legacyKind: `hotfix-${service.name}`, legacyMarker: `qa-sentinel:hotfix-${service.name}`, cwd });
       log.ok(`Jira ${story}: hotfix status ${r.action}`);
+    }
+  }
+  if (o.failIfWaiting || o.strict) {
+    const waiting = rows.filter((r) => r.state === "waiting-for-cherry-pick");
+    if (waiting.length) {
+      log.warn(`${waiting.length} hotfix commit(s) are not on ${c.ci.targetBranch} yet: exit ${EXIT_STILL_WAITING}`);
+      return EXIT_STILL_WAITING;
+    }
+  }
+  if (o.strict) {
+    const grace = (o.graceDays ?? 2) * 86_400_000;
+    const now = (o.now ?? new Date()).getTime();
+    const late = rows.filter((r) => {
+      if (r.testCommits.length) return false;
+      const landed = Math.max(...[r.state === "on-target" ? r.commit : undefined, ...r.picks.map((p) => p.commit)].filter((x): x is string => !!x).map((x) => Number(git(repo, ["log", "-1", "--format=%ct", x])) * 1000));
+      return now - landed > grace;
+    });
+    if (late.length) {
+      log.warn(`${late.length} hotfix commit(s) are on ${c.ci.targetBranch} but have no tests after ${o.graceDays ?? 2} day(s): exit 1`);
+      return 1;
     }
   }
   return 0;
