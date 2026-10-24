@@ -386,6 +386,9 @@ program
   .option("--story <key>", "the story (default: from the commit message)")
   .option("--post", "put the status in the Jira story's QA status comment")
   .option("--json", "print JSON")
+  .option("--fail-if-waiting", "exit 75 (still waiting) while a hotfix commit is not on the main branch yet")
+  .option("--strict", "--fail-if-waiting, and exit 1 when a commit is on the main branch but has no tests after --grace-days")
+  .option("--grace-days <n>", "with --strict: days allowed between landing on the main branch and tests (default 2)", (v: string) => Number(v))
   .action(wrap(async (o) => hotfixCommand({ cwd: cwd(), ...o })));
 
 program
