@@ -23,6 +23,8 @@ export const STATUS_MARKER = "qa-sentinel:status";
 const SECTION_RE = /^(.*?)(?:\{color:#97a0af\})?Updated ([^{]*?) · qa-sentinel:section=([A-Za-z0-9:._-]+)(?: · basis=([0-9a-f]+))?(?: · acs=([0-9a-f]+))?(?:\{color\})?\s*$/;
 /** Jira rejects comments over 32,767 characters. */
 const HARD_LIMIT = 32_000;
+/** A legacy comment is moved into the status comment only while the whole comment stays under this: the rest is room for later writes. */
+const MOVE_ROOM = 16_000;
 /** The first line of an out-of-date result section; it is added when drawing and removed when reading. */
 const STALE_LINE = "{color:#de350b}⚠️ *Out of date:*";
 
@@ -245,8 +247,10 @@ export async function migrateLegacy(c: Config, ctx: JiraContext, story: string, 
     if (!name || have.has(name)) continue;
     const section: Section = { name, wiki: withoutMarker(cm.body), updated: stamp(jiraTime(cm.updated ?? cm.created)) };
     const trial = renderStatusChecked(story, [...sections, ...carried, section], ropts);
-    if (trial.shortened.includes(name) || carried.some((x) => trial.shortened.includes(x.name))) {
-      log.warn(`${story}: comment ${cm.id} is too long to move into the status comment without shortening it; left as it is`);
+    // Nothing may be shortened by the move (neither this section, nor one already there), and the comment keeps room for what later writes add:
+    // fit() shortens the biggest section when the comment is full, and a moved section may then be the biggest while its old comment is gone.
+    if (trial.shortened.length || trial.body.length > MOVE_ROOM) {
+      log.warn(`${story}: comment ${cm.id} is too long to move into the status comment with room to spare; left as it is`);
       movable = movable.filter((x) => x !== cm);
       continue;
     }

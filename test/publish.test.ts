@@ -372,6 +372,9 @@ describe("publish does not believe the run folder (the analysis job runs generat
     expect(ask("qa-sentinel/orders-a1b2c3d4")()).toEqual({ story: false });
     for (const b of ["qa-sentinel/review-lessons", "qa-sentinel/billing-a1b2c3d4", "qa-sentinel/orders-ffffffff", "qa-sentinel/orders-a1b2c3d4/x", "qa-sentinel/backfill-orders-2026-10-27-abc"]) expect(ask(b), b).toThrow(/refused/);
     expect(ask("qa-sentinel/orders-a1b2c3d4", {})).toThrow(/QA_SERVICE_NAME/);
+    expect(ask("qa-sentinel/orders-a1b2c3d4", { QA_SERVICE_NAME: "orders", QA_SERVICE_SHA: "A1B2C3D4E5F60718" })()).toEqual({ story: false }); // an uppercase sha variable
+    // A service whose name starts with the story prefix cannot use the per-merge branch (it would look like a story branch): documented, refused.
+    expect(ask("qa-sentinel/story-billing-a1b2c3d4", { QA_SERVICE_NAME: "story-billing", QA_SERVICE_SHA: "a1b2c3d4e5f60718" })).toThrow(/story branch/);
   });
 
   it("a record step does not run when the branch before it was not pushed", async () => {
@@ -416,6 +419,27 @@ describe("publish does not believe the run folder (the analysis job runs generat
     expect(await publishCommand({ cwd: w.qa, run: "l-1", env: writeEnv(w.gl.url) })).toBe(0);
     expect(originBranches(w)).toContain("qa-sentinel/orders-a1b2c3d4");
     expect(fs.readdirSync(run).filter((n) => n.startsWith("publish.lock"))).toEqual([]);
+  });
+
+  it("a story notice that keeps failing does not hold back the Jira summary, and is retried alone", async () => {
+    const w = await world({ reporting: { targets: ["gitlab-mr", "jira"], jira: { notify: { "cross-service-tests-ready": { on: true, to: ["jsmith"] } } } } });
+    craft(w, { id: "n-2", branch: "qa-sentinel/orders-a1b2c3d4", files: OK, step: () => ({ storyKey: "SHOP-101", labels: ["qa-agent"], notify: { story: "SHOP-101", event: "cross-service-tests-ready", text: "NOTICE ready: {mr}", key: "AC-1@{iid}" }, jira: { storyKey: "SHOP-101", service: "orders", risk: "low", verification: "VERIFIED", trace: [], acText: [], discrepancies: [], report: "the report" } }) });
+    const real = globalThis.fetch;
+    let down = true;
+    vi.stubGlobal("fetch", (url: string, init?: RequestInit) => (down && init?.method === "POST" && String(url).includes("/comment") && String(init.body).includes("NOTICE") ? Promise.resolve(new Response("no", { status: 500 })) : real(url, init)));
+    try {
+      expect(await publishCommand({ cwd: w.qa, run: "n-2", env: writeEnv(w.gl.url) })).toBe(1);
+      const st = JSON.parse(fs.readFileSync(path.join(w.qa, ".qa-sentinel/runs/n-2/published.json"), "utf8")).done;
+      expect(Object.keys(st).sort()).toEqual(["0:mr", "0:post"]); // the summary is done, the notice is not
+      expect((w.jira.comments["SHOP-101"] ?? []).some((x) => x.body.includes("the report") || x.body.includes("QA status"))).toBe(true);
+      const pushes = w.gl.writes().length;
+      down = false;
+      expect(await publishCommand({ cwd: w.qa, run: "n-2", env: writeEnv(w.gl.url) })).toBe(0);
+      expect(w.gl.writes()).toHaveLength(pushes); // nothing pushed or opened twice
+      expect((w.jira.comments["SHOP-101"] ?? []).filter((x) => x.body.includes("NOTICE"))).toHaveLength(1);
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 
   it("refuses generated artifacts, symbolic links and submodule links in the bundle", async () => {
@@ -628,3 +652,17 @@ describe("deferred notes of runs without an analysis (joined comment, waiting no
 
 // The helper `serve` is unused here on purpose: GitLab needs a sub-path mock and a token log.
 void serve;
+
+describe("deferSteps cuts what is over the schema's limits (the paid work is not lost to a long description)", () => {
+  it("a 100k description and a 10k AC text are cut, and the file reads back", async () => {
+    const { deferSteps, parsePublishFile } = await import("../src/reporting/deferred.js");
+    const dir = tmp("qas-clamp-");
+    deferSteps(dir, "generate", "r1", [{ type: "merge-request", branch: "qa-sentinel/x", headSha: "a".repeat(40), title: "t", description: "d".repeat(100_000), labels: [], jira: { storyKey: "SHOP-1", service: "orders", risk: "low", verification: "VERIFIED", trace: [], acText: [["AC-1", "t".repeat(10_000)]], discrepancies: [], report: "r" } } as never]);
+    deferSteps(dir, "generate", "r1", [{ type: "record", story: "SHOP-1", entries: [], evidence: [] }]);
+    const doc = parsePublishFile(fs.readFileSync(path.join(dir, "publish.json"), "utf8"));
+    const mr = doc.steps[0] as { description: string; jira?: { acText: [string, string][] } };
+    expect(mr.description.length).toBe(60_000);
+    expect(mr.jira!.acText[0][1].length).toBe(4000);
+    expect(doc.steps).toHaveLength(2);
+  });
+});

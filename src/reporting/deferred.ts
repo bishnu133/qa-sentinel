@@ -145,6 +145,26 @@ export function parsePublishFile(raw: string): PublishFile {
   return r.data;
 }
 
+/**
+ * Cut what is too long for the strict schema (a string or a list over its limit) instead of failing after the paid work is done.
+ * Only "too big" is repaired; any other problem still throws when the file is read back.
+ */
+function clampToSchema(step: PublishStep): PublishStep {
+  let cur: unknown = JSON.parse(JSON.stringify(step));
+  for (let n = 0; n < 200; n++) {
+    const r = publishStep.safeParse(cur);
+    if (r.success) return r.data;
+    const bad = r.error.issues.find((i) => i.code === "too_big" && (i.type === "string" || i.type === "array"));
+    if (!bad) throw new Error(`publish step "${(step as { type: string }).type}" is not valid: ${r.error.issues[0].path.join(".") || "(top)"}: ${r.error.issues[0].message}`);
+    let node = cur as Record<string, unknown>;
+    for (const k of bad.path.slice(0, -1)) node = node[k as string] as Record<string, unknown>;
+    const last = bad.path[bad.path.length - 1] as string;
+    const v = node[last] as string | unknown[];
+    node[last] = v.slice(0, Number((bad as unknown as { maximum: number | bigint }).maximum));
+  }
+  throw new Error("publish step is too large");
+}
+
 /** Add steps to a run directory's publish.json (created on the first call). */
 export function deferSteps(runDir: string, kind: PublishFile["kind"], runId: string, steps: PublishStep[]): PublishFile {
   const file = path.join(runDir, PUBLISH_FILE);
@@ -154,7 +174,7 @@ export function deferSteps(runDir: string, kind: PublishFile["kind"], runId: str
   } catch (e) {
     if (fs.existsSync(file)) throw e; // a file that is there but unreadable is an error, never silently started again
   }
-  doc.steps.push(...steps);
+  doc.steps.push(...steps.map(clampToSchema));
   fs.mkdirSync(runDir, { recursive: true });
   fs.writeFileSync(file, JSON.stringify(doc, null, 2) + "\n");
   return doc;

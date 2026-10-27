@@ -85,7 +85,9 @@ function runDirs(cwd: string, run: string | undefined): { dirs: string[]; explic
 /**
  * Claim a run for this process (the lock file is created exclusively, so two publishes of one folder cannot both start).
  * A lock older than two hours is taken over by renaming it to a name only this process uses: of two processes that find the
- * same stale lock, only one rename succeeds, and the other starts over and finds the winner's fresh lock.
+ * same stale lock, only one rename succeeds, and the other starts over and finds the winner's fresh lock. A process that renamed a lock
+ * which turned out to be fresh puts it back. A small window remains (the fresh lock is missing for the moment between rename and link);
+ * publishes are scheduled per merge request (resource_group), so two publishes of one run folder are not expected in practice.
  */
 function claim(dir: string): (() => void) | undefined {
   const file = path.join(dir, LOCK_FILE);
@@ -105,6 +107,17 @@ function claim(dir: string): (() => void) | undefined {
       const mine = `${file}.stale-${process.pid}-${Date.now()}`;
       try {
         fs.renameSync(file, mine);
+        // What was renamed may not be the lock that was seen to be old: another process may have taken the old one over and made a fresh one in between.
+        // If it is fresh, put it back (link fails when a newer lock already exists, then that one is the live one) and leave this run alone.
+        if (Date.now() - fs.statSync(mine).mtimeMs <= LOCK_STALE_MS) {
+          try {
+            fs.linkSync(mine, file);
+          } catch {
+            /* a lock exists again: it is the live one */
+          }
+          fs.rmSync(mine, { force: true });
+          return undefined;
+        }
         fs.rmSync(mine, { force: true });
       } catch {
         /* another process took it over first */
@@ -202,11 +215,23 @@ async function publishRun(cwd: string, c: Config, dir: string, env: NodeJS.Proce
           state.mr = r.mr;
           mark(`${i}:mr`, `${label} (branch and merge request)`, r.note);
         }
+        // The Jira summary and the story notice have a state each: a notice that keeps failing must not hold back the summary.
+        const needNotice = Boolean(step.notify) && wanted(`${i}:notice`, "jira") && (!o.target || o.target === "jira");
+        let blocked: unknown;
         if (needPost) {
           if (!state.done[`${i}:mr`] && !o.target) throw new Error("the merge request was not made, so there is nothing to announce");
-          const note = await announce(cwd, c, dir, step, state.mr, env);
-          mark(`${i}:post`, `${label} (notes and Jira)`, note);
+          const note = await announceJira(cwd, c, dir, step, state.mr, env);
+          mark(`${i}:post`, `${label} (Jira)`, note);
         }
+        if (needNotice) {
+          if (!state.done[`${i}:mr`] && !o.target) throw new Error("the merge request was not made, so there is nothing to announce");
+          try {
+            mark(`${i}:notice`, `${label} (story notice)`, await announceNotice(cwd, c, step, state.mr, env));
+          } catch (e) {
+            blocked = e;
+          }
+        }
+        if (blocked) throw blocked;
       } else if (step.type === "report") {
         const targets = (step.targets ?? c.reporting.targets).filter((t, k, a) => a.indexOf(t) === k);
         for (const t of targets) {
@@ -241,16 +266,32 @@ async function publishRun(cwd: string, c: Config, dir: string, env: NodeJS.Proce
         mark(`${i}`, label, sent === "sent" ? "sent" : `not sent (${sent})`);
       } else if (step.type === "record") {
         if (!wanted(`${i}`, "jira")) continue;
-        // "written" and "held" describe what is on the branch: only once the push of this run's branch(es) has happened.
-        const unpushed = doc.steps.findIndex((x, j) => j < i && x.type === "merge-request" && !state.done[`${j}:mr`]);
-        if (unpushed >= 0 && !step.conflict) throw new Error("the branch was not pushed, so the story record is left as it was");
         const store = openStore(cwd, c, env);
-        await applyRecordPatch(store, step.story, step);
+        const same = (k: string | undefined) => (k ?? "").toUpperCase() === step.story.toUpperCase();
         if (step.conflict) {
+          // A conflict-only step: the story's own branch, no AC entries, no reset. Checked before anything is written.
+          if (step.entries.length || step.evidence.length || step.reset || step.clearConflict) throw new Error("a conflict step may hold nothing but the conflict; refused");
           if (step.conflict.branch !== storyBranchName(c, step.story)) throw new Error("the conflict is not for this story's branch; refused");
+          await applyRecordPatch(store, step.story, { entries: [], evidence: [], conflict: { branch: step.conflict.branch, message: step.conflict.message, key: step.conflict.key } });
           await showConflict(c, step.story, step.conflict.branch, step.conflict.message, step.conflict.key, env, store);
+          mark(`${i}`, label, "story record updated (conflict)");
+          continue;
         }
-        mark(`${i}`, label, "story record updated");
+        // Which story this run is about is what its merge-request step says (the run folder cannot name another story's record).
+        const mrs = doc.steps.flatMap((x, j) => (x.type === "merge-request" ? [{ x, j }] : []));
+        const mine = mrs.find(({ x }) => same(x.storyKey));
+        if (mrs.length && !mine) throw new Error(`this run's merge request is not for ${step.story}; the record step is refused`);
+        let patch = step;
+        if (mine) {
+          // "written" and "held" describe what is on the branch: only once that branch was pushed, by a step before this one.
+          const wroteAny = step.entries.some((e) => e.state === "written");
+          if (wroteAny && (mine.j > i || !state.done[`${mine.j}:mr`])) throw new Error("the branch was not pushed, so the story record is left as it was");
+        } else {
+          // No merge request in the run (nothing needed to be written): nothing says the story is this one, so nothing is claimed "written" and no branch is reset.
+          patch = { ...step, reset: undefined, entries: step.entries.filter((e) => e.state === "held") };
+        }
+        await applyRecordPatch(store, step.story, patch);
+        mark(`${i}`, label, mine ? "story record updated" : "story record updated (held and evidence only: no merge request in this run)");
       } else if (step.type === "branch-note") {
         if (!wanted(`${i}`, "gitlab-mr")) continue;
         mark(`${i}`, label, await branchNote(c, step, env));
@@ -263,7 +304,7 @@ async function publishRun(cwd: string, c: Config, dir: string, env: NodeJS.Proce
   const failed = results.some((r) => !r.ok);
   if (!failed && !results.length) log.warn("nothing matched in this run (already published, or not what --target asks for)");
   // The run is finished when every part is recorded; "all" skips it from then on.
-  const expected = doc.steps.flatMap((s, i) => (s.type === "merge-request" ? [`${i}:mr`, `${i}:post`] : s.type === "report" ? (s.targets ?? c.reporting.targets).map((t) => `${i}:${t}`) : [`${i}`]));
+  const expected = doc.steps.flatMap((s, i) => (s.type === "merge-request" ? [`${i}:mr`, `${i}:post`, ...(s.notify ? [`${i}:notice`] : [])] : s.type === "report" ? (s.targets ?? c.reporting.targets).map((t) => `${i}:${t}`) : [`${i}`]));
   if (expected.every((k) => state.done[k])) {
     state.complete = true;
     writeState(dir, state);
@@ -311,7 +352,7 @@ export function allowedBranch(c: Config, s: Pick<MergeRequestStep, "branch" | "s
   const service = env.QA_SERVICE_NAME;
   const sha = env.QA_SERVICE_SHA;
   if (!service || !sha || !/^[0-9a-f]{8,64}$/i.test(sha)) throw new Error(`${b} is not this job's branch: QA_SERVICE_NAME and QA_SERVICE_SHA are needed to name it; refused`);
-  const expected = `qa-sentinel/${service}-${sha.slice(0, 8)}`;
+  const expected = `qa-sentinel/${service}-${sha.slice(0, 8).toLowerCase()}`; // generate names the branch from git's lowercase sha
   if (b !== expected) throw new Error(`${b} is not this job's branch (${expected}); refused`);
   return { story: false };
 }
@@ -368,15 +409,16 @@ async function pushAndOpen(cwd: string, c: Config, runDir: string, runId: string
   return { note: `pushed ${s.branch}; merge request ${mr.action}: ${mr.web_url}`, mr: { url: mr.web_url, iid: mr.iid } };
 }
 
-async function announce(cwd: string, c: Config, runDir: string, s: MergeRequestStep, mr: { url: string; iid: number } | undefined, env: NodeJS.ProcessEnv): Promise<string> {
-  const notes: string[] = [];
+async function announceNotice(cwd: string, c: Config, s: MergeRequestStep, mr: { url: string; iid: number } | undefined, env: NodeJS.ProcessEnv): Promise<string> {
+  if (!s.notify) return "no notice";
+  if (s.notify.story.toUpperCase() !== (s.storyKey ?? "").toUpperCase()) throw new Error("the notification is for another story than the branch's; refused");
+  const sent = await notifyStoryOutcome(cwd, c, s.notify.story, s.notify.event, s.notify.text.replace("{mr}", mr?.url ?? ""), s.notify.key.replace("{iid}", String(mr?.iid ?? "")), env);
+  if (sent === "failed") throw new Error("the Jira notice could not be sent; it stays pending for the next publish");
+  return sent === "sent" ? "story notified" : `story not notified (${sent})`;
+}
+
+async function announceJira(cwd: string, c: Config, runDir: string, s: MergeRequestStep, mr: { url: string; iid: number } | undefined, env: NodeJS.ProcessEnv): Promise<string> {
   const url = mr?.url ?? "";
-  if (s.notify) {
-    if (s.notify.story.toUpperCase() !== (s.storyKey ?? "").toUpperCase()) throw new Error("the notification is for another story than the branch's; refused");
-    const sent = await notifyStoryOutcome(cwd, c, s.notify.story, s.notify.event, s.notify.text.replace("{mr}", url), s.notify.key.replace("{iid}", String(mr?.iid ?? "")), env);
-    if (sent === "failed") throw new Error("the Jira notice could not be sent; it stays pending for the next publish");
-    notes.push(sent === "sent" ? "story notified" : `story not notified (${sent})`);
-  }
   if (s.jira && c.reporting.targets.includes("jira")) {
     const j = s.jira;
     if (s.storyKey && (j.storyKey ?? "").toUpperCase() !== s.storyKey.toUpperCase()) throw new Error("the Jira summary is for another story than the branch's; refused");
@@ -384,9 +426,9 @@ async function announce(cwd: string, c: Config, runDir: string, s: MergeRequestS
     fs.writeFileSync(path.join(runDir, "jira-summary.md"), jiraSummary);
     const done = await publish(c, { report: j.report, jiraSummary, cwd, service: j.service, storyKey: j.storyKey, mr: {}, targets: ["jira"] }, env);
     if (!done.includes("jira")) throw new Error("Jira was not updated (no login, or no story key)");
-    notes.push("Jira updated");
+    return "Jira updated";
   }
-  return notes.join("; ") || "nothing to announce";
+  return "nothing to announce in Jira";
 }
 
 async function branchNote(c: Config, s: BranchNoteStep, env: NodeJS.ProcessEnv): Promise<string> {
