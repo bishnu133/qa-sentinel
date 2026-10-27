@@ -57,7 +57,7 @@ If no comment appears: open the job log of `qa-gap-report` (look for 401 or 403)
 
 Say: "In real life the team talks to the developer first. Here we merge, to see the next step."
 Run: `node demo/scripts/demo-merge.mjs --card delivery-slot --yes --merge`
-Expect: "merged !N". In the service project: pipeline on `main` with `qa-trigger-generation`. In `shoplite-tests`: a new pipeline with `qa-generate`.
+Expect: "merged !N" (the script first waits, up to 60 seconds, until GitLab says the merge request is mergeable; if you opened and merged in one go, the gap report job runs on an already merged request, which is why step 3 opens it first). In the service project: pipeline on `main` with `qa-trigger-generation`. In `shoplite-tests`: a new pipeline with `qa-generate`.
 **While it runs (5 to 10 minutes, docs):** explain the guardrails: the AI can write only test files; qa-sentinel runs the tests itself against a QA environment and decides the status; the agent's own claim "VERIFIED" counts for nothing. Show `ci/qa-sentinel/README.md` in the test repo or the "Flow" section of `templates/ci/gitlab/README.md`.
 Expect when done: a merge request in `shoplite-tests` titled "QA agent: tests for ...", labels `qa-agent` and `qa-sentinel::<status>`, branch `qa-sentinel/story-<KEY>`, a Draft unless VERIFIED. The description has the plan, the verification table and a section for **unresolved product discrepancies**: the AC-3 test is written to the requirement (cap 3) and held back, so the build does not break, and a human must decide.
 Click: "Changes": the new test file, the fixed old test. Say: "A person reviews this like a colleague's merge request."
@@ -75,16 +75,16 @@ If you are short of time: do not wait for this pipeline. Say what to expect and 
 
 ## 7. Cross-service and hotfix (23:00 to 25:00), talk only unless there is time
 
-Cross-service: "A story that needs two services is planned per acceptance criterion. The criteria that need only one service get tests when that service merges. The one that needs both waits until both are merged. The merge request description lists what is waiting." (`docs/AUTOMATION.md`, "One test merge request per story".) Live option: `demo-merge.mjs --card cancel-refund --part payments-service --yes --merge` (needs the payments project).
+Cross-service (say that this is not proven on a real project): "A story that needs two services is planned per acceptance criterion. The criteria that need only one service get tests when that service merges. The one that needs both waits until both are merged. The merge request description lists what is waiting." (`docs/AUTOMATION.md`, "One test merge request per story".) Live option: `demo-merge.mjs --card cancel-refund --part payments-service --yes --merge` (needs the payments project).
 Hotfix: "A fix on a release branch gets a note in the report, but no tests until it reaches the main branch." Live option: `demo-bugfix.mjs --card blank-item-hotfix --yes --merge`, then `--cherry-pick`.
 
 ## 8. Reset (25:00 to 27:00) [JIRA W] [GL W]
 
 Run the dry run first, on screen: `node demo/scripts/reset.mjs --tests-dir demo/.work/shoplite-tests`
 Say: "This is the list of what it will do. Nothing has changed yet." Read the lines: close merge requests, revert the merges (new commits, no history rewrite), delete comments that carry the marker and were written by this login, remove the Jira properties, move the cards back.
-Then run: `node demo/scripts/reset.mjs --tests-dir demo/.work/shoplite-tests --yes --i-know-this-is-a-test-project`
+Then run: `node demo/scripts/reset.mjs --tests-dir demo/.work/shoplite-tests --yes --i-know-this-is-a-test-project <KEY>`
 Expect: "ok" lines, "same files as demo-baseline" for each branch, and the list "What reset cannot undo".
-Say: "It cannot undo Jira's history tab, the money spent, or e-mails already sent. Everything else is back, and I can run the demo again."
+Say: "It cannot undo Jira's history tab, the money spent, or e-mails already sent. The runner cache of the test repo I clear by hand, and I wait for the revert pipelines to finish. Then I can run the demo again."
 If reset prints MANUAL: read the one-line fix it gives, and say that is why the baseline tag exists. Do not improvise.
 
 ## 9. Limits and questions (27:00 to 30:00)

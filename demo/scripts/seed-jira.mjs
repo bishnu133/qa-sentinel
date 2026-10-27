@@ -4,12 +4,12 @@
 //   export DEMO_JIRA_PROJECT=<KEY>            # must equal jira.project in demo.config.json
 //   export JIRA_EMAIL=… JIRA_API_TOKEN=…      # Jira Cloud   (or JIRA_PAT=… for Server / Data Center)
 //   node demo/scripts/seed-jira.mjs                                                   # dry run: shows what it would create
-//   node demo/scripts/seed-jira.mjs --yes --i-know-this-is-a-test-project             # really creates the cards
+//   node demo/scripts/seed-jira.mjs --yes --i-know-this-is-a-test-project <KEY>      # really creates the cards
 //
 // It writes demo/.demo-state.json (git-ignored) with the keys it created, so reset.mjs can find them again.
 import fs from "node:fs";
 import path from "node:path";
-import { DEFAULT_CONFIG, DEFAULT_STATE, DEMO_DIR, fail, isMain, loadCards, loadConfig, loadState, makeJira, runCli, saveState, say, toWiki } from "./lib.mjs";
+import { DEFAULT_CONFIG, DEFAULT_STATE, DEMO_DIR, demoCardProblem, fail, isMain, loadCards, loadConfig, loadState, makeJira, needTestFlag, runCli, saveState, say, toWiki, wantsWrite } from "./lib.mjs";
 
 /** The checks that must pass before anything is written. Throws a plain message when one fails. */
 export function checkSeedGuards({ config, args, env }) {
@@ -19,10 +19,9 @@ export function checkSeedGuards({ config, args, env }) {
   if (!jira.baseUrl || !jira.project || /<.*>/.test(`${jira.baseUrl}${jira.project}`)) fail('demo.config.json: "jira.baseUrl" and "jira.project" must be filled in.');
   if (want !== jira.project) fail(`DEMO_JIRA_PROJECT is "${want}" but demo.config.json says jira.project is "${jira.project}". They must be the same. Nothing was changed.`);
   if (env.JIRA_BASE_URL && new URL(env.JIRA_BASE_URL).origin !== new URL(jira.baseUrl).origin) fail(`JIRA_BASE_URL (${new URL(env.JIRA_BASE_URL).origin}) is not the Jira in demo.config.json (${new URL(jira.baseUrl).origin}). Nothing was changed.`);
-  const flag = args["i-know-this-is-a-test-project"];
-  const writing = Boolean(args.yes);
-  if (writing && !flag) fail(`Refusing to write to ${new URL(jira.baseUrl).host} project ${jira.project}. Add --i-know-this-is-a-test-project to say this is a TEST project.`);
-  if (typeof flag === "string" && flag !== jira.project) fail(`--i-know-this-is-a-test-project ${flag} does not match the project ${jira.project}. Nothing was changed.`);
+  const writing = wantsWrite(args);
+  if (writing) needTestFlag(args, jira.project, `write to ${new URL(jira.baseUrl).host} project ${jira.project}`);
+  else if (args["i-know-this-is-a-test-project"] !== undefined && args["i-know-this-is-a-test-project"] !== jira.project) fail(`--i-know-this-is-a-test-project ${args["i-know-this-is-a-test-project"]} does not match the project ${jira.project}. Nothing was changed.`);
   return { baseUrl: jira.baseUrl.replace(/\/+$/, ""), project: jira.project, writing };
 }
 
@@ -46,6 +45,14 @@ export async function seedJira({ args = {}, env = process.env, configFile = DEFA
   if (!types.length) fail(`Jira project ${project} has no issue types I can use.`);
   const pick = (want) => (types.includes(want) ? { name: want, extra: [] } : { name: types.includes("Task") ? "Task" : types[0], extra: want === "Bug" ? ["bug"] : [] });
 
+  // A test project holds only the demo's own cards. Other issues in it: stop, unless the person says it is fine.
+  if (!args["allow-existing-issues"]) {
+    const jql = `project = "${project}" AND (labels is EMPTY OR labels not in ("qa-sentinel-demo"))`;
+    const q = `jql=${encodeURIComponent(jql)}&maxResults=1&fields=labels`;
+    const found = await jira.api("GET", `/rest/api/3/search/jql?${q}`).catch((e) => (e.status === 404 || e.status === 410 ? jira.api("GET", `/rest/api/2/search?${q}`) : Promise.reject(e)));
+    if ((found.issues ?? []).length) fail(`Jira project ${project} already has issues that are not demo cards (for example ${found.issues[0].key}). This does not look like a TEST project. Use an empty project, or add --allow-existing-issues if you are sure.`);
+  }
+
   state.jira = { baseUrl, project };
   state.createdAt ??= new Date().toISOString();
   saveState(stateFile, state);
@@ -53,8 +60,10 @@ export async function seedJira({ args = {}, env = process.env, configFile = DEFA
   for (const c of cards.cards) {
     const known = state.cards[c.id];
     if (known) {
-      const still = await jira.api("GET", `/rest/api/2/issue/${known.key}?fields=status`).catch((e) => (e.status === 404 ? undefined : Promise.reject(e)));
+      const still = await jira.api("GET", `/rest/api/2/issue/${known.key}?fields=status,labels,summary`).catch((e) => (e.status === 404 ? undefined : Promise.reject(e)));
       if (still) {
+        const problem = demoCardProblem({ key: known.key, project, issue: still, summary: c.summary });
+        if (problem) fail(`${known.key} (card ${c.id}) is in the state file but ${problem}. It is not touched. Fix or delete the state file on purpose.`);
         log(`  ${c.id}: already created as ${known.key}`);
         continue;
       }

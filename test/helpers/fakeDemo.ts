@@ -30,13 +30,13 @@ export interface FakeComment {
 }
 export interface FakeIssue {
   key: string;
-  fields: { summary: string; description: string; status: { name: string }; labels: string[]; issuetype: { name: string }; reporter: { accountId: string } };
+  fields: { summary: string; description: string; status: { name: string }; labels: string[]; issuetype: { name: string }; reporter: { accountId: string }; attachment: { id: string; filename: string; author: { accountId: string } }[] };
   comments: FakeComment[];
   props: Record<string, unknown>;
   attachments: string[];
 }
 
-export async function startFakeJira(opts: { project?: string; token?: string } = {}) {
+export async function startFakeJira(opts: { project?: string; token?: string; cloudSearch?: boolean } = {}) {
   const project = opts.project ?? "DEMO";
   const issues = new Map<string, FakeIssue>();
   const requests: Req[] = [];
@@ -60,8 +60,13 @@ export async function startFakeJira(opts: { project?: string; token?: string } =
     if ((g = p.match(/^\/rest\/api\/2\/project\/([^/]+)$/))) return json(res, 200, { key: g[1], issueTypes: [{ name: "Story" }, { name: "Bug" }, { name: "Sub-task", subtask: true }] });
     if (p === "/rest/api/2/issue" && m === "POST") {
       const key = `${body.fields.project.key}-${++n}`;
-      issues.set(key, { key, fields: { summary: body.fields.summary, description: body.fields.description, status: { name: "To Do" }, labels: body.fields.labels ?? [], issuetype: body.fields.issuetype, reporter: ME }, comments: [], props: {}, attachments: [] });
+      issues.set(key, { key, fields: { summary: body.fields.summary, description: body.fields.description, status: { name: "To Do" }, labels: body.fields.labels ?? [], issuetype: body.fields.issuetype, reporter: ME, attachment: [] }, comments: [], props: {}, attachments: [] });
       return json(res, 201, { key });
+    }
+    if ((p === "/rest/api/2/search" || (p === "/rest/api/3/search/jql" && opts.cloudSearch)) && m === "GET") {
+      // Issues that do not carry the demo label (the only query the kit asks).
+      const others = [...issues.values()].filter((i) => !i.fields.labels.includes("qa-sentinel-demo")).slice(0, Number(url.searchParams.get("maxResults") ?? 50));
+      return json(res, 200, { issues: others.map((i) => ({ key: i.key, fields: { labels: i.fields.labels } })) });
     }
     if (p === "/rest/api/2/issueLink" && m === "POST") {
       links.push(body);
@@ -125,9 +130,12 @@ export async function startFakeJira(opts: { project?: string; token?: string } =
     setStatus(key: string, name: string) {
       issues.get(key)!.fields.status = { name };
     },
+    addAttachment(key: string, id: string, filename: string, who: "me" | "other" = "me") {
+      issues.get(key)!.fields.attachment.push({ id, filename, author: who === "me" ? ME : OTHER });
+    },
     /** An issue that the demo does not know about. */
     addForeign(key: string) {
-      issues.set(key, { key, fields: { summary: "other", description: "", status: { name: "To Do" }, labels: [], issuetype: { name: "Story" }, reporter: OTHER }, comments: [], props: {}, attachments: [] });
+      issues.set(key, { key, fields: { summary: "other", description: "", status: { name: "To Do" }, labels: [], issuetype: { name: "Story" }, reporter: OTHER, attachment: [] }, comments: [], props: {}, attachments: [] });
     },
     close: () => new Promise<void>((ok) => server.close(() => ok())),
   };
@@ -151,6 +159,8 @@ interface FProject {
   mrs: any[];
   notes: Map<number, any[]>;
   nextIid: number;
+  pipelines: { id: number; status: string }[];
+  mergeChecks: number; // how many times a merge request still says "checking"
 }
 
 export async function startFakeGitlab(opts: { token?: string } = {}) {
@@ -200,6 +210,16 @@ export async function startFakeGitlab(opts: { token?: string } = {}) {
     const paged = (arr: any[]) => json(res, 200, arr.slice((page - 1) * per, page * per));
     if (rest === "") return json(res, 200, { id: pr.id, path_with_namespace: pr.path, empty_repo: pr.empty });
     let r: RegExpMatchArray | null;
+    if ((r = rest.match(/^\/repository\/tags\/(.+)$/))) {
+      const id = pr.tags.get(decodeURIComponent(r[1]));
+      return id ? json(res, 200, { name: decodeURIComponent(r[1]), commit: { id } }) : json(res, 404, { message: "404 Tag Not Found" });
+    }
+    if (rest.startsWith("/pipelines") && m === "GET") return paged(pr.pipelines.filter((x) => x.status === url.searchParams.get("status")));
+    if ((r = rest.match(/^\/pipelines\/(\d+)\/cancel$/)) && m === "POST") {
+      const pl = pr.pipelines.find((x) => x.id === Number(r![1]));
+      if (pl) pl.status = "canceled";
+      return json(res, 200, pl ?? {});
+    }
 
     if (rest === "/repository/branches" && m === "GET") {
       const s = url.searchParams.get("search");
@@ -241,8 +261,11 @@ export async function startFakeGitlab(opts: { token?: string } = {}) {
       const c = pr.commits.get(r[1]);
       if (!c) return json(res, 404, { message: "404 Commit Not Found" });
       if ((pr as any).failReverts) return json(res, 400, { message: "Sorry, we cannot revert this commit automatically." });
+      // The inverse of what the commit changed against its first parent, on top of the branch as it is now.
       const before = pr.commits.get(c.parent_ids[0])!.files;
-      return json(res, 201, { id: commit(pr, body.branch, `Revert "${c.message.split("\n")[0]}"\n\nThis reverts commit ${c.id}`, { ...before }) });
+      const files = { ...headFiles(pr, body.branch) };
+      for (const k of new Set([...Object.keys(before), ...Object.keys(c.files)])) if (before[k] !== c.files[k]) before[k] === undefined ? delete files[k] : (files[k] = before[k]);
+      return json(res, 201, { id: commit(pr, body.branch, `Revert "${c.message.split("\n")[0]}"\n\nThis reverts commit ${c.id}`, files) });
     }
     if ((r = rest.match(/^\/repository\/commits\/([0-9a-f]+)\/cherry_pick$/)) && m === "POST") {
       const c = pr.commits.get(r[1])!;
@@ -275,7 +298,13 @@ export async function startFakeGitlab(opts: { token?: string } = {}) {
       const mr = pr.mrs.find((x) => x.iid === Number(r![1]));
       if (!mr) return json(res, 404, { message: "404 Not found" });
       const sub = r[2] ?? "";
-      if (sub === "" && m === "GET") return json(res, 200, mr);
+      if (sub === "" && m === "GET") {
+        if (mr.state === "opened" && pr.mergeChecks > 0) {
+          pr.mergeChecks--;
+          return json(res, 200, { ...mr, detailed_merge_status: "checking" });
+        }
+        return json(res, 200, { ...mr, detailed_merge_status: mr.state === "opened" ? "mergeable" : undefined });
+      }
       if (sub === "" && m === "PUT") {
         if (body.state_event === "close") mr.state = "closed";
         return json(res, 200, mr);
@@ -286,13 +315,19 @@ export async function startFakeGitlab(opts: { token?: string } = {}) {
       }
       if (sub === "/merge" && m === "PUT") {
         if ((pr as any).refuseMerge) return json(res, 405, { message: "Method Not Allowed" });
+        // Like GitLab's default "merge commit" method: an optional squash commit on the source branch, then a merge commit
+        // on the target with two parents (target head first). With ffOnly the squash commit is put on the target itself.
         const files = { ...headFiles(pr, mr.source_branch) };
-        const id = commit(pr, mr.target_branch, body.squash_commit_message ?? mr.title, files);
+        let squash: string | undefined;
+        if (mr.squash) squash = commit(pr, mr.source_branch, body.squash_commit_message ?? mr.title, files);
+        const tip = squash ?? pr.branches.get(mr.source_branch)!.head;
+        const merge = commit(pr, mr.target_branch, `Merge branch '${mr.source_branch}' into '${mr.target_branch}'`, files, tip);
         mr.state = "merged";
         mr.merged_at = new Date().toISOString();
-        mr.squash_commit_sha = id;
+        mr.squash_commit_sha = squash ?? null;
+        mr.merge_commit_sha = merge;
         if (body.should_remove_source_branch) pr.branches.delete(mr.source_branch);
-        return json(res, 200, { ...mr, merge_commit_sha: null, sha: id });
+        return json(res, 200, { ...mr, sha: merge });
       }
       if (sub.startsWith("/notes")) {
         const list = pr.notes.get(mr.iid) ?? [];
@@ -317,7 +352,7 @@ export async function startFakeGitlab(opts: { token?: string } = {}) {
     writes: () => requests.filter((r) => r.method !== "GET"),
     /** An empty project is made with one commit on `branch` and the tag demo-baseline, like setup-gitlab.mjs leaves it. */
     addProject(path: string, files: Record<string, string>, branch = "main", extraBranches: string[] = []) {
-      const pr: FProject = { id: ++nid, path, empty: false, commits: new Map(), branches: new Map(), tags: new Map(), mrs: [], notes: new Map(), nextIid: 1 };
+      const pr: FProject = { id: ++nid, path, empty: false, commits: new Map(), branches: new Map(), tags: new Map(), mrs: [], notes: new Map(), nextIid: 1, pipelines: [], mergeChecks: 0 };
       const id = sha();
       pr.commits.set(id, { id, message: "initial", parent_ids: [], files });
       pr.branches.set(branch, { head: id, protected: false });
@@ -341,6 +376,11 @@ export async function startFakeGitlab(opts: { token?: string } = {}) {
       return mr;
     },
     files: (path: string, branch: string) => headFiles(projects.get(path)!, branch),
+    /** A commit made by someone else, changing only the given files. */
+    addCommit(path: string, branch: string, message: string, change: Record<string, string>) {
+      const pr = projects.get(path)!;
+      return commit(pr, branch, message, { ...headFiles(pr, branch), ...change });
+    },
     close: () => new Promise<void>((ok) => server.close(() => ok())),
   };
 }

@@ -39,6 +39,32 @@ export function parseArgs(argv) {
   return out;
 }
 
+/** --yes must be given bare. "--yes false" or "--yes=no" is an error, not a yes. */
+export function wantsWrite(args) {
+  if (args.yes === undefined) return false;
+  if (args.yes !== true) fail('--yes takes no value. Use it as plain "--yes", or leave it out for a dry run.');
+  return true;
+}
+
+/** The test-project flag must carry the project key: --i-know-this-is-a-test-project <KEY>. */
+export function needTestFlag(args, project, what) {
+  const flag = args["i-know-this-is-a-test-project"];
+  if (flag !== project) fail(`Refusing to ${what}. Add --i-know-this-is-a-test-project ${project}  (the key of your TEST project, written out, so a copy and paste cannot hit another project).`);
+}
+
+/** The environment a child process like npm gets: no tokens. */
+const CLEAN_ENV = ["PATH", "HOME", "USERPROFILE", "TMPDIR", "TEMP", "TMP", "LANG", "LC_ALL", "NODE_OPTIONS", "NODE_EXTRA_CA_CERTS", "SSL_CERT_FILE", "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "http_proxy", "https_proxy", "no_proxy", "npm_config_registry", "QA_SENTINEL_BIN", "SystemRoot"];
+export const cleanEnv = (env = process.env) => Object.fromEntries(CLEAN_ENV.filter((k) => env[k] !== undefined).map((k) => [k, env[k]]));
+
+/** Is this Jira issue one the demo made? Key shape, label and summary must all fit. */
+export function demoCardProblem({ key, project, issue, summary }) {
+  if (!new RegExp(`^${project}-\\d+$`).test(key)) return `the key does not look like ${project}-<number>`;
+  if (summary === undefined) return "it is not a card of cards.json";
+  if (!(issue?.fields?.labels ?? []).includes("qa-sentinel-demo")) return 'it has no "qa-sentinel-demo" label';
+  if (issue?.fields?.summary !== summary) return "its summary is not the one in cards.json";
+  return undefined;
+}
+
 /** Hide secrets in any text before it is printed. */
 export function redact(text, secrets = []) {
   let s = String(text);
@@ -57,16 +83,56 @@ export function loadConfig(file = DEFAULT_CONFIG) {
   const c = readJson(file);
   for (const k of ["gitlabUrl", "testsProject"]) if (!c[k] || /<.*>|your-/i.test(String(c[k]))) fail(`demo.config.json: "${k}" is missing or still a placeholder.`);
   if (!Array.isArray(c.services) || !c.services.length) fail('demo.config.json: "services" needs at least the orders service.');
+  for (const x of c.services) {
+    if (!x.name || !x.project || /<.*>|your-/i.test(`${x.name}${x.project}`)) fail(`demo.config.json: services[].name and services[].project must be filled in (no <placeholders>): ${JSON.stringify(x)}`);
+    if (!PROJECT_RE.test(x.project)) fail(`demo.config.json: "${x.project}" is not a GitLab project path like group/name.`);
+  }
+  if (!PROJECT_RE.test(c.testsProject)) fail(`demo.config.json: "${c.testsProject}" is not a GitLab project path like group/name.`);
   for (const x of c.services) x.template ||= x.name === "payments-service" ? "service-payments" : "service-orders";
   c.defaultBranch ||= "main";
   c.releaseBranch ||= "release/demo";
   return c;
 }
 
+const PROJECT_SHAPE = /^[A-Za-z0-9_.-]+(\/[A-Za-z0-9_.-]+)+$/;
+/** group/name, where no part is only dots ("." and ".." would walk out of the path). */
+export const PROJECT_RE = { test: (v) => PROJECT_SHAPE.test(v) && v.split("/").every((part) => !/^\.+$/.test(part)) };
+export const KEY_RE = /^[A-Z][A-Z0-9_]*-\d+$/;
+const SHA_RE = /^[0-9a-f]{7,40}$/i;
+const BRANCH_RE = /^(?!.*\.\.)[A-Za-z0-9._\/-]+$/;
+
+/** The state file is a plain file on disk. Every value that goes into a URL is checked here, so a damaged or edited file cannot point a script elsewhere. */
+export function validateState(s, file = "the state file") {
+  const bad = (what) => fail(`${file} is not valid (${what}). Nothing was changed. Fix or delete the file on purpose.`);
+  const projects = [...(s.gitlab?.projects ?? []), ...(s.gitlab?.testsProject ? [s.gitlab.testsProject] : [])];
+  for (const p of projects) if (typeof p !== "string" || !PROJECT_RE.test(p)) bad(`project "${p}"`);
+  for (const b of [s.gitlab?.defaultBranch, s.gitlab?.releaseBranch].filter((x) => x !== undefined)) if (typeof b !== "string" || !BRANCH_RE.test(b)) bad(`branch "${b}"`);
+  for (const [sha] of Object.entries(s.gitlab?.baselines ?? {}).map(([k, v]) => [v, k])) if (typeof sha !== "string" || !SHA_RE.test(sha)) bad("a baseline commit");
+  for (const [id, c] of Object.entries(s.cards ?? {})) if (typeof c?.key !== "string" || !KEY_RE.test(c.key)) bad(`card ${id} key "${c?.key}"`);
+  for (const m of s.mrs ?? []) {
+    if (!Number.isInteger(m.iid) || m.iid < 1) bad(`merge request number "${m.iid}"`);
+    if (typeof m.project !== "string" || !PROJECT_RE.test(m.project)) bad(`merge request project "${m.project}"`);
+    for (const b of [m.branch, m.target]) if (b !== undefined && (typeof b !== "string" || !BRANCH_RE.test(b))) bad(`branch "${b}"`);
+    if (m.mergeSha !== undefined && !SHA_RE.test(String(m.mergeSha))) bad("a merge commit");
+  }
+  for (const m of s.merges ?? []) {
+    if (typeof m.sha !== "string" || !SHA_RE.test(m.sha)) bad(`commit "${m.sha}"`);
+    if (typeof m.project !== "string" || !PROJECT_RE.test(m.project)) bad(`project "${m.project}"`);
+    if (typeof m.branch !== "string" || !BRANCH_RE.test(m.branch)) bad(`branch "${m.branch}"`);
+  }
+  for (const b of s.branches ?? []) {
+    if (typeof b.project !== "string" || !PROJECT_RE.test(b.project)) bad(`project "${b.project}"`);
+    if (typeof b.branch !== "string" || !BRANCH_RE.test(b.branch)) bad(`branch "${b.branch}"`);
+  }
+  for (const b of s.raisedBugs ?? []) if (typeof b.key !== "string" || !KEY_RE.test(b.key) || typeof b.story !== "string" || !KEY_RE.test(b.story)) bad("a remembered bug key");
+  if (s.jira?.project !== undefined && !/^[A-Z][A-Z0-9_]*$/.test(String(s.jira.project))) bad(`Jira project "${s.jira.project}"`);
+  return s;
+}
+
 export function loadState(file = DEFAULT_STATE) {
   if (!fs.existsSync(file)) return { version: 1, cards: {}, mrs: [], merges: [], branches: [], gitlab: {}, jira: {} };
   const s = readJson(file);
-  return { cards: {}, mrs: [], merges: [], branches: [], gitlab: {}, jira: {}, ...s, version: 1 };
+  return validateState({ cards: {}, mrs: [], merges: [], branches: [], gitlab: {}, jira: {}, ...s, version: 1 }, file);
 }
 export const saveState = (file, state) => writeJson(file, state);
 

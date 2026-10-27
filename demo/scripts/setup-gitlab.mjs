@@ -12,7 +12,7 @@
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
-import { DEFAULT_CONFIG, DEFAULT_STATE, DEMO_DIR, HERE, TEMPLATE_DIR, enc, fail, isMain, loadConfig, loadState, makeGitLab, redact, runCli, saveState, say } from "./lib.mjs";
+import { DEFAULT_CONFIG, DEFAULT_STATE, DEMO_DIR, HERE, TEMPLATE_DIR, cleanEnv, enc, fail, isMain, loadConfig, loadState, makeGitLab, redact, runCli, saveState, say, wantsWrite } from "./lib.mjs";
 
 const GIT_ENV = { GIT_AUTHOR_NAME: "ShopLite Demo", GIT_AUTHOR_EMAIL: "demo@shoplite.test", GIT_COMMITTER_NAME: "ShopLite Demo", GIT_COMMITTER_EMAIL: "demo@shoplite.test", GIT_TERMINAL_PROMPT: "0" };
 const git = (cwd, args, secrets = []) => {
@@ -50,6 +50,11 @@ export function configOverlay({ gitlabUrl, testsProject, services, jira }) {
       },
     },
     reporting: { targets: ["gitlab-mr", "jira"] },
+    // The demo cards stay "In Progress", which is not a ready status: without this, an acceptance criterion that needs two
+    // services would wait for a status nobody sets. (Not proven on a real project.)
+    generation: { crossService: "when-ac-complete" },
+    // The story record is also kept in a Jira issue property, which reset removes (a runner cache alone would bring it back).
+    automation: { record: "jira" },
     bugs: { mode: "suggest" },
     environments: { local: { baseUrl: "http://127.0.0.1:8080", description: "Demo environment started by qa-env/start.sh" } },
   };
@@ -94,7 +99,7 @@ export async function buildWorkFolders({ config, out, env = process.env, log = s
     const dir = path.join(out, s.name);
     fs.rmSync(dir, { recursive: true, force: true });
     copyDir(path.join(TEMPLATE_DIR, s.template ?? (s.name === "payments-service" ? "service-payments" : "service-orders")), dir);
-    replaceIn(path.join(dir, ".gitlab-ci.yml"), [["__TESTS_PROJECT__", config.testsProject]]);
+    replaceIn(path.join(dir, ".gitlab-ci.yml"), [["__TESTS_PROJECT__", config.testsProject], ["__DEFAULT_BRANCH__", config.defaultBranch ?? "main"]]);
     dirs[s.name] = dir;
   }
   const tdir = path.join(out, "shoplite-tests");
@@ -102,7 +107,7 @@ export async function buildWorkFolders({ config, out, env = process.env, log = s
   fs.mkdirSync(tdir, { recursive: true });
   const [cmd, ...pre] = qaSentinel(env);
   log("  running qa-sentinel init for the test repo");
-  execFileSync(cmd, [...pre, "init", "--yes", "--mode", "scratch", "--ci", "gitlab", "--level", "maintenance", "--workspace", "..", "--name", "shoplite-demo-tests"], { cwd: tdir, stdio: ["ignore", "pipe", "pipe"], env: { ...env, ...GIT_ENV } });
+  execFileSync(cmd, [...pre, "init", "--yes", "--mode", "scratch", "--ci", "gitlab", "--level", "maintenance", "--workspace", "..", "--name", "shoplite-demo-tests"], { cwd: tdir, stdio: ["ignore", "pipe", "pipe"], env: { ...cleanEnv(env), ...GIT_ENV } });
   fs.rmSync(path.join(tdir, "tests/api/example"), { recursive: true, force: true });
   copyDir(path.join(TEMPLATE_DIR, "tests"), tdir);
   replaceIn(path.join(tdir, ".gitlab-ci.yml"), [["__QA_ENV_SERVICES__", config.services.map((s) => `${s.name}=${s.project}`).join(" ")]]);
@@ -120,7 +125,8 @@ export async function buildWorkFolders({ config, out, env = process.env, log = s
   if (install) {
     // CI runs `npm ci`, which needs a lockfile. Lockfile download addresses must be public ones (a company mirror is not reachable from CI).
     log("  npm install in the test repo (makes package-lock.json)");
-    execFileSync("npm", ["install", "--no-audit", "--no-fund", "--silent"], { cwd: tdir, stdio: ["ignore", "pipe", "pipe"] });
+    // No install scripts and no tokens in the environment: a dependency must not be able to read them.
+    execFileSync("npm", ["install", "--ignore-scripts", "--no-audit", "--no-fund", "--silent"], { cwd: tdir, stdio: ["ignore", "pipe", "pipe"], env: cleanEnv(env) });
     const lock = path.join(tdir, "package-lock.json");
     const bad = fs.existsSync(lock) ? (fs.readFileSync(lock, "utf8").match(/"resolved": "https?:\/\/(?!registry\.npmjs\.org\/)[^"]+"/g) ?? []) : [];
     if (bad.length) fail(`package-lock.json has ${bad.length} download address(es) outside registry.npmjs.org (a private npm mirror?). CI could not install them. Run setup on a machine with the public registry.`);
@@ -145,7 +151,7 @@ export async function setupGitlab({ args = {}, env = process.env, configFile = D
     log(`Built ${Object.keys(dirs).length} folders in ${out}. Nothing was sent anywhere.`);
     return { dirs };
   }
-  const writing = Boolean(args.yes);
+  const writing = wantsWrite(args);
   const projects = [config.testsProject, ...config.services.map((s) => s.project)];
   log(`GitLab: ${config.gitlabUrl}  ${writing ? "(WRITING)" : "(dry run: nothing is written; add --yes to write)"}`);
   for (const p of projects) log(`  project ${p}: push the template to ${config.defaultBranch}, tag demo-baseline${p === config.services[0].project ? `, create ${config.releaseBranch}` : ""}`);
@@ -181,6 +187,14 @@ export async function setupGitlab({ args = {}, env = process.env, configFile = D
   push(first.dir, first.project, `HEAD:refs/heads/${config.releaseBranch}`);
   log(`  created ${config.releaseBranch} in ${first.project}`);
   saveState(stateFile, state);
+
+  // Branches the demo makes are protected, so project variables marked "protected" are available to their pipelines.
+  for (const pattern of ["demo/*", "hotfix/*"]) {
+    await gl.api("POST", `/projects/${enc(first.project)}/protected_branches`, { name: pattern, push_access_level: 40, merge_access_level: 40 }).then(
+      () => log(`  protected branch pattern ${pattern} in ${first.project}`),
+      (e) => log(`  WARNING could not protect ${pattern} (${e.message}). Protect it in Settings > Repository > Protected branches if you use protected CI/CD variables.`),
+    );
+  }
 
   // Best effort, like the sandbox setup: tell the owner what to do by hand if it fails.
   await gl.api("PUT", `/projects/${enc(config.testsProject)}`, { ci_pipeline_variables_minimum_override_role: "developer" }).then(

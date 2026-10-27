@@ -16,7 +16,7 @@ import { reset } from "../demo/scripts/reset.mjs";
 // @ts-expect-error plain .mjs scripts
 import { setupGitlab, configOverlay, buildWorkFolders } from "../demo/scripts/setup-gitlab.mjs";
 // @ts-expect-error plain .mjs scripts
-import { applyEdits, loadConfig, loadCards, loadChange, parseArgs, toWiki, redact, TEMPLATE_DIR, DEMO_DIR } from "../demo/scripts/lib.mjs";
+import { applyEdits, cleanEnv, loadConfig, loadCards, loadChange, parseArgs, toWiki, redact, TEMPLATE_DIR, DEMO_DIR } from "../demo/scripts/lib.mjs";
 import { startFakeGitlab, startFakeJira } from "./helpers/fakeDemo.js";
 
 const TOKEN = "glpat-TESTTOKEN-1234567890";
@@ -67,16 +67,16 @@ afterEach(async () => {
 
 /** Seed Jira, and write what setup-gitlab.mjs would have recorded for GitLab. */
 async function seeded() {
-  await seedJira({ ...base(), args: { yes: true, [FLAG]: true } });
+  await seedJira({ ...base(), args: { yes: true, [FLAG]: "DEMO" } });
   const st = state();
-  st.gitlab = { url: gl.url, testsProject: "g/shoplite-tests", projects: ["g/shoplite-tests", "g/shoplite-orders", "g/shoplite-payments"], defaultBranch: "main", releaseBranch: "release/demo", baselines: {}, setupAt: "2000-01-01T00:00:00Z" };
+  st.gitlab = { url: gl.url, testsProject: "g/shoplite-tests", projects: ["g/shoplite-tests", "g/shoplite-orders", "g/shoplite-payments"], defaultBranch: "main", releaseBranch: "release/demo", baselines: Object.fromEntries(["g/shoplite-tests", "g/shoplite-orders", "g/shoplite-payments"].map((p) => [p, gl.projects.get(p)!.tags.get("demo-baseline")!])), setupAt: "2000-01-01T00:00:00Z" };
   fs.writeFileSync(files().stateFile, JSON.stringify(st));
   gl.requests.length = 0;
   return st;
 }
 const mergeCard = (card: string, extra: Record<string, unknown> = {}) => demoMerge({ ...base(), args: { card, yes: true, merge: true, ...extra } });
 const fixCard = (card: string, extra: Record<string, unknown> = {}) => demoBugfix({ ...base(), args: { card, yes: true, merge: true, ...extra } });
-const resetArgs = (extra: Record<string, unknown> = {}) => ({ ...base(), args: { yes: true, [FLAG]: true, ...extra } });
+const resetArgs = (extra: Record<string, unknown> = {}) => ({ ...base(), args: { yes: true, [FLAG]: "DEMO", ...extra } });
 const rejects = async (p: Promise<unknown>, re: RegExp) => expect(p).rejects.toThrow(re);
 
 describe("demo kit: the files", () => {
@@ -118,10 +118,10 @@ describe("demo kit: the files", () => {
 
   it("the sample config is what setup writes on top of init", async () => {
     const YAML = (await import("yaml")).default;
-    const sample = YAML.parse(tpl("tests", "qa-sentinel.config.sample.yaml"));
+    const sample = YAML.parse(tpl("qa-sentinel.config.sample.yaml"));
     const made = configOverlay({ gitlabUrl: "https://gitlab.example.com", testsProject: "<your-group>/shoplite-tests", services: [{ name: "orders-service", project: "<your-group>/shoplite-orders" }, { name: "payments-service", project: "<your-group>/shoplite-payments" }], jira: { baseUrl: "https://<your-site>.atlassian.net", project: "<YOUR-TEST-PROJECT-KEY>" } });
     expect(sample).toEqual(JSON.parse(JSON.stringify(made)));
-    const text = tpl("tests", "qa-sentinel.config.sample.yaml") + tpl("tests", ".gitlab-ci.yml") + tpl("service-orders", ".gitlab-ci.yml");
+    const text = tpl("qa-sentinel.config.sample.yaml") + tpl("tests", ".gitlab-ci.yml") + tpl("service-orders", ".gitlab-ci.yml");
     expect(text).not.toMatch(/glpat-|ATATT|sk-ant|password|secret\s*:/i);
   });
 
@@ -146,6 +146,13 @@ describe("demo kit: the files", () => {
     const bin = `${process.execPath} ${ROOT}/node_modules/tsx/dist/cli.mjs ${ROOT}/src/cli.ts`;
     const dirs = await buildWorkFolders({ config: JSON.parse(fs.readFileSync(files().configFile, "utf8")), out, env: { PATH: process.env.PATH ?? "", HOME: tmp, QA_SENTINEL_BIN: bin }, log });
     const cfg = fs.readFileSync(path.join(dirs["shoplite-tests"], "qa-sentinel.config.yaml"), "utf8");
+    // the file that setup writes is valid for qa-sentinel itself (a typo in a setting would fail here)
+    const { ConfigSchema } = await import("../src/config.js");
+    const YAML = (await import("yaml")).default;
+    const parsed = ConfigSchema.safeParse(YAML.parse(cfg));
+    expect(parsed.success, JSON.stringify((parsed as any).error?.issues)).toBe(true);
+    expect((parsed as any).data.generation.crossService).toBe("when-ac-complete");
+    expect((parsed as any).data.automation.record).toBe("jira");
     expect(cfg).toContain("gitlabProject: g/shoplite-orders");
     expect(cfg).toContain("source: jira");
     expect(cfg).toContain("testRepoProject: g/shoplite-tests");
@@ -167,11 +174,13 @@ describe("seed-jira", () => {
   });
 
   it("refuses without DEMO_JIRA_PROJECT, with another project, with another Jira, and without the test-project flag", async () => {
-    await rejects(seedJira({ ...base(), env: env({ DEMO_JIRA_PROJECT: "" }), args: { yes: true, [FLAG]: true } }), /Set DEMO_JIRA_PROJECT/);
-    await rejects(seedJira({ ...base(), env: env({ DEMO_JIRA_PROJECT: "REAL" }), args: { yes: true, [FLAG]: true } }), /must be the same/);
-    await rejects(seedJira({ ...base(), env: env({ JIRA_BASE_URL: "https://company.atlassian.net" }), args: { yes: true, [FLAG]: true } }), /not the Jira in demo\.config/);
+    await rejects(seedJira({ ...base(), env: env({ DEMO_JIRA_PROJECT: "" }), args: { yes: true, [FLAG]: "DEMO" } }), /Set DEMO_JIRA_PROJECT/);
+    await rejects(seedJira({ ...base(), env: env({ DEMO_JIRA_PROJECT: "REAL" }), args: { yes: true, [FLAG]: "DEMO" } }), /must be the same/);
+    await rejects(seedJira({ ...base(), env: env({ JIRA_BASE_URL: "https://company.atlassian.net" }), args: { yes: true, [FLAG]: "DEMO" } }), /not the Jira in demo\.config/);
     await rejects(seedJira({ ...base(), args: { yes: true } }), /--i-know-this-is-a-test-project/);
-    await rejects(seedJira({ ...base(), args: { yes: true, [FLAG]: "OTHER" } }), /does not match/);
+    await rejects(seedJira({ ...base(), args: { yes: true, [FLAG]: "OTHER" } }), /Refusing/);
+    await rejects(seedJira({ ...base(), args: { yes: true, [FLAG]: true } }), /Refusing/); // the bare form is not enough
+    await rejects(seedJira({ ...base(), args: { yes: "false", [FLAG]: "DEMO" } }), /--yes takes no value/);
     expect(jira.requests).toHaveLength(0);
     expect(fs.existsSync(files().stateFile)).toBe(false);
   });
@@ -181,7 +190,7 @@ describe("seed-jira", () => {
   });
 
   it("creates the cards, links the bug to its story, moves stories to In Progress and records the keys; a second run creates nothing", async () => {
-    await seedJira({ ...base(), args: { yes: true, [FLAG]: true } });
+    await seedJira({ ...base(), args: { yes: true, [FLAG]: "DEMO" } });
     const st = state();
     expect(Object.keys(st.cards).sort()).toEqual(["blank-item-hotfix", "cancel-refund", "delivery-slot", "qty-limit", "slot-cap-bug"]);
     expect(st.jira).toEqual({ baseUrl: jira.url, project: "DEMO" });
@@ -198,7 +207,7 @@ describe("seed-jira", () => {
     expect(JSON.stringify(st) + logs.join("\n")).not.toContain(JIRA_TOKEN);
 
     jira.requests.length = 0;
-    await seedJira({ ...base(), args: { yes: true, [FLAG]: true } });
+    await seedJira({ ...base(), args: { yes: true, [FLAG]: "DEMO" } });
     expect(jira.writes()).toHaveLength(0);
     expect(jira.issues.size).toBe(5);
   });
@@ -208,7 +217,7 @@ describe("seed-jira", () => {
     const st = state();
     st.jira.project = "OLD";
     fs.writeFileSync(files().stateFile, JSON.stringify(st));
-    await rejects(seedJira({ ...base(), args: { yes: true, [FLAG]: true } }), /belongs to/);
+    await rejects(seedJira({ ...base(), args: { yes: true, [FLAG]: "DEMO" } }), /belongs to/);
   });
 });
 
@@ -346,7 +355,8 @@ describe("reset", () => {
     const theirs = jira.comment(k("delivery-slot"), "I quoted qa-sentinel:gap-report in my own words", "other");
     const plain = jira.comment(k("delivery-slot"), "a normal comment", "me");
     jira.issues.get(k("delivery-slot"))!.props["qa-sentinel.record"] = { version: 1 };
-    jira.issues.get(k("delivery-slot"))!.props["qa-sentinel.showcase"] = { attachments: [{ id: "att-1", filename: "qa-showcase.md" }] };
+    jira.issues.get(k("delivery-slot"))!.props["qa-sentinel.showcase"] = { attachments: [{ id: "att-1", filename: "qa-showcase.md" }, { id: "att-9", filename: "not-on-this-card.md" }] };
+    jira.addAttachment(k("delivery-slot"), "att-1", "qa-showcase.md", "me");
     jira.issues.get(k("delivery-slot"))!.props["unrelated.property"] = { keep: true };
     jira.setStatus(k("delivery-slot"), "Done");
     gl.requests.length = 0;
@@ -375,8 +385,10 @@ describe("reset", () => {
 
   it("refuses to write without the test-project flag, and for another Jira project", async () => {
     await afterADemo();
-    await rejects(reset({ ...base(), args: { yes: true } }), /--i-know-this-is-a-test-project/);
-    await rejects(reset({ ...base(), env: env({ DEMO_JIRA_PROJECT: "REAL" }), args: { yes: true, [FLAG]: true } }), /Nothing was changed/);
+    await rejects(reset({ ...base(), args: { yes: true } }), /--i-know-this-is-a-test-project DEMO/);
+    await rejects(reset({ ...base(), args: { yes: true, [FLAG]: true } }), /Refusing/);
+    await rejects(reset({ ...base(), args: { yes: "false", [FLAG]: "DEMO" } }), /--yes takes no value/);
+    await rejects(reset({ ...base(), env: env({ DEMO_JIRA_PROJECT: "REAL" }), args: { yes: true, [FLAG]: "DEMO" } }), /must all be the same/);
     await rejects(reset({ ...base(), env: env({ DEMO_JIRA_PROJECT: "" }), args: {} }), /Set DEMO_JIRA_PROJECT/);
     expect(gl.writes()).toHaveLength(0);
     expect(jira.writes()).toHaveLength(0);
@@ -528,6 +540,285 @@ describe("reset", () => {
     await reset(resetArgs({ "delete-bugs": true }));
     expect(jira.issues.has("DEMO-701")).toBe(false);
     expect(jira.issues.has("DEMO-702")).toBe(true);
+  });
+});
+
+describe("review fixes", () => {
+  const orders = () => gl.projects.get("g/shoplite-orders")!;
+  const baseFiles = (project: string) => gl.projects.get(project)!.commits.get(gl.projects.get(project)!.tags.get("demo-baseline")!)!.files;
+  const writeState = (fn: (st: any) => void) => {
+    const st = state();
+    fn(st);
+    fs.writeFileSync(files().stateFile, JSON.stringify(st));
+  };
+  const mrFetch = (route: string, method: string, body?: unknown) => fetch(`${gl.url}/api/v4${route}`, { method, headers: { "PRIVATE-TOKEN": TOKEN, "content-type": "application/json" }, body: body ? JSON.stringify(body) : undefined }).then((r) => r.json());
+
+  it("H1: reset refuses a project that is not in demo.config.json, and a project whose baseline tag moved", async () => {
+    await seeded();
+    gl.addProject("team/real-service", { "a.js": "1" }, "main", ["develop"]);
+    gl.addAgentMr("team/real-service", "qa-sentinel/story-REAL-7", "real");
+    writeState((st) => {
+      st.gitlab.projects.push("team/real-service");
+      st.gitlab.baselines["team/real-service"] = gl.projects.get("team/real-service")!.tags.get("demo-baseline");
+    });
+    await rejects(reset({ ...base(), args: {} }), /not in demo\.config\.json/);
+    await rejects(reset(resetArgs()), /not in demo\.config\.json/);
+    expect(gl.writes()).toHaveLength(0);
+    expect(gl.projects.get("team/real-service")!.mrs[0].state).toBe("opened");
+    // the tag of a listed project was moved: not the project that was set up
+    writeState((st) => (st.gitlab.projects = st.gitlab.projects.filter((p: string) => p !== "team/real-service")));
+    const pr = orders();
+    const moved = gl.addCommit("g/shoplite-orders", "main", "someone", { "x.txt": "1" });
+    pr.tags.set("demo-baseline", moved);
+    await rejects(reset(resetArgs()), /tag demo-baseline in .* points to/);
+    expect(gl.writes()).toHaveLength(0);
+  });
+
+  it("H2: reset and seed touch only cards with the demo's key shape, label and summary", async () => {
+    const st = await seeded();
+    const k = st.cards["delivery-slot"].key as string;
+    jira.addForeign("PROD-1");
+    jira.setStatus("PROD-1", "Done");
+    jira.comment("PROD-1", "qa-sentinel:gap-report:x", "me");
+    jira.issues.get("PROD-1")!.props["qa-sentinel.record"] = { v: 1 };
+    writeState((x) => (x.cards.stray = { key: "PROD-1", type: "Story", startStatus: "In Progress" }));
+    // a card with the right key whose label was removed, and one whose summary was changed
+    jira.issues.get(k)!.fields.labels = [];
+    jira.comment(k, "qa-sentinel:gap-report:orders-service", "me");
+    const q = st.cards["qty-limit"].key as string;
+    jira.issues.get(q)!.fields.summary = "Something else";
+    jira.comment(q, "qa-sentinel:gap-report:orders-service", "me");
+    jira.requests.length = 0;
+    await reset(resetArgs());
+    expect(jira.writes()).toHaveLength(0);
+    expect(jira.issues.get("PROD-1")!.comments).toHaveLength(1);
+    expect(jira.issues.get("PROD-1")!.fields.status.name).toBe("Done");
+    expect(Object.keys(jira.issues.get("PROD-1")!.props)).toEqual(["qa-sentinel.record"]);
+    const out = logs.join("\n");
+    expect(out).toMatch(/PROD-1 \(stray\): NOT touched, the key does not look like DEMO-/);
+    expect(out).toMatch(/NOT touched, it has no "qa-sentinel-demo" label/);
+    expect(out).toMatch(/NOT touched, its summary is not the one in cards\.json/);
+    // seed refuses to adopt such a card too
+    await rejects(seedJira({ ...base(), args: { yes: true, [FLAG]: "DEMO", "allow-existing-issues": true } }), /is in the state file but/);
+  });
+
+  it("H3: a damaged state file cannot point a request elsewhere", async () => {
+    await seeded();
+    writeState((st) => (st.mrs = [{ project: "g/shoplite-orders", iid: "../../team%2Fvictim", branch: "demo/x", target: "main" }]));
+    gl.requests.length = 0;
+    await rejects(reset({ ...base(), args: { "delete-mrs": true } }), /not valid.*merge request number/);
+    await rejects(reset(resetArgs({ "delete-mrs": true })), /not valid/);
+    await rejects(demoMerge({ ...base(), args: { card: "qty-limit" } }), /not valid/);
+    expect(gl.requests).toHaveLength(0);
+    for (const bad of [{ merges: [{ project: "g/shoplite-orders", branch: "main", sha: "../../x" }] }, { merges: [{ project: "g/shoplite-orders", branch: "main", sha: "zzzzzzz" }] }, { merges: [{ project: "../victim", branch: "main", sha: "abcdef1" }] }, { branches: [{ project: "g/shoplite-orders", branch: "a/../../b" }] }, { raisedBugs: [{ story: "DEMO-1", key: "x/../y" }] }]) {
+      writeState((st) => Object.assign(st, { mrs: [], merges: [], branches: [] }, bad));
+      await rejects(reset({ ...base(), args: {} }), /not valid/);
+    }
+    writeState((st) => Object.assign(st, { mrs: [], merges: [], branches: [], raisedBugs: [] }, { cards: { ...st.cards, "delivery-slot": { ...st.cards["delivery-slot"], key: "DEMO-1/../../x" } } }));
+    await rejects(reset({ ...base(), args: {} }), /card delivery-slot key/);
+    expect(gl.requests).toHaveLength(0);
+  });
+
+  it("H3: every id that goes into a URL is encoded", async () => {
+    // a number-like value that passes the check is still sent as one path part
+    await seeded();
+    await mergeCard("qty-limit");
+    await reset(resetArgs());
+    const paths = gl.requests.filter((r) => /merge_requests\//.test(r.path)).map((r) => r.path);
+    expect(paths.length).toBeGreaterThan(0);
+    for (const x of paths) expect(x).toMatch(/merge_requests\/\d+(\/|\?|$)/);
+  });
+
+  it("H4: a merge done with GitLab's own Merge button (merge commit) is found and reverted", async () => {
+    await seeded();
+    await demoMerge({ ...base(), args: { card: "delivery-slot", yes: true } }); // opened, not merged by the script
+    const mr = orders().mrs[0];
+    await mrFetch(`/projects/g%2Fshoplite-orders/merge_requests/${mr.iid}/merge`, "PUT", { squash: true, should_remove_source_branch: true }); // the button
+    expect(mr.state).toBe("merged");
+    expect(mr.merge_commit_sha).toBeTruthy();
+    expect(orders().commits.get(mr.merge_commit_sha)!.parent_ids).toHaveLength(2); // a real merge commit
+    expect(state().merges).toHaveLength(0);
+    expect(gl.files("g/shoplite-orders", "main")["src/server.js"]).toContain("MAX_ORDERS_PER_SLOT");
+    expect(await reset(resetArgs())).toBe(0);
+    expect(gl.files("g/shoplite-orders", "main")).toEqual(baseFiles("g/shoplite-orders"));
+    expect(logs.join("\n")).toMatch(/same files as demo-baseline/);
+    // and the demo can run again
+    await mergeCard("delivery-slot");
+  });
+
+  it("H4: while a branch still differs, reset says NOT FINISHED, returns 1 and keeps the records", async () => {
+    await seeded();
+    await mergeCard("qty-limit");
+    gl.addCommit("g/shoplite-orders", "main", "someone else", { "notes.txt": "x" });
+    expect(await reset(resetArgs())).toBe(1);
+    expect(logs.join("\n")).toMatch(/NOT FINISHED/);
+    expect(logs.join("\n")).toMatch(/STILL DIFFERENT from demo-baseline in notes\.txt/);
+    expect(state().mrs).toHaveLength(1);
+    expect(state().merges).toHaveLength(1);
+  });
+
+  it("H4: the merge-commit revert and the cherry-pick of a merge commit are exercised, and a revert is not done twice", async () => {
+    await seeded();
+    await fixCard("blank-item-hotfix");
+    await fixCard("blank-item-hotfix", { "cherry-pick": true });
+    const sha = state().merges[0].sha;
+    expect(orders().commits.get(sha)!.parent_ids).toHaveLength(2);
+    expect(await reset(resetArgs())).toBe(0);
+    const reverts = gl.requests.filter((r) => /\/revert$/.test(r.path));
+    expect(reverts).toHaveLength(2); // the cherry-pick on main, and the merge on the release branch
+    for (const b of ["main", "release/demo"]) expect(gl.files("g/shoplite-orders", b)).toEqual(baseFiles("g/shoplite-orders"));
+  });
+
+  it("M2: a failure in one project does not keep the records of another", async () => {
+    await seeded();
+    await mergeCard("cancel-refund", { part: "payments-service" });
+    await mergeCard("qty-limit");
+    (orders() as any).failReverts = true;
+    expect(await reset(resetArgs())).toBe(1);
+    expect(state().mrs.map((m: any) => m.project)).toEqual(["g/shoplite-orders"]);
+    expect(state().merges.map((m: any) => m.project)).toEqual(["g/shoplite-orders"]);
+    expect(gl.files("g/shoplite-payments", "main")).toEqual(baseFiles("g/shoplite-payments"));
+  });
+
+  it("M1: --delete-bugs deletes nothing outside the demo project", async () => {
+    const st = await seeded();
+    const k = st.cards["delivery-slot"].key as string;
+    jira.addForeign("PROD-9");
+    jira.issues.get("PROD-9")!.fields.labels = ["qa-sentinel"];
+    jira.issues.get("PROD-9")!.fields.reporter = jira.ME;
+    jira.issues.get(k)!.props["qa-sentinel.bugs"] = { "AC-3": { key: "PROD-9" } };
+    await reset(resetArgs({ "delete-bugs": true }));
+    expect(jira.issues.has("PROD-9")).toBe(true);
+    expect(logs.join("\n")).toMatch(/PROD-9", which is not a card of project DEMO/);
+  });
+
+  it("M3/M4: reset says to clear the runner cache and wait for idle runners; --cancel-pipelines cancels the revert pipelines", async () => {
+    await seeded();
+    await mergeCard("qty-limit");
+    orders().pipelines.push({ id: 1, status: "running" }, { id: 2, status: "pending" }, { id: 3, status: "success" });
+    await reset(resetArgs({ "cancel-pipelines": true }));
+    expect(orders().pipelines.map((p) => p.status)).toEqual(["canceled", "canceled", "success"]);
+    expect(logs.join("\n")).toMatch(/Clear runner caches/);
+    expect(logs.join("\n")).toMatch(/Wait until the runners are idle|wait until the runners are idle/i);
+    expect(logs.join("\n")).toMatch(/Resolution/);
+  });
+
+  it("M5: the script waits until GitLab says the merge request is mergeable, then merges; it gives up with the reason", async () => {
+    await seeded();
+    orders().mergeChecks = 3;
+    await demoMerge({ ...base(), pollMs: 1, args: { card: "qty-limit", yes: true, merge: true } });
+    expect(orders().mrs[0].state).toBe("merged");
+    expect(orders().mergeChecks).toBe(0);
+    orders().mergeChecks = 9999;
+    await rejects(demoMerge({ ...base(), pollMs: 1, args: { card: "delivery-slot", yes: true, merge: true, "merge-wait": 0 } }), /not mergeable yet: GitLab says "checking"/);
+    expect(orders().mrs.find((m) => m.title.includes("delivery"))?.state ?? "opened").toBe("opened");
+  });
+
+  it("M6: the child processes of setup get no tokens and no install scripts", async () => {
+    const e = cleanEnv({ PATH: "/bin", HOME: "/h", GITLAB_TOKEN: TOKEN, JIRA_API_TOKEN: JIRA_TOKEN, JIRA_PAT: "p", ANTHROPIC_API_KEY: "k", QA_SENTINEL_GITLAB_TOKEN: "t" });
+    expect(Object.keys(e).sort()).toEqual(["HOME", "PATH"]);
+    const src = fs.readFileSync(path.join(DEMO_DIR, "scripts/setup-gitlab.mjs"), "utf8");
+    expect(src).toMatch(/"install", "--ignore-scripts"/);
+  });
+
+  it("M8: seed refuses a project that already holds other issues (Cloud search and the Server fallback)", async () => {
+    jira.addForeign("DEMO-500");
+    await rejects(seedJira({ ...base(), args: { yes: true, [FLAG]: "DEMO" } }), /does not look like a TEST project/);
+    expect(jira.writes()).toHaveLength(0);
+    const cloud = await startFakeJira({ cloudSearch: true });
+    try {
+      cloud.addForeign("DEMO-500");
+      const cfg = JSON.parse(fs.readFileSync(files().configFile, "utf8"));
+      cfg.jira.baseUrl = cloud.url;
+      fs.writeFileSync(files().configFile, JSON.stringify(cfg));
+      await rejects(seedJira({ ...base(), args: { yes: true, [FLAG]: "DEMO" } }), /does not look like a TEST project/);
+      expect(cloud.requests.some((r) => r.path.startsWith("/rest/api/3/search/jql"))).toBe(true);
+    } finally {
+      await cloud.close();
+      const cfg = JSON.parse(fs.readFileSync(files().configFile, "utf8"));
+      cfg.jira.baseUrl = jira.url;
+      fs.writeFileSync(files().configFile, JSON.stringify(cfg));
+    }
+    await seedJira({ ...base(), args: { yes: true, [FLAG]: "DEMO", "allow-existing-issues": true } });
+    expect(jira.issues.size).toBe(6);
+  });
+
+  it("Low: more than 100 comments, branches and commits are all handled", async () => {
+    const st = await seeded();
+    const k = st.cards["delivery-slot"].key as string;
+    for (let i = 0; i < 130; i++) jira.comment(k, `qa-sentinel:gap-report:s${i}`, "me");
+    jira.comment(k, "keep me", "me");
+    for (let i = 0; i < 120; i++) orders().branches.set(`qa-sentinel/story-N${i}`, { head: orders().branches.get("main")!.head, protected: false });
+    await mergeCard("qty-limit");
+    expect(await reset(resetArgs())).toBe(0);
+    expect(jira.issues.get(k)!.comments.map((c) => c.body)).toEqual(["keep me"]);
+    expect([...orders().branches.keys()]).toEqual(["main", "release/demo"]);
+    // a revert that is more than 100 commits down is still seen, so it is not done a second time
+    await mergeCard("qty-limit");
+    const merges = state().merges;
+    await reset(resetArgs());
+    for (let i = 0; i < 120; i++) gl.addCommit("g/shoplite-orders", "main", `filler ${i}`, { "notes.txt": String(i) });
+    writeState((x) => (x.merges = merges));
+    gl.requests.length = 0;
+    await reset(resetArgs());
+    expect(gl.requests.filter((r) => /\/revert$/.test(r.path))).toHaveLength(0);
+    expect(gl.requests.some((r) => /ref_name=main.*page=2/.test(r.path))).toBe(true);
+  });
+
+  it("Low: the extra generated files are removed, people's /qa ready comments are listed, showcase attachments are checked", async () => {
+    const st = await seeded();
+    const k = st.cards["delivery-slot"].key as string;
+    const dir = path.join(tmp, "tests-repo");
+    fs.mkdirSync(path.join(dir, ".qa-data"), { recursive: true });
+    fs.writeFileSync(path.join(dir, "qa-sentinel.config.yaml"), "version: 1\n");
+    for (const f of ["qa-feature-SHOP-1.md", "qa-coverage.json", "qa-healed.md", "qa-contract-check.md", "qa-data-sweep.md", "keep.txt"]) fs.writeFileSync(path.join(dir, f), "x");
+    jira.comment(k, "/qa ready AC-2", "other");
+    jira.issues.get(k)!.props["qa-sentinel.showcase"] = { attachments: [{ id: "a1" }, { id: "a2" }, { id: "a3" }] };
+    jira.addAttachment(k, "a1", "mine.md", "me");
+    jira.addAttachment(k, "a2", "theirs.md", "other");
+    await reset(resetArgs({ "tests-dir": dir, "skip-doctor": true }));
+    expect(fs.readdirSync(dir).sort()).toEqual(["keep.txt", "qa-sentinel.config.yaml"]);
+    expect(logs.join("\n")).toMatch(/contains "\/qa ready"/);
+    expect(jira.deletedAttachments).toEqual(["a1"]); // a2 was added by someone else, a3 is not on the card
+    expect(jira.issues.get(k)!.comments.map((c) => c.body)).toEqual(["/qa ready AC-2"]);
+  });
+
+  it("Low: a placeholder in services[].project is refused", () => {
+    const cfg = JSON.parse(fs.readFileSync(files().configFile, "utf8"));
+    cfg.services[0].project = "<your-group>/shoplite-orders";
+    fs.writeFileSync(files().configFile, JSON.stringify(cfg));
+    expect(() => loadConfig(files().configFile)).toThrow(/filled in/);
+    cfg.services[0].project = "no-slash";
+    fs.writeFileSync(files().configFile, JSON.stringify(cfg));
+    expect(() => loadConfig(files().configFile)).toThrow(/not a GitLab project path/);
+  });
+
+  it("H5: the CI file of each service sets the service name the config uses, and the environment script looks for it", () => {
+    const made = configOverlay({ gitlabUrl: "https://g", testsProject: "a/t", services: [{ name: "orders-service", project: "a/o" }, { name: "payments-service", project: "a/p" }], jira: { baseUrl: "https://j", project: "DEMO" } });
+    for (const [dir, name] of [["service-orders", "orders-service"], ["service-payments", "payments-service"]]) {
+      expect(tpl(dir, ".gitlab-ci.yml")).toContain(`QA_SERVICE_NAME: "${name}"`);
+      expect(JSON.parse(tpl(dir, "package.json")).name).toBe(name);
+      expect(made.workspace.services.map((x: any) => x.name)).toContain(name);
+      expect(tpl(dir, ".gitlab-ci.yml")).toMatch(/ref: __DEFAULT_BRANCH__/);
+    }
+    const start = tpl("tests", "qa-env/start.sh");
+    expect(start).toContain('/tmp/services/$svc');
+    expect(start).toMatch(/for svc in payments-service orders-service/);
+    // and the shipped template really reads QA_SERVICE_NAME, so setting it matters
+    expect(fs.readFileSync(path.join(ROOT, "templates/ci/gitlab/service.gitlab-ci.yml"), "utf8")).toContain('QA_SERVICE_NAME: "$CI_PROJECT_NAME"');
+  });
+
+  it("H6: the demo settings let a cross-service criterion be written without a ready status, and the file is valid for qa-sentinel", async () => {
+    const made = configOverlay({ gitlabUrl: "https://g.example", testsProject: "a/t", services: [{ name: "orders-service", project: "a/o" }], jira: { baseUrl: "https://j.example", project: "DEMO" } });
+    expect(made.generation.crossService).toBe("when-ac-complete");
+    expect(made.automation.record).toBe("jira");
+  });
+
+  it("H7: the docs recommend a bot identity, protected and scoped variables", () => {
+    const readme = fs.readFileSync(path.join(DEMO_DIR, "README.md"), "utf8") + fs.readFileSync(path.join(DEMO_DIR, "CHECKLIST.md"), "utf8");
+    for (const w of ["group access token", "bot", "Protected", "qa-analysis", "qa-publish", "QA_SPLIT_JOBS"]) expect(readme).toContain(w);
+    expect(readme).not.toMatch(/personal access token \(scope/i);
+    expect(readme).not.toMatch(/--i-know-this-is-a-test-project`?\s*$/m);
   });
 });
 

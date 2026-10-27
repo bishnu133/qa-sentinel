@@ -1,7 +1,9 @@
 // The shared part of demo-merge.mjs and demo-bugfix.mjs: make the developer's change for a card on a branch,
 // open the merge request with the Jira key in its title, and (only with --merge) merge it.
 // Works only on projects and cards listed in .demo-state.json. Writes to GitLab only with --yes.
-import { DEFAULT_CONFIG, DEFAULT_STATE, applyEdits, enc, fail, loadCards, loadChange, loadConfig, loadState, makeGitLab, saveState, say } from "./lib.mjs";
+import { DEFAULT_CONFIG, DEFAULT_STATE, applyEdits, enc, fail, loadCards, loadChange, loadConfig, loadState, makeGitLab, saveState, say, wantsWrite } from "./lib.mjs";
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 /** What the person should look at next. Taken from the shipped docs and templates; NOT observed by the kit's author on a real system. */
 export function watchText({ kind, card, key, project, testsProject, merged, hotfix, partial }) {
@@ -22,7 +24,7 @@ export function watchText({ kind, card, key, project, testsProject, merged, hotf
   return out;
 }
 
-export async function runChangeFlow({ kind, args = {}, env = process.env, configFile = DEFAULT_CONFIG, stateFile = DEFAULT_STATE, cardsFile, log = say }) {
+export async function runChangeFlow({ kind, args = {}, env = process.env, configFile = DEFAULT_CONFIG, stateFile = DEFAULT_STATE, cardsFile, log = say, pollMs = 2000 }) {
   const wantBug = kind === "bug";
   const cardId = args.card;
   if (!cardId || cardId === true) fail(`Say which card: --card <id>. Cards: ${loadCards(cardsFile).cards.filter((c) => (c.type === "Bug") === wantBug).map((c) => c.id).join(", ")}`);
@@ -52,14 +54,14 @@ export async function runChangeFlow({ kind, args = {}, env = process.env, config
   const branch = `${hotfix ? "hotfix" : "demo"}/${rec.key}-${change.slug}`;
   const title = `${rec.key}: ${card.summary}`;
   const project = svc.project;
-  const writing = Boolean(args.yes);
+  const writing = wantsWrite(args);
   const gl = makeGitLab(state.gitlab.url, env);
   if (new URL(gl.url).origin !== new URL(config.gitlabUrl).origin) fail("The GitLab address in demo.config.json is not the one the state was set up with. Nothing was changed.");
   const P = `/projects/${enc(project)}`;
 
   let mr = state.mrs.find((m) => m.project === project && m.branch === branch);
   if (mr) {
-    const live = await gl.api("GET", `${P}/merge_requests/${mr.iid}`);
+    const live = await gl.api("GET", `${P}/merge_requests/${enc(String(mr.iid))}`);
     mr.state = live.state;
     if (live.state === "closed") fail(`The merge request !${mr.iid} for this card was closed. Run reset.mjs --yes, then start again.`);
     if (live.state === "merged" && !args["cherry-pick"]) fail(`!${mr.iid} is already merged. To do it again, run reset.mjs --yes first.`);
@@ -95,11 +97,22 @@ export async function runChangeFlow({ kind, args = {}, env = process.env, config
   const partial = card.changes.length > 1;
   const cherry = args["cherry-pick"];
   if (args.merge && mr.state !== "merged") {
+    // GitLab needs a moment after the merge request is made to work out whether it can be merged.
+    const waitMs = Number(args["merge-wait"] ?? 60) * 1000;
+    const until = Date.now() + waitMs;
+    let status;
+    for (;;) {
+      const live = await gl.api("GET", `${P}/merge_requests/${enc(String(mr.iid))}`);
+      status = live.detailed_merge_status;
+      if (status === undefined || status === "mergeable") break; // older GitLab: no such field, just try
+      if (Date.now() >= until) fail(`!${mr.iid} is not mergeable yet: GitLab says "${status}". Wait (a running pipeline, an approval or a discussion can hold it), then run the same command again.`);
+      await sleep(pollMs);
+    }
     let merged;
     try {
-      merged = await gl.api("PUT", `${P}/merge_requests/${mr.iid}/merge`, { squash: true, should_remove_source_branch: true, squash_commit_message: title });
+      merged = await gl.api("PUT", `${P}/merge_requests/${enc(String(mr.iid))}/merge`, { squash: true, should_remove_source_branch: true, squash_commit_message: title });
     } catch (e) {
-      if ([405, 406, 409, 422].includes(e.status)) fail(`GitLab would not merge !${mr.iid} yet (${e.status}): the pipeline may still be running, or an approval is needed. Wait, then run the same command again.`);
+      if ([405, 406, 409, 422].includes(e.status)) fail(`GitLab would not merge !${mr.iid} yet (${e.status}): the pipeline may still be running, or an approval is needed. Wait, then run the same command again. If the project allows only fast-forward merges, rebase the merge request in GitLab first.`);
       throw e;
     }
     mr.state = merged.state;
@@ -116,7 +129,7 @@ export async function runChangeFlow({ kind, args = {}, env = process.env, config
     if (mr.state !== "merged" || !mr.mergeSha) fail("Merge the hotfix into the release branch first (--merge).");
     if (state.merges.some((m) => m.project === project && m.kind === "cherry-pick" && m.cardId === cardId)) log("  already copied to the main branch");
     else {
-      const picked = await gl.api("POST", `${P}/repository/commits/${mr.mergeSha}/cherry_pick`, { branch: state.gitlab.defaultBranch });
+      const picked = await gl.api("POST", `${P}/repository/commits/${enc(String(mr.mergeSha))}/cherry_pick`, { branch: state.gitlab.defaultBranch });
       state.merges.push({ project, branch: state.gitlab.defaultBranch, sha: picked.id, cardId, mrIid: mr.iid, kind: "cherry-pick" });
       saveState(stateFile, state);
       log(`  copied the fix to ${state.gitlab.defaultBranch} (${String(picked.id).slice(0, 8)})`);

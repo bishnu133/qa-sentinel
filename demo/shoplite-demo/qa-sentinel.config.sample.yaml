@@ -1,4 +1,4 @@
-# SAMPLE: the settings that setup-gitlab.mjs adds on top of `qa-sentinel init`. Placeholders only.
+# SAMPLE (not copied anywhere): the settings that setup-gitlab.mjs adds on top of `qa-sentinel init`. Placeholders only.
 # Secrets are NOT here. They are CI/CD variables: ANTHROPIC_API_KEY, QA_SENTINEL_GITLAB_TOKEN, JIRA_EMAIL + JIRA_API_TOKEN (or JIRA_PAT).
 # The real file is written for you into the test repo. A test checks that this sample matches what setup writes.
 workspace:
@@ -46,6 +46,10 @@ reporting:
   targets:
     - gitlab-mr
     - jira
+generation:
+  crossService: when-ac-complete
+automation:
+  record: jira
 bugs:
   mode: suggest
 environments:

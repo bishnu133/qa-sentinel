@@ -1,9 +1,12 @@
 # Demo service repo pipeline: qa-sentinel gap report on merge requests, test generation after a merge.
-# __TESTS_PROJECT__ is filled in by demo/scripts/setup-gitlab.mjs (the test repo's project path).
+# __TESTS_PROJECT__ and __DEFAULT_BRANCH__ are filled in by demo/scripts/setup-gitlab.mjs.
 include:
   - project: "__TESTS_PROJECT__"
-    ref: main
+    ref: __DEFAULT_BRANCH__
     file: "ci/qa-sentinel/service.gitlab-ci.yml"
 
 variables:
   QA_TESTS_PROJECT: "__TESTS_PROJECT__"
+  # The template would use the GitLab project name (shoplite-...). qa-sentinel needs the name in qa-sentinel.config.yaml,
+  # and qa-env/start.sh looks for /tmp/services/orders-service.
+  QA_SERVICE_NAME: "orders-service"
