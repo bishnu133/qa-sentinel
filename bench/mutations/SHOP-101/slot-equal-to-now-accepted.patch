@@ -1,0 +1,17 @@
+# mutation: slot-equal-to-now-accepted
+# service: orders-service
+# describes: a slot exactly equal to the current time is accepted (<= became <); no test can hit the same millisecond
+# expect-killed-by: none
+diff --git a/src/server.js b/src/server.js
+index 4521380..c9e1350 100644
+--- a/src/server.js
++++ b/src/server.js
+@@ -25,7 +25,7 @@ app.post("/orders", async (req, res) => {
+ 
+   const slot = Date.parse(deliverySlot);
+   if (!deliverySlot || Number.isNaN(slot)) return res.status(400).json({ error: "deliverySlot must be an ISO date-time" });
+-  if (slot <= Date.now()) return res.status(400).json({ error: "deliverySlot must be in the future" });
++  if (slot < Date.now()) return res.status(400).json({ error: "deliverySlot must be in the future" });
+   if ([...orders.values()].filter((o) => o.deliverySlot === deliverySlot).length >= MAX_ORDERS_PER_SLOT) {
+     return res.status(409).json({ error: "delivery slot is full" });
+   }

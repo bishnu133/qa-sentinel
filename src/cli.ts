@@ -279,7 +279,8 @@ program
   .option("-o, --out <file>", "markdown output", "qa-metrics.md")
   .option("--json", "print the numbers as JSON instead")
   .option("--no-fetch", "don't fetch merge request heads from origin")
-  .action(wrap(async (o) => metricsCommand({ cwd: cwd(), runs: o.runs, records: o.records, since: o.since, out: o.out, json: o.json, fetch: o.fetch })));
+  .option("--online", "ask GitLab for the 👍 and 👎 on the gap report comments (needs a token)")
+  .action(wrap(async (o) => metricsCommand({ cwd: cwd(), runs: o.runs, records: o.records, since: o.since, out: o.out, json: o.json, fetch: o.fetch, online: o.online })));
 
 program
   .command("healed")

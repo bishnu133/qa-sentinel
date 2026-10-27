@@ -6,6 +6,7 @@ import { fromRoot, git } from "../git.js";
 import type { Manifest } from "../run.js";
 import { log } from "../log.js";
 import { fileStore, readRecordsFrom, type StoryRecord } from "../stories/record.js";
+import { gitlabContext, noteAwards, type GitLabContext } from "../scm/gitlab.js";
 
 /**
  * Is the tool earning its keep? Two sources, both already there:
@@ -20,6 +21,8 @@ export interface AgentCommit {
   runId?: string;
   date: string;
   files: string[];
+  /** Titles of the tests the commit added (from the added lines of its test files), to look them up in flaky runs. */
+  addedTests?: string[];
   state: "merged-unedited" | "merged-edited" | "merged-unknown" | "open" | "not-merged";
   mergedBy?: string;
 }
@@ -38,8 +41,23 @@ export interface Metrics {
   plans: { total: number; repaired: number; repairRate: number | null; invalid: number; risk: Record<string, number> };
   guardrails: { runsWithViolations: number; deniedToolCalls: number };
   mergeRequests: { total: number; mergedUnedited: number; mergedEdited: number; mergedUnknown: number; open: number; notMerged: number; mergedWithoutEditsRate: number | null };
+  /** B4: how many of the tests the agent added were flaky (failed once and passed on the automatic retry) in any run that was read. */
+  agentTestFlakiness: { agentTests: number; flaky: number; rate: number | null; flakyTests: string[] };
+  /** B4: hours from the service change landing to the test merge request being opened or updated (generate runs that recorded both times). */
+  mergeToMr: { runs: number; medianHours: number | null; p90Hours: number | null };
+  /** B4: 👍 and 👎 on the gap report comments (only with `metrics --online`). */
+  usefulness?: Usefulness;
   /** Merged-without-edits per month of the agent's commit: is the team's review getting lighter as lessons accumulate? */
   byMonth: { month: string; merged: number; unedited: number; rate: number | null }[];
+}
+
+export interface Usefulness {
+  /** Gap report comments looked at (one per merge request). */
+  notes: number;
+  up: number;
+  down: number;
+  /** Comments whose reactions could not be read (deleted, no access). */
+  unreadable: number;
 }
 
 export interface AutomationBudgetSuggestion {
@@ -192,6 +210,69 @@ function patchId(repo: string, from: string, to: string, files: string[]): strin
   }
 }
 
+const TEST_TITLE = /\b(?:test|it)(?:\.\w+)*\(\s*(["'`])((?:\\.|(?!\1).)*)\1/;
+
+/** Titles of the tests a commit added: `test("…")` and `it("…")` calls on its added lines (Playwright, Jest, Vitest, Mocha). */
+export function addedTestTitles(repo: string, sha: string, files: string[]): string[] {
+  if (!files.length) return [];
+  const diff = tryGit(repo, ["show", "--format=", "-U0", sha, "--", ...files]);
+  const out = new Set<string>();
+  for (const line of diff.split("\n")) {
+    if (!line.startsWith("+") || line.startsWith("+++")) continue;
+    const m = TEST_TITLE.exec(line);
+    if (m && m[2].trim()) out.add(m[2].trim());
+  }
+  return [...out];
+}
+
+/** Names in the `flaky` lists of every verification.json under the folders (runs, post-deploy and suite runs write the same file). */
+export function collectFlaky(dirs: string[], since?: Date): string[] {
+  const out = new Set<string>();
+  const walk = (d: string, depth: number) => {
+    if (depth > 6 || !fs.existsSync(d)) return;
+    for (const e of fs.readdirSync(d, { withFileTypes: true })) {
+      const p = path.join(d, e.name);
+      if (e.isDirectory()) {
+        if (e.name !== "node_modules" && e.name !== ".git") walk(p, depth + 1);
+      } else if (e.name === "verification.json") {
+        try {
+          if (since && fs.statSync(p).mtime < since) continue;
+          const j = JSON.parse(fs.readFileSync(p, "utf8")) as { flaky?: unknown };
+          if (Array.isArray(j.flaky)) for (const n of j.flaky) if (typeof n === "string") out.add(n);
+        } catch {
+          /* not one of ours */
+        }
+      }
+    }
+  };
+  for (const d of dirs) walk(d, 0);
+  return [...out];
+}
+
+/** Does a flaky name (a JUnit name often carries a describe prefix) belong to this test title? */
+const sameTest = (flaky: string, title: string) => flaky.trim() === title || flaky.includes(title);
+
+/**
+ * Reactions on the gap report comments. One comment per merge request is counted once (the newest run that wrote it).
+ * The 👍 and 👎 are GitLab's `thumbsup` and `thumbsdown`. Needs a token that can read the merge requests.
+ */
+export async function fetchUsefulness(ctx: GitLabContext, manifests: Manifest[]): Promise<Usefulness> {
+  const notes = new Map<string, NonNullable<Manifest["mr"]>>();
+  for (const m of manifests) if (m.kind === "gap-report" && m.mr) notes.set(`${m.mr.project}!${m.mr.iid}#${m.mr.noteId}`, m.mr);
+  const u: Usefulness = { notes: 0, up: 0, down: 0, unreadable: 0 };
+  for (const n of notes.values()) {
+    try {
+      const awards = await noteAwards(ctx, n.project, n.iid, n.noteId);
+      u.notes++;
+      u.up += awards.filter((a) => a.name === "thumbsup").length;
+      u.down += awards.filter((a) => a.name === "thumbsdown").length;
+    } catch {
+      u.unreadable++;
+    }
+  }
+  return u;
+}
+
 /**
  * qa-sentinel's commits (generate and tag) and what became of them on the target branch:
  * - merge commit: edited when the MR branch has commits after the agent's that touch its files;
@@ -248,7 +329,7 @@ export function agentCommits(repo: string, target: string, since?: Date): AgentC
         state = same ? "merged-unedited" : "merged-edited";
       } else state = tryGit(repo, ["branch", "-a", "--contains", x.sha]).trim() ? "open" : "not-merged";
     }
-    out.push({ sha: x.sha, runId: x.runId, date: x.date, files, state, mergedBy });
+    out.push({ sha: x.sha, runId: x.runId, date: x.date, files, addedTests: addedTestTitles(repo, x.sha, files), state, mergedBy });
   }
   // Squash commits whose branch is gone: merged, but whether a reviewer changed the tests can't be told.
   for (const y of all) {
@@ -262,7 +343,7 @@ export function agentCommits(repo: string, target: string, since?: Date): AgentC
 const rate = (a: number, b: number) => (b ? Math.round((a / b) * 1000) / 10 : null);
 const round = (n: number, d = 2) => Math.round(n * 10 ** d) / 10 ** d;
 
-export function computeMetrics(manifests: Manifest[], commits: AgentCommit[], since?: string, records: StoryRecord[] = []): Metrics {
+export function computeMetrics(manifests: Manifest[], commits: AgentCommit[], since?: string, records: StoryRecord[] = [], extra: { flakyNames?: string[]; usefulness?: Usefulness } = {}): Metrics {
   const byKind: Metrics["byKind"] = {};
   for (const m of manifests) {
     const k = (byKind[m.kind] ??= { runs: 0, outcomes: {}, costUsd: 0, avgCostUsd: 0, avgDurationS: 0 });
@@ -307,6 +388,15 @@ export function computeMetrics(manifests: Manifest[], commits: AgentCommit[], si
   for (const m of plans) if (m.plan?.risk) risk[m.plan.risk] = (risk[m.plan.risk] ?? 0) + 1;
   const count = (s: AgentCommit["state"]) => commits.filter((c) => c.state === s).length;
   const merged = count("merged-unedited") + count("merged-edited");
+  const agentTests = [...new Set(commits.flatMap((c) => c.addedTests ?? []))];
+  const flakyTests = agentTests.filter((t) => (extra.flakyNames ?? []).some((f) => sameTest(f, t)));
+  const hours = gens
+    .map((m) => (m.trigger?.serviceCommitAt && m.trigger.mrOpenedAt ? (Date.parse(m.trigger.mrOpenedAt) - Date.parse(m.trigger.serviceCommitAt)) / 3_600_000 : NaN))
+    .filter((h) => Number.isFinite(h) && h >= 0);
+  const median = (xs: number[]) => {
+    const s = [...xs].sort((a, b) => a - b);
+    return s.length % 2 ? s[(s.length - 1) / 2] : (s[s.length / 2 - 1] + s[s.length / 2]) / 2;
+  };
   return {
     since,
     runs: manifests.length,
@@ -336,6 +426,9 @@ export function computeMetrics(manifests: Manifest[], commits: AgentCommit[], si
       notMerged: count("not-merged"),
       mergedWithoutEditsRate: rate(count("merged-unedited"), merged),
     },
+    agentTestFlakiness: { agentTests: agentTests.length, flaky: flakyTests.length, rate: rate(flakyTests.length, agentTests.length), flakyTests },
+    mergeToMr: { runs: hours.length, medianHours: hours.length ? round(median(hours), 2) : null, p90Hours: hours.length ? round(p90Of(hours), 2) : null },
+    ...(extra.usefulness ? { usefulness: extra.usefulness } : {}),
     byMonth: [...new Set(commits.filter((c) => c.state === "merged-unedited" || c.state === "merged-edited").map((c) => c.date.slice(0, 7)))]
       .sort()
       .map((month) => {
@@ -363,6 +456,13 @@ export function metricsMarkdown(m: Metrics): string {
     `| Plans needing a repair round | ${pct(m.plans.repairRate)} (${m.plans.repaired}/${m.plans.total}); invalid after repair: ${m.plans.invalid} |`,
     `| Runs stopped by guardrails · denied tool calls | ${m.guardrails.runsWithViolations} · ${m.guardrails.deniedToolCalls} |`,
   ];
+  const f = m.agentTestFlakiness;
+  lines.push(`| Agent-written tests that were flaky | ${f.agentTests ? `${pct(f.rate)} (${f.flaky}/${f.agentTests})` : "– (no agent tests found)"} |`);
+  lines.push(`| Hours from service change to test merge request | ${m.mergeToMr.runs ? `median ${m.mergeToMr.medianHours}, p90 ${m.mergeToMr.p90Hours} (${m.mergeToMr.runs} run(s))` : "– (no generate run recorded both times yet)"} |`);
+  if (m.usefulness) {
+    const u = m.usefulness;
+    lines.push(`| Gap report comments: 👍 / 👎 | ${u.up} / ${u.down} on ${u.notes} comment(s)${u.unreadable ? `; ${u.unreadable} could not be read` : ""} |`);
+  } else lines.push("| Gap report comments: 👍 / 👎 | – (run `metrics --online` with a GitLab token) |");
   if (Object.keys(m.plans.risk).length)
     lines.push(`| Risk of analysed changes | ${["critical", "high", "medium", "low"].filter((r) => m.plans.risk[r]).map((r) => `${r} ${m.plans.risk[r]}`).join(", ")} |`);
   if (m.byMonth.length > 1) {
@@ -409,7 +509,7 @@ export function parseSince(s?: string): Date | undefined {
   return d;
 }
 
-export async function metricsCommand(o: { cwd: string; runs?: string[]; records?: string[]; since?: string; out?: string; json?: boolean; fetch?: boolean }): Promise<number> {
+export async function metricsCommand(o: { cwd: string; runs?: string[]; records?: string[]; since?: string; out?: string; json?: boolean; fetch?: boolean; online?: boolean; env?: NodeJS.ProcessEnv }): Promise<number> {
   const c = loadConfig(o.cwd);
   if (o.fetch !== false && fetchReviewRefs(o.cwd)) log.dim("fetched merge request heads (for fast-forward and squash merges)");
   const since = parseSince(o.since);
@@ -419,7 +519,13 @@ export async function metricsCommand(o: { cwd: string; runs?: string[]; records?
   if (!target) log.warn(`target branch ${c.ci.targetBranch} not found; merge statistics are skipped (fetch it first)`);
   const commits = target ? agentCommits(o.cwd, target, since) : [];
   const records = [...(await fileStore(o.cwd).list()), ...(o.records ?? []).flatMap((d) => readRecordsFrom(path.resolve(o.cwd, d)))];
-  const m = computeMetrics(manifests, commits, o.since, records);
+  let usefulness: Usefulness | undefined;
+  if (o.online) {
+    const ctx = gitlabContext(c.ci.gitlabUrl, o.env ?? process.env);
+    if (!ctx) log.warn("--online: set QA_SENTINEL_GITLAB_TOKEN (or GITLAB_TOKEN) to count 👍 and 👎 on the gap report comments");
+    else usefulness = await fetchUsefulness(ctx, manifests);
+  }
+  const m = computeMetrics(manifests, commits, o.since, records, { flakyNames: collectFlaky(dirs, since), usefulness });
   if (o.json) {
     process.stdout.write(JSON.stringify(m, null, 2) + "\n");
     return 0;

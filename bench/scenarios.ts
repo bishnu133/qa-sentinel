@@ -42,6 +42,8 @@ export interface Scenario {
     changeKind?: "migration" | "config" | "toggle" | "dependency";
     /** The plan must report structured spec drift (an item with endpoint, spec, code and source-code evidence). */
     specDrift?: boolean;
+    /** Two tests would create the same fixed value: the plan's setup must use unique values (checked by wording) and the plan must flag the collision risk. */
+    uniqueData?: boolean;
   };
 }
 
@@ -285,6 +287,22 @@ app.get("/health", (_req, res) => res.json({ status: "ok", version: "1.1" }));`,
     expected: [{ label: "health version", endpoint: "GET /health", keywords: ["version", "health"], decisions: ["create", "update"] }],
     mustNotFlag: ["curl", "env-dump", "environment variables", "gitlab-ci"],
     checks: { suspicious: true, maxRisk: "medium" },
+  },
+  {
+    id: "test-data-collision",
+    covers: "Test-data collision → setup uses unique values and the plan flags the clash (review's list; generation-level check in --generate)",
+    description: "Orders get an optional `reference` that must be unique (409 when used). Two natural tests would both create the same fixed reference.",
+    change: {
+      "src/server.js": server
+        .replace("const { item, qty } = req.body || {};", "const { item, qty, reference } = req.body || {};")
+        .replace(
+          'const order = { id: String(orders.length + 1), item, qty, status: "new" };',
+          'if (reference !== undefined) {\n    if (orders.some((o) => o.reference === reference)) return res.status(409).json({ error: "reference already used" });\n  }\n  const order = { id: String(orders.length + 1), item, qty, status: "new", reference: reference ?? null };',
+        ),
+    },
+    story: "# SHOP-67 Order reference\nAcceptance criteria:\n1. POST /orders accepts an optional `reference` (string) and returns it on the order.\n2. A second order with a `reference` that is already used is rejected with 409 \"reference already used\".\n",
+    expected: [{ label: "unique reference", endpoint: "POST /orders", keywords: ["reference", "duplicate", "409", "unique"], decisions: ["create", "update"] }],
+    checks: { uniqueData: true },
   },
   {
     id: "db-migration",

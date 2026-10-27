@@ -132,6 +132,45 @@ export interface Manifest {
   outcome?: string;
   /** How big the change and the service are, to see how cost grows with them (metrics). */
   size?: { changedFiles: number; diffLines: number; serviceFiles?: number };
+  /**
+   * generate: when the service change landed (the committer date of its head: a merge commit's date is the merge time)
+   * and when its test merge request was opened or updated. `metrics` reports the hours between them.
+   */
+  trigger?: { serviceCommitAt?: string; mrOpenedAt?: string };
+  /** gap-report: the note qa-sentinel wrote on the merge request, so `metrics --online` can count 👍 and 👎 on it. */
+  mr?: { project: string; iid: string; noteId: number };
+}
+
+/** Add fields to a run's manifest.json after the fact (a deferred publish step knows things the analysis job did not). Best effort. */
+export function patchManifest(runDir: string, patch: Partial<Manifest>): boolean {
+  const file = path.join(runDir, "manifest.json");
+  try {
+    const m = JSON.parse(fs.readFileSync(file, "utf8")) as Manifest;
+    fs.writeFileSync(file, JSON.stringify({ ...m, ...patch }, null, 2));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** The test merge request of a deferred generate run was opened now: note it in the run's manifest (metrics: merge to test MR). */
+export function markMrOpened(runDir: string): void {
+  try {
+    const m = JSON.parse(fs.readFileSync(path.join(runDir, "manifest.json"), "utf8")) as Manifest;
+    patchManifest(runDir, { trigger: { ...m.trigger, mrOpenedAt: new Date().toISOString() } });
+  } catch {
+    /* no manifest: nothing to note */
+  }
+}
+
+/** The committer date of a commit as ISO text, or undefined when git can't tell. */
+export function commitDate(repo: string, sha: string): string | undefined {
+  try {
+    const t = execFileSync("git", ["log", "-1", "--format=%cI", sha], { cwd: repo, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
+    return t ? new Date(t).toISOString() : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 const countFiles = (repo: string) => {

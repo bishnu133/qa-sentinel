@@ -546,7 +546,7 @@ async function gapReportBody(o: GapReportOptions, wrap: (e: AgentEngine) => Agen
   }
   if (seen) await recordMrSeen(openStore(cwd, c), seen).catch((e) => log.warn(`story record: merge request not recorded (${(e as Error).message.split("\n")[0]})`));
   // A merge request that names several stories gets one joined comment (written by gapReportEach); each story still gets its own Jira section here.
-  if (o.post) await publish(c, { report, jiraSummary, cwd, service: service.name, storyKey: req.storyKey, mr, ...(postTargets ? { targets: postTargets } : {}), ...(stampNow ? { stamp: stampNow } : {}) });
+  if (o.post) await publish(c, { onMrNote: (n) => { manifest.mr = n; writeManifest(run, manifest); }, report, jiraSummary, cwd, service: service.name, storyKey: req.storyKey, mr, ...(postTargets ? { targets: postTargets } : {}), ...(stampNow ? { stamp: stampNow } : {}) });
   if (bugCandidates && req.storyKey) {
     const jira = jiraContext(c.requirements.jira);
     if (jira) {

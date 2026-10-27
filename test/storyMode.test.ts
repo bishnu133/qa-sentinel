@@ -317,6 +317,10 @@ describe("the story's merge request", () => {
     expect(gl.mrs[0].labels).toEqual(expect.arrayContaining(["qa-agent", "story::SHOP-101", "service::orders"]));
     expect(gl.mrs[0].description).toMatch(/Waiting ACs[\s\S]*AC-1: waits for/);
     expect((await fileStore(w.qa).load("SHOP-101"))!.agentMr).toMatchObject({ branch: BRANCH, iid: 1, state: "opened" });
+    // The manifest records when the service change landed and when its test merge request was opened (metrics: hours between them).
+    const runs = path.join(w.qa, ".qa-sentinel/runs");
+    const manifest = JSON.parse(fs.readFileSync(path.join(runs, fs.readdirSync(runs).find((d) => fs.existsSync(path.join(runs, d, "manifest.json")) && JSON.parse(fs.readFileSync(path.join(runs, d, "manifest.json"), "utf8")).kind === "generate")!, "manifest.json"), "utf8"));
+    expect(Date.parse(manifest.trigger.serviceCommitAt)).toBeLessThanOrEqual(Date.parse(manifest.trigger.mrOpenedAt));
 
     g(w.storefront, "merge", "--no-ff", "-q", "-m", "Merge feature/SHOP-101-ui", "feature/SHOP-101-ui");
     g(w.qa, "checkout", "-q", "main");

@@ -4,6 +4,7 @@ import crypto from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { loadConfig, type Config } from "../config.js";
 import { findingsMarkdown, violations } from "../guardrails.js";
+import { markMrOpened, patchManifest } from "../run.js";
 import { createOrUpdateMergeRequest, gitlabContext, gitlabMrFromEnv, latestMrForBranch, upsertMarkedNote } from "../scm/gitlab.js";
 import { jiraContext } from "../scm/jira.js";
 import { remoteFor, redact, storyBranchName } from "../generation/storyBranch.js";
@@ -197,7 +198,7 @@ async function publishRun(cwd: string, c: Config, dir: string, env: NodeJS.Proce
           }
           // The merge request is this job's own (CI_PROJECT_ID, CI_MERGE_REQUEST_IID), never one named in the run folder.
           if (t === "gitlab-mr" && (!mrEnv.project || !mrEnv.mrIid)) throw new Error("no merge request in this job (CI_PROJECT_ID and CI_MERGE_REQUEST_IID are not set)");
-          const done = await publish(c, { report: step.report, jiraSummary: step.jiraSummary, cwd, service: step.service, storyKey: step.storyKey, stamp: step.stamp, mr: mrEnv, targets: [t] }, env);
+          const done = await publish(c, { onMrNote: (n) => patchManifest(dir, { mr: n }), report: step.report, jiraSummary: step.jiraSummary, cwd, service: step.service, storyKey: step.storyKey, stamp: step.stamp, mr: mrEnv, targets: [t] }, env);
           if (!done.includes(t)) throw new Error(`${t} was not published (missing token, login or merge request; see the warning above)`);
           mark(`${i}:${t}`, `${label} (${t})`);
         }
@@ -321,6 +322,7 @@ async function pushAndOpen(cwd: string, c: Config, runDir: string, runId: string
     throw new Error(story ? `${s.branch} could not be pushed: it changed on the server meanwhile (or was refused). Nothing was overwritten; run the analysis job again. (${(e as Error).message})` : `push of ${s.branch} failed: ${(e as Error).message}`);
   }
   const mr = await createOrUpdateMergeRequest(ctx, project, { source: s.branch, target, title: s.title.slice(0, 150), description: s.description, labels: cleanLabels(s.labels, story ? s.storyKey : undefined) });
+  markMrOpened(runDir);
   if (story && s.storyKey) await recordAgentMr(openStore(cwd, c, env), s.storyKey, { branch: s.branch, iid: mr.iid, url: mr.web_url, headSha: s.headSha });
   return { note: `pushed ${s.branch}; merge request ${mr.action}: ${mr.web_url}`, mr: { url: mr.web_url, iid: mr.iid } };
 }

@@ -3,18 +3,19 @@
  * (planning phase with the real agent), and scores the validated test plan against human expectations.
  *
  *   npm run bench                       # all scenarios, once
- *   npm run bench -- --only ac-conflict --runs 3
+ *   npm run bench -- --only ac-conflict --runs 3   # also writes the consistency table (how much the 3 runs agree)
+ *   npm run bench -- --summarise bench/results/<file>.json   # the consistency table of a saved run, no cost
+ *   npm run bench -- --generate [--only new-validation,test-data-collision]   # runs `generate` too (costs more)
  *
  * Metrics (per the review): gap recall, gap precision, decision accuracy, plus scenario checks,
  * plan validity, cost and duration. Results: bench/results/<timestamp>.json and .md
  */
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
-import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { BASE_SERVICE, BASE_TESTS, SCENARIOS, type Scenario } from "./scenarios.js";
-import { initCommand } from "../src/commands/init.js";
+import { SCENARIOS, type Scenario } from "./scenarios.js";
+import { buildWorkspace } from "./workspace.js";
+import { agreementMarkdown, summariseAgreement } from "./agreement.js";
 import { gapReportCommand } from "../src/commands/gapReport.js";
 import { normaliseEndpoint } from "../src/plan/risk.js";
 import { quietly } from "./quiet.js";
@@ -28,22 +29,6 @@ const opt = (name: string) => {
 const only = opt("only")?.split(",");
 const runs = Number(opt("runs") ?? 1);
 const parallel = Number(opt("parallel") ?? 3);
-
-const write = (root: string, files: Record<string, string | null>) => {
-  for (const [rel, content] of Object.entries(files)) {
-    const f = path.join(root, rel);
-    if (content === null) fs.rmSync(f, { force: true });
-    else {
-      fs.mkdirSync(path.dirname(f), { recursive: true });
-      fs.writeFileSync(f, content);
-    }
-  }
-};
-const git = (cwd: string, ...a: string[]) => execFileSync("git", a, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
-const commitAll = (cwd: string, msg: string) => {
-  git(cwd, "add", "-A");
-  git(cwd, "-c", "user.email=bench@x", "-c", "user.name=bench", "commit", "-qm", msg);
-};
 
 const RISK = ["low", "medium", "high", "critical"];
 
@@ -64,29 +49,15 @@ export interface ScenarioResult {
   durationMs?: number;
   corrections: number;
   repairRounds: number;
+  /** Per expected change, the decisions the plan gave its changes (for the consistency summary). */
+  perExpected?: { label: string; decision: string }[];
+  /** Scenarios (tests) the plan proposes, summed over its decisions. */
+  scenarioCount?: number;
   error?: string;
 }
 
 async function runScenario(s: Scenario, run: number): Promise<ScenarioResult> {
-  const ws = fs.mkdtempSync(path.join(os.tmpdir(), `qas-bench-${s.id}-`));
-  const svc = path.join(ws, "orders-service");
-  const tests = path.join(ws, "qa-tests");
-  fs.mkdirSync(svc);
-  fs.mkdirSync(tests);
-  write(svc, BASE_SERVICE);
-  git(svc, "init", "-q", "-b", "main");
-  commitAll(svc, "base");
-  write(svc, s.change);
-  for (const [f, c] of Object.entries(s.change)) {
-    if (c !== null && BASE_SERVICE[f] === c) throw new Error(`${s.id}: change to ${f} is identical to the base (a replace did not match)`);
-  }
-  commitAll(svc, `${s.id}: developer change`);
-
-  await quietly(() => initCommand({ cwd: tests, yes: true, mode: "scratch", ci: "gitlab", workspace: ws, name: "bench" }));
-  write(tests, { ...BASE_TESTS, ...(s.tests ?? {}) });
-  if (s.story) write(tests, { "story.md": s.story });
-  git(tests, "init", "-q", "-b", "main");
-  commitAll(tests, "tests");
+  const { ws, tests } = await buildWorkspace(s);
 
   const base: ScenarioResult = {
     id: s.id,
@@ -166,6 +137,7 @@ export function score(s: Scenario, plan: any, r: ScenarioResult): ScenarioResult
     if (needsWork && ds.some((d: string) => GAP.includes(d))) r.foundGaps++;
     const ok = ds.length > 0 && ds.every((d: string) => e.decisions.includes(d as any)) && (!e.oracle || hits.every((c: any) => e.oracle!.includes(c.oracleStatus)));
     if (ok) r.decisionsCorrect++;
+    (r.perExpected ??= []).push({ label: e.label, decision: hits.length ? [...new Set(ds)].sort().join("+") || "none" : "none" });
     r.checks.push({ name: `decision: ${e.label}`, pass: ok, detail: hits.length ? `${hits.map((c: any) => `${c.id}=${(decisionOf.get(c.id) as any)?.decision}/${c.oracleStatus}`).join(", ")}` : "no matching change" });
   }
   // Gap precision: every reported gap must correspond to an expected change that needs work.
@@ -178,6 +150,7 @@ export function score(s: Scenario, plan: any, r: ScenarioResult): ScenarioResult
     if (tp && !forbidden) r.truePositiveGaps++;
     else r.checks.push({ name: `unexpected gap ${d.changeId}`, pass: false, detail: `${d.decision}: ${c?.summary}` });
   }
+  r.scenarioCount = plan.decisions.reduce((n: number, d: any) => n + (d.proposedScenarios?.length ?? 0), 0);
   const ck = s.checks ?? {};
   if (ck.suspicious !== undefined) r.checks.push({ name: "suspicious content flagged", pass: (plan.suspicious?.length ?? 0) > 0 === ck.suspicious });
   if (ck.acMismatch) r.checks.push({ name: `requirement conflict ${ck.acMismatch} reported`, pass: plan.acMismatches.some((m: any) => m.requirementId === ck.acMismatch) });
@@ -187,7 +160,22 @@ export function score(s: Scenario, plan: any, r: ScenarioResult): ScenarioResult
   if (ck.invalidTest) r.checks.push({ name: `flags ${path.basename(ck.invalidTest)} as no longer valid`, pass: plan.impactedTests.some((t: any) => t.file === ck.invalidTest && t.stillValid === false) });
   if (ck.changeKind) r.checks.push({ name: `change type ${ck.changeKind} found in code`, pass: (plan.risk.changeKinds ?? []).some((k: any) => k.kind === ck.changeKind) });
   if (ck.specDrift) r.checks.push({ name: "spec drift reported with code evidence", pass: (plan.specDrift ?? []).some((d: any) => typeof d !== "string" && d.evidence?.some((e: any) => e.source === "source-code" && e.file && e.line)) });
+  if (ck.uniqueData) r.checks.push(...uniqueDataChecks(plan));
   return r;
+}
+
+/**
+ * Test-data collision, judged by wording (no AI): do the proposed scenarios' setup and assertions ask for unique values,
+ * and does the plan itself (a decision's reason, a change summary, the verdict) mention the clash risk?
+ */
+export function uniqueDataChecks(plan: any): { name: string; pass: boolean; detail?: string }[] {
+  const scenarios: any[] = (plan.decisions ?? []).flatMap((d: any) => d.proposedScenarios ?? []);
+  const setupText = scenarios.map((sc: any) => (sc.setup ?? []).map((x: any) => (typeof x === "string" ? x : `${x.action} ${x.helper ?? ""}`)).join(" ")).join("\n");
+  const planText = [plan.verdict, plan.recommendedAction, ...(plan.decisions ?? []).map((d: any) => d.reason)].join("\n");
+  return [
+    { name: "setup uses unique values", pass: /unique|random|uuid|timestamp|fresh|generated|per[- ]test|distinct/i.test(setupText) },
+    { name: "plan flags the test-data collision risk", pass: /collid|collision|clash|re-?run|parallel|shared (data|state)|same (fixed )?(value|reference|id)/i.test(planText) },
+  ];
 }
 
 const pct = (a: number, b: number) => (b === 0 ? "–" : `${Math.round((100 * a) / b)}%`);
@@ -227,10 +215,31 @@ function markdown(results: ScenarioResult[], s: ReturnType<typeof summarise>): s
     ...rows,
     ...(fails.length ? ["", "## Failed checks", ...fails] : []),
     ...(errors.length ? ["", "## Errors", ...errors] : []),
+    ...agreementMarkdown(summariseAgreement(results)),
   ].join("\n");
 }
 
 async function main() {
+  // Summarise a saved results file again (free): consistency across the runs it holds.
+  const saved = opt("summarise");
+  if (saved) {
+    const { results } = JSON.parse(fs.readFileSync(saved, "utf8")) as { results: ScenarioResult[] };
+    const lines = agreementMarkdown(summariseAgreement(results));
+    console.log(lines.length ? lines.join("\n") : `${saved}: no scenario has more than one run (run the benchmark with --runs 3)`);
+    return;
+  }
+  if (args.includes("--features")) {
+    const { FEATURE_CASES, featureMarkdown, runFeatureCase } = await import("./cases.js");
+    const results = FEATURE_CASES.flatMap(runFeatureCase);
+    console.log(featureMarkdown(results));
+    process.exitCode = results.every((r) => r.pass) ? 0 : 1;
+    return;
+  }
+  if (args.includes("--generate")) {
+    const { generationMain } = await import("./generateBench.js");
+    await generationMain({ only, runs, args });
+    return;
+  }
   const selected = SCENARIOS.filter((s) => !only || only.includes(s.id));
   const jobs = selected.flatMap((s) => Array.from({ length: runs }, (_, i) => ({ s, run: i + 1 })));
   fs.mkdirSync(path.join(here, "results", "runs"), { recursive: true });

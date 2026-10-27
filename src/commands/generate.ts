@@ -11,7 +11,7 @@ import { expectedCommitMessage, poQuestions, runSpecPass, specDenyRead } from ".
 import { checkExpectedValues } from "../expected/assertions.js";
 import { matchesAny } from "../fsutil.js";
 import { formatUsage } from "../claude.js";
-import { useEnvironment, ARTIFACT_GLOBS, VERSION, agentEnv, bashRulesForTests, cleanAgentAnswer, createRunDir, findService, startManifest, testEnv, writeManifest } from "../run.js";
+import { useEnvironment, commitDate, ARTIFACT_GLOBS, VERSION, agentEnv, bashRulesForTests, cleanAgentAnswer, createRunDir, findService, startManifest, testEnv, writeManifest } from "../run.js";
 import { checkKnownDefectMarkers, checkContent, checkPaths, checkServiceUntouched, findingsMarkdown, generatePolicy, snapshotTree, violations } from "../guardrails.js";
 import { isFeature, emptySnapshot, requirementItems, resolveRequirements, skippedBranch, storyMarkdown } from "../requirements.js";
 import { findDiscrepancies, verifyChanges } from "../verification.js";
@@ -410,6 +410,8 @@ async function generateRun(o: GenerateOptions, ctl: JobControl): Promise<number>
   fs.writeFileSync(path.join(run.dir, "story.md"), storyMarkdown(req));
   fs.writeFileSync(path.join(run.dir, "requirements.json"), JSON.stringify(req, null, 2));
   const manifest = startManifest(cwd, c, run, "generate", { service, base: cs.base, head: cs.head, changedFiles: relevant, diff: cs.diff }, req);
+  // The latest change of the run is the one that triggered it (story mode: the newest of the parts).
+  manifest.trigger = { serviceCommitAt: (parts ?? [{ repo, cs }]).map((p) => commitDate(p.repo, p.cs.head)).filter((d): d is string => Boolean(d)).sort().at(-1) };
   let startSha = resolveSha(cwd, "HEAD");
   const before = (parts ? parts.map((p) => ({ name: p.service.name, repo: p.repo })) : [{ name: service.name, repo }]).map((r) => ({ ...r, snap: snapshotTree(r.repo) }));
   ctl.runId = run.id;
@@ -831,6 +833,7 @@ async function generateRun(o: GenerateOptions, ctl: JobControl): Promise<number>
         labels: mrLabels,
       });
       log.ok(`merge request ${mr.action}: ${mr.web_url}`);
+      manifest.trigger = { ...manifest.trigger, mrOpenedAt: new Date().toISOString() };
       if (storyMode && storyKey && ctl.store) await recordAgentMr(ctl.store, storyKey, { branch, iid: mr.iid, url: mr.web_url, headSha: git(cwd, ["rev-parse", "HEAD"]) });
       // A cross-service run: the people who asked to know are told the test merge request is ready for review.
       if (storyMode && storyKey && scope?.crossInScope.length) await notifyStory(cwd, c, storyKey, "cross-service-tests-ready", `end-to-end tests for ${scope.crossInScope.join(", ")} are ready for review: ${mr.web_url}`, `${scope.crossInScope.join("+")}@${mr.iid}`, penv, ctl.store);

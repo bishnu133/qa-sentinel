@@ -1,0 +1,41 @@
+# reference: the correct SHOP-101 (delivery slots) implementation, cap of 3 per slot
+# service: orders-service
+diff --git a/src/server.js b/src/server.js
+index 7cf2cb5..4521380 100644
+--- a/src/server.js
++++ b/src/server.js
+@@ -5,6 +5,7 @@ app.use(express.json());
+ const PAYMENTS_URL = process.env.PAYMENTS_URL || "http://localhost:3002";
+ const NOTIFICATIONS_URL = process.env.NOTIFICATIONS_URL || "http://localhost:3003";
+ const orders = new Map();
++const MAX_ORDERS_PER_SLOT = 3;
+ 
+ app.get("/orders/health", (_req, res) => res.json({ status: "ok", service: "orders" }));
+ // Which commit is running (qa-sentinel feature readiness reads this).
+@@ -17,17 +18,24 @@ async function post(url, body) {
+ 
+ // Create an order: validate, authorise payment, then notify the customer (best effort).
+ app.post("/orders", async (req, res) => {
+-  const { item, qty, unitPrice, currency = "SGD", email } = req.body || {};
++  const { item, qty, unitPrice, currency = "SGD", email, deliverySlot } = req.body || {};
+   if (typeof item !== "string" || !item) return res.status(400).json({ error: "item is required" });
+   if (!Number.isInteger(qty) || qty < 1) return res.status(400).json({ error: "qty must be a positive integer" });
+   if (typeof unitPrice !== "number" || !(unitPrice > 0)) return res.status(400).json({ error: "unitPrice must be greater than 0" });
+ 
++  const slot = Date.parse(deliverySlot);
++  if (!deliverySlot || Number.isNaN(slot)) return res.status(400).json({ error: "deliverySlot must be an ISO date-time" });
++  if (slot <= Date.now()) return res.status(400).json({ error: "deliverySlot must be in the future" });
++  if ([...orders.values()].filter((o) => o.deliverySlot === deliverySlot).length >= MAX_ORDERS_PER_SLOT) {
++    return res.status(409).json({ error: "delivery slot is full" });
++  }
++
+   const id = `ord_${orders.size + 1}`;
+   const total = Math.round(qty * unitPrice * 100) / 100;
+   const payment = await post(`${PAYMENTS_URL}/payments/authorize`, { orderId: id, amount: total, currency });
+   if (payment.status !== 201) return res.status(402).json({ error: "payment declined", reason: payment.body.error });
+ 
+-  const order = { id, item, qty, unitPrice, total, currency, status: "confirmed", paymentId: payment.body.id };
++  const order = { id, item, qty, unitPrice, total, currency, status: "confirmed", paymentId: payment.body.id, deliverySlot };
+   orders.set(id, order);
+   if (email) await post(`${NOTIFICATIONS_URL}/notifications`, { orderId: id, channel: "email", message: `Order ${id} confirmed` }).catch(() => {});
+   res.status(201).json(order);
