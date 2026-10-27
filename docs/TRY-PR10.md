@@ -14,7 +14,7 @@ Expect 2 files, all passing. They use a fake GitHub on your own computer, a fake
 ## Part 2. See the files init writes (FREE)
 
 1. `mkdir /tmp/gh-try && cd /tmp/gh-try && git init -q`
-2. `node $QAS/dist/cli.js init --yes --mode scratch --ci github --level intelligence --name try --test-repo-project YOUR_NAME/qa-tests`
+2. `mkdir /tmp/gh-empty` and then `node $QAS/dist/cli.js init --yes --mode scratch --ci github --level intelligence --name try --workspace /tmp/gh-empty --test-repo-project YOUR_NAME/qa-tests` (the empty folder stops init from taking every folder next to yours for a service)
 3. Open `qa-sentinel.config.yaml`. Expect `ci.platform: github` and `ci.provider: github`.
 4. Open `ci/qa-sentinel/qa-gap-report.yml`. Expect two jobs: `analysis` (read-only permissions) and `publish` (`pull-requests: write`, no `ANTHROPIC_API_KEY`).
 5. `GITHUB_TOKEN=x node $QAS/dist/cli.js doctor` and look for "GitHub token set" (and no GitLab lines).

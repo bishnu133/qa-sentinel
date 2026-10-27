@@ -24,7 +24,7 @@ import { TEST_FILE, addedLines } from "../guardrails.js";
 import { indexTests, changedTests, checkNewTests, checkTestMap, readTestMap, traceMarkdown, traceStory } from "../analysis/testIndex.js";
 import { bundleBranch, deferInNewRun, deferSteps, type PublishStep, type RecordStep } from "../reporting/deferred.js";
 import { createOrUpdateMergeRequest, gitlabContext, latestMrForBranch, upsertMarkedNote } from "../scm/gitlab.js";
-import { scmFor } from "../scm/provider.js";
+import { requireGitlab, scmFor } from "../scm/provider.js";
 import { engineFor } from "../engines/ClaudeCodeEngine.js";
 import { ClaudeAccessError } from "../claude.js";
 import { budgetedEngine, crossServiceJobKey, endStateOf, generateJobKey } from "../stories/jobs.js";
@@ -35,6 +35,7 @@ import { endJob, openStore, startJob } from "../stories/start.js";
 import { acHash, parseExpected } from "../expected/format.js";
 import { isReadyStatus, servicesFromComponents } from "../stories/resolve.js";
 import { prepareStoryBranch, pushStoryBranch, remoteFor, storyBranchName, type PrepareResult } from "../generation/storyBranch.js";
+import { forcePush } from "../generation/forcePush.js";
 import { storyBranchView, storyExpected, type StoryBranchView } from "../generation/storyView.js";
 import { headsDigest, storyScope, type StoryScope } from "../generation/storyScope.js";
 import { addedFiles, listOpenAgentMrs, writeOpenAgentMrs } from "../generation/openAgentMrs.js";
@@ -146,6 +147,7 @@ async function generateRun(o: GenerateOptions, ctl: JobControl): Promise<number>
   /** The story's parts as the manifest found them (all services, merged or not). */
   let manifestParts: ServicePart[] = [];
   let storyRec: Awaited<ReturnType<RecordStore["load"]>>;
+  if (o.story) requireGitlab(c, "generate --story");
   if (o.story && o.backfill) throw new Error("backfill and story mode can't be combined");
   if (o.story && (!SAFE_KEY.test(o.story) || o.story.includes(".."))) throw new Error(`"${o.story}" is not a story key (letters, digits, - _ . only)`);
   if (o.acs?.length && !o.story) throw new Error("--acs needs --story: it names the ACs of one story");
@@ -347,6 +349,7 @@ async function generateRun(o: GenerateOptions, ctl: JobControl): Promise<number>
   }
 
   const storyMode = Boolean(parts && storyKey);
+  if (storyMode) requireGitlab(c, "story-mode generate (generation.scope: story)");
   // The story's test branch: continue from the server's copy, merge the main branch into it. Never rebuilt, never force-pushed.
   let sb: Extract<PrepareResult, { ok: true }> | undefined;
   let recordReset = false;
@@ -846,7 +849,7 @@ async function generateRun(o: GenerateOptions, ctl: JobControl): Promise<number>
       const projectPath = c.ci.testRepoProject && !/^\d+$/.test(c.ci.testRepoProject) ? c.ci.testRepoProject : scm.envProjectPath(penv);
       const url = scm.pushUrl(projectPath, penv);
       // A per-merge branch is owned by qa-sentinel and named after the source SHA, so a rerun may overwrite it.
-      git(cwd, ["push", "--force", url ?? "origin", `HEAD:refs/heads/${branch}`]);
+      forcePush(cwd, url ?? "origin", branch);
     }
     await recordWritten();
     const project = testProject;

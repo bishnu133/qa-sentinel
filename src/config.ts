@@ -669,6 +669,8 @@ export const ConfigSchema = z.object({
     gitlabUrl: z.string().default("https://gitlab.com"),
     /** GitHub Enterprise Server API root, e.g. https://ghe.example/api/v3. GITHUB_API_URL (set by GitHub Actions) wins. Default https://api.github.com. */
     githubApiUrl: z.string().optional(),
+    /** Login the workflow token comments as, for finding our own comment when GET /user is refused. Default github-actions[bot]. */
+    githubBotLogin: z.string().optional(),
     testRepoProject: z
       .string()
       .optional()

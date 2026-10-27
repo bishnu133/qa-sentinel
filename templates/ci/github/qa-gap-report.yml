@@ -9,12 +9,16 @@
 # Settings in each service repo (Settings > Secrets and variables > Actions):
 #   variable QA_TESTS_REPOSITORY   owner/repo of the test repo (it holds qa-sentinel.config.yaml with ci.provider: github)
 #   variable QA_SERVICE_NAME       optional; default is the repository name, which must equal the service name in the config
+#   variable QA_CLAUDE_CODE_VERSION optional; pins @anthropic-ai/claude-code (default: latest)
 #   variable QA_SENTINEL_PACKAGE   optional; default qa-sentinel@0.8.0-beta.2 (a "github:owner/repo#ref" source is built here)
 #   secret   ANTHROPIC_API_KEY     model key. Used by the analysis job only. (Bedrock/Vertex: see the README next to this file.)
 #   secret   QA_TESTS_READ_TOKEN   only when the test repo is private: a token that can read it (contents: read)
 #   Jira as the requirements source: secrets JIRA_EMAIL + JIRA_API_TOKEN (or JIRA_PAT) for reading in the analysis job,
 #   and QA_JIRA_PUBLISH_PAT (or QA_JIRA_PUBLISH_EMAIL + QA_JIRA_PUBLISH_API_TOKEN) for writing in the publish job.
 #
+# The artifact holds the report and the whole run folder (plans, evidence, text the model read), kept 14 days and readable by
+# everyone who can read the repository's Actions: on a public repository that includes Jira and code text. Use a private
+# repository, or shorten retention-days, if that matters. Symbolic links are removed before upload and after download.
 # Pull requests from forks get a read-only token and no secrets from GitHub, so both jobs skip them.
 # Action versions below are tags (@v4). For stricter supply-chain control, replace each with the full commit SHA of that tag.
 # This workflow has been checked against fixtures and a YAML parser, not yet run on a real GitHub repository.
@@ -80,8 +84,10 @@ jobs:
         if: steps.gate.outputs.skip != 'true'
         env:
           QA_SENTINEL_PACKAGE: ${{ vars.QA_SENTINEL_PACKAGE || 'qa-sentinel@0.8.0-beta.2' }}
+          QA_CLAUDE_CODE_VERSION: ${{ vars.QA_CLAUDE_CODE_VERSION }}
         run: |
-          npm i -g --no-audit --no-fund --loglevel=error @anthropic-ai/claude-code
+          # QA_CLAUDE_CODE_VERSION (repository variable) pins the agent CLI; unset installs the latest.
+          npm i -g --no-audit --no-fund --loglevel=error "@anthropic-ai/claude-code${QA_CLAUDE_CODE_VERSION:+@$QA_CLAUDE_CODE_VERSION}"
           qa_pkg="$QA_SENTINEL_PACKAGE"
           case "$qa_pkg" in
             github:*|git+https://github.com/*|https://github.com/*)
@@ -98,6 +104,10 @@ jobs:
           (cd "$QA_TESTS_DIR" && if [ -f package-lock.json ]; then npm ci --ignore-scripts; fi)
       - name: Gap report (analysis only; the comment is left for the publish job)
         if: steps.gate.outputs.skip != 'true'
+        # An incomplete analysis exits non-zero but still leaves a "analysis incomplete" report for publish. Without this the
+        # job would fail, publish would be skipped and the comment of an older commit would stay up looking current
+        # (the GitLab job is allow_failure for the same reason). A step that wrote nothing leaves publish with nothing to do.
+        continue-on-error: true
         env:
           # Read-only here: the permissions block above gives this job no write access.
           QA_SENTINEL_GITHUB_TOKEN: ${{ github.token }}
@@ -117,6 +127,8 @@ jobs:
         if: always() && steps.gate.outputs.skip != 'true'
         run: |
           mkdir -p qa-runs && cp -r "$QA_TESTS_DIR/.qa-sentinel/runs/." qa-runs/ 2>/dev/null || true
+          # The run folder holds code the model wrote: no symbolic links go into the artifact (upload-artifact follows them).
+          find qa-runs -type l -delete
       - uses: actions/upload-artifact@v4
         if: always() && steps.gate.outputs.skip != 'true'
         with:
@@ -175,5 +187,10 @@ jobs:
           QA_JIRA_PUBLISH_API_TOKEN: ${{ secrets.QA_JIRA_PUBLISH_API_TOKEN }}
         run: |
           mkdir -p "$QA_TESTS_DIR/.qa-sentinel/runs"
+          find handover -type l -delete
           if [ -d handover/qa-runs ]; then cp -r handover/qa-runs/. "$QA_TESTS_DIR/.qa-sentinel/runs/"; fi
-          qa-sentinel -C "$QA_TESTS_DIR" publish --run all
+          # Only gap-report runs are published from this workflow. `publish --kind` limits it; an older qa-sentinel
+          # without that option publishes every run in the folder (it is strictly validated either way).
+          kind=""
+          if qa-sentinel publish --help 2>&1 | grep -q -- '--kind'; then kind="--kind gap-report"; fi
+          qa-sentinel -C "$QA_TESTS_DIR" publish --run all $kind

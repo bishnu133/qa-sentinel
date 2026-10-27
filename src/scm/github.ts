@@ -19,6 +19,8 @@ export interface GitHubContext {
   token: string;
   /** The web address, for push URLs (https://github.com, or the GitHub Enterprise host). */
   serverUrl: string;
+  /** Login of the account the workflow token comments as, used only when `GET /user` is refused. */
+  botLogin: string;
 }
 
 export function githubToken(env: NodeJS.ProcessEnv = process.env): string | undefined {
@@ -33,28 +35,66 @@ function serverFromApi(apiUrl: string): string {
   return apiUrl.replace(/\/api\/v3$/i, "");
 }
 
-export function githubContext(apiUrlFromConfig: string | undefined, env: NodeJS.ProcessEnv = process.env): GitHubContext | undefined {
+export const DEFAULT_BOT_LOGIN = "github-actions[bot]";
+
+/** The token goes to this address in a header: plain http is refused except on this machine (tests, a local proxy). */
+function checkApiUrl(apiUrl: string): void {
+  let u: URL;
+  try {
+    u = new URL(apiUrl);
+  } catch {
+    throw new Error(`GitHub API URL "${apiUrl.slice(0, 80)}" is not a URL (ci.githubApiUrl / GITHUB_API_URL)`);
+  }
+  const local = u.hostname === "localhost" || u.hostname === "127.0.0.1" || u.hostname === "[::1]";
+  if (u.protocol !== "https:" && !(u.protocol === "http:" && local)) throw new Error(`GitHub API URL must be https:// (the token is sent to it); got ${u.protocol}//${u.host}`);
+}
+
+export function githubContext(apiUrlFromConfig: string | undefined, env: NodeJS.ProcessEnv = process.env, botLogin?: string): GitHubContext | undefined {
   const token = githubToken(env);
   if (!token) return undefined;
   const apiUrl = trimSlash(env.GITHUB_API_URL || apiUrlFromConfig || "https://api.github.com");
-  return { apiUrl, token, serverUrl: trimSlash(env.GITHUB_SERVER_URL || serverFromApi(apiUrl)) };
+  checkApiUrl(apiUrl);
+  return { apiUrl, token, serverUrl: trimSlash(env.GITHUB_SERVER_URL || serverFromApi(apiUrl)), botLogin: botLogin || DEFAULT_BOT_LOGIN };
 }
 
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+/** Waits are in one place so tests can shorten them. GitHub: wait for the reset time, at least a minute when it says nothing; never longer than the cap. */
+export const timing = { sleep: (ms: number) => new Promise<void>((r) => setTimeout(r, ms)), maxWaitMs: 120_000, minRateWaitMs: 60_000 };
 
 export class GitHubError extends Error {
   constructor(
     message: string,
     readonly status: number,
     readonly retryable = false,
+    /** How long to wait before the next try (rate limits), in ms. */
+    readonly waitMs?: number,
   ) {
     super(message);
   }
 }
 
-/** One request with up to 3 retries on 429, 5xx, network errors and the secondary rate limit (403 with Retry-After). */
+/** How long GitHub says to wait after a rate-limit answer, capped. Undefined when the answer is not a rate limit. */
+function rateLimitWait(status: number, headers: Headers, text: string): number | undefined {
+  if (status !== 403 && status !== 429) return undefined;
+  const retryAfter = Number(headers.get("retry-after"));
+  const remaining = headers.get("x-ratelimit-remaining");
+  const reset = Number(headers.get("x-ratelimit-reset"));
+  const limited = status === 429 || remaining === "0" || (Number.isFinite(retryAfter) && retryAfter > 0) || /secondary rate limit|rate limit exceeded/i.test(text);
+  if (!limited) return undefined;
+  let ms: number;
+  if (Number.isFinite(retryAfter) && retryAfter > 0) ms = retryAfter * 1000;
+  else if (remaining === "0" && Number.isFinite(reset) && reset > 0) ms = Math.max(0, reset * 1000 - Date.now()) + 1000;
+  else ms = timing.minRateWaitMs;
+  return Math.min(ms, timing.maxWaitMs);
+}
+
+/**
+ * One request with up to 3 retries. Retried: rate limits (primary and secondary, waiting as GitHub says, capped), and,
+ * for reads only, 5xx and network errors. A POST that failed with 5xx or a network error is not repeated: it may have
+ * been done already, and a second try could post a second comment or open a second pull request.
+ */
 export async function call(ctx: GitHubContext, method: string, route: string, body?: unknown, attempts = 4): Promise<{ data: any; headers: Headers }> {
   let lastErr: unknown;
+  const safeToRepeat = method !== "POST";
   for (let i = 0; i < attempts; i++) {
     try {
       const res = await netFetch(`${ctx.apiUrl}${route}`, {
@@ -75,16 +115,21 @@ export async function call(ctx: GitHubContext, method: string, route: string, bo
         }
         return { data, headers: res.headers };
       }
-      const retryAfter = Number(res.headers.get("retry-after"));
-      const limited = res.status === 429 || (res.status === 403 && Number.isFinite(retryAfter) && retryAfter > 0);
-      const err = new GitHubError(maskSecrets(`GitHub ${method} ${route} failed: ${res.status} ${html ? `(a web page, not JSON: ${WEB_PAGE_HINT})` : text.slice(0, 300)}`, { GITHUB_TOKEN: ctx.token }), res.status, limited || res.status >= 500);
-      if (!err.retryable) throw err;
+      const wait = rateLimitWait(res.status, res.headers, text);
+      const retryable = wait !== undefined || (res.status >= 500 && safeToRepeat);
+      const err = new GitHubError(maskSecrets(`GitHub ${method} ${route} failed: ${res.status} ${html ? `(a web page, not JSON: ${WEB_PAGE_HINT})` : text.slice(0, 300)}`, { GITHUB_TOKEN: ctx.token }), res.status, retryable, wait);
+      if (!retryable) throw err;
       lastErr = err;
-      await sleep(Number.isFinite(retryAfter) && retryAfter > 0 ? retryAfter * 1000 : 500 * 2 ** i);
+      if (i < attempts - 1) await timing.sleep(wait ?? 500 * 2 ** i);
     } catch (e) {
-      if (e instanceof GitHubError && !e.retryable) throw e;
+      if (e instanceof GitHubError) {
+        if (!e.retryable) throw e;
+        lastErr = e;
+        continue;
+      }
       lastErr = e;
-      if (!(e instanceof GitHubError)) await sleep(500 * 2 ** i);
+      if (!safeToRepeat) throw e;
+      if (i < attempts - 1) await timing.sleep(500 * 2 ** i);
     }
   }
   throw lastErr instanceof Error ? lastErr : new Error(String(lastErr));
@@ -105,8 +150,16 @@ export async function getAll(ctx: GitHubContext, route: string, maxPages = 50, i
         if (info) info.truncated = true;
         break;
       }
-      // The link is absolute; the route is what follows the API root. Anything pointing elsewhere is not followed.
-      if (link.startsWith(ctx.apiUrl)) next = link.slice(ctx.apiUrl.length);
+      // The link is absolute; the route is what follows the API root. A link to another host (or a host that merely starts
+      // with the same text) is not followed: the token would go with it.
+      try {
+        const u = new URL(link);
+        const root = new URL(ctx.apiUrl);
+        const prefix = root.pathname.replace(/\/+$/, "");
+        if (u.origin === root.origin && (u.pathname + "/").startsWith(prefix + "/") && u.pathname.startsWith(prefix)) next = u.pathname.slice(prefix.length) + u.search;
+      } catch {
+        /* not a URL: not followed */
+      }
     }
   }
   return out;
@@ -123,17 +176,19 @@ function repoRoute(project: string | number): string {
 
 /**
  * The comments written by the token's own user (anyone can paste the marker into a comment; only ours counts).
- * `GET /user` is refused for the GITHUB_TOKEN of a workflow run ("Resource not accessible by integration"); then the
- * comments of bot accounts count (the workflow token comments as github-actions[bot]). Not proven on real GitHub.
+ * `GET /user` is refused (403, "Resource not accessible by integration") for the GITHUB_TOKEN of a workflow run; only then
+ * the comments of the workflow's bot account (`github-actions[bot]`, or ci.githubBotLogin) count. Any other failure of
+ * `/user` (a 5xx after its retries, a network error) stops the run: guessing could post a second comment. Not proven on real GitHub.
  */
 async function ownComments(ctx: GitHubContext, comments: any[]): Promise<any[]> {
   try {
-    const me = (await call(ctx, "GET", "/user", undefined, 1)).data?.id;
-    if (me !== undefined) return comments.filter((n) => n.user?.id === me);
-  } catch {
-    /* fall through to the bot filter */
+    const me = (await call(ctx, "GET", "/user")).data?.id;
+    if (me === undefined) throw new GitHubError("GitHub GET /user did not say who the token is", 0);
+    return comments.filter((n) => n.user?.id === me);
+  } catch (e) {
+    if (e instanceof GitHubError && e.status === 403) return comments.filter((n) => n.user?.login === ctx.botLogin);
+    throw e;
   }
-  return comments.filter((n) => n.user?.type === "Bot");
 }
 
 const commentsRoute = (project: string | number, pr: string | number) => `${repoRoute(project)}/issues/${enc(pr)}/comments`;
@@ -208,8 +263,25 @@ export interface PrOptions {
 /** GitHub has a draft flag instead of a title prefix; the prefixes qa-sentinel puts on GitLab titles become the flag. */
 export const DRAFT_PREFIX = /^\s*(\[draft\]|\(draft\)|draft\s*:|draft\s+-(\s|$))\s*/i;
 
+/** GraphQL root: api.github.com/graphql, or <host>/api/graphql on Enterprise Server (its REST root is <host>/api/v3). */
+function graphqlCtx(ctx: GitHubContext): GitHubContext {
+  return { ...ctx, apiUrl: ctx.apiUrl.replace(/\/v3$/, "") };
+}
+
+/** REST cannot change the draft state of an existing pull request; GraphQL can. A failure is reported to the caller, not thrown. */
+async function setDraft(ctx: GitHubContext, nodeId: string, draft: boolean): Promise<string | undefined> {
+  const mutation = draft ? "convertPullRequestToDraft" : "markPullRequestReadyForReview";
+  try {
+    const { data } = await call(graphqlCtx(ctx), "POST", "/graphql", { query: `mutation($id: ID!) { ${mutation}(input: { pullRequestId: $id }) { pullRequest { isDraft } } }`, variables: { id: nodeId } });
+    if (data?.errors?.length) return String(data.errors[0]?.message ?? "GraphQL error").slice(0, 120);
+    return undefined;
+  } catch (e) {
+    return (e as Error).message.split("\n")[0].slice(0, 160);
+  }
+}
+
 /** Create the pull request, or update the open one that already exists for the same branches (safe to retry). */
-export async function createOrUpdatePullRequest(ctx: GitHubContext, project: string | number, o: PrOptions): Promise<{ web_url: string; iid: number; action: "created" | "updated" }> {
+export async function createOrUpdatePullRequest(ctx: GitHubContext, project: string | number, o: PrOptions): Promise<{ web_url: string; iid: number; action: "created" | "updated"; note?: string }> {
   const route = `${repoRoute(project)}/pulls`;
   const owner = String(project).split("/")[0];
   const draft = DRAFT_PREFIX.test(o.title);
@@ -217,16 +289,29 @@ export async function createOrUpdatePullRequest(ctx: GitHubContext, project: str
   const { data: open } = await call(ctx, "GET", `${route}?state=open&head=${enc(`${owner}:${o.source}`)}&base=${enc(o.target)}`);
   let pr: any;
   let action: "created" | "updated";
+  let note: string | undefined;
   if (Array.isArray(open) && open.length) {
     pr = (await call(ctx, "PATCH", `${route}/${open[0].number}`, { title, body: o.description })).data;
     action = "updated";
+    // A GitLab title loses "Draft:" when the run became VERIFIED; here the flag must follow.
+    if (typeof pr.draft === "boolean" && pr.draft !== draft && pr.node_id) {
+      const failed = await setDraft(ctx, pr.node_id, draft);
+      if (failed) note = `could not ${draft ? "convert the pull request to a draft" : "mark the pull request ready for review"}: ${failed}`;
+    }
   } else {
-    pr = (await call(ctx, "POST", route, { title, body: o.description, head: o.source, base: o.target, draft })).data;
+    try {
+      pr = (await call(ctx, "POST", route, { title, body: o.description, head: o.source, base: o.target, draft })).data;
+    } catch (e) {
+      // Repositories whose plan has no draft pull requests answer 422: open a normal one.
+      if (!(draft && e instanceof GitHubError && e.status === 422)) throw e;
+      pr = (await call(ctx, "POST", route, { title, body: o.description, head: o.source, base: o.target })).data;
+      note = "draft pull requests are not available here; opened as a normal pull request";
+    }
     action = "created";
   }
   // Labels are added (never replaced): a person's own labels stay.
   await addLabels(ctx, project, pr.number, o.labels ?? []);
-  return { web_url: pr.html_url, iid: pr.number, action };
+  return { web_url: pr.html_url, iid: pr.number, action, ...(note ? { note } : {}) };
 }
 
 /**

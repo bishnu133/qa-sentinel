@@ -187,7 +187,7 @@ describe("GitHub client against a fake server", () => {
     const gh = await githubMock();
     try {
       const ctx = ctxOf(gh.url);
-      const mk = (n: number, state: "open" | "closed", merged: boolean, day: number) => ({ number: n, state, title: `t${n}`, body: "", draft: false, html_url: `u${n}`, merged_at: merged ? "2026-01-01T00:00:00Z" : null, created_at: new Date(Date.UTC(2026, 0, day)).toISOString(), head: { ref: "qa-sentinel/s", sha: "h" }, base: { ref: "main", sha: "b" }, labels: [] });
+      const mk = (n: number, state: "open" | "closed", merged: boolean, day: number) => ({ number: n, state, title: `t${n}`, body: "", draft: false, html_url: `u${n}`, merged_at: merged ? "2026-01-01T00:00:00Z" : null, created_at: new Date(Date.UTC(2026, 0, day)).toISOString(), head: { ref: "qa-sentinel/s", sha: "h" }, base: { ref: "main", sha: "b" }, labels: [], node_id: `PR_${n}` });
       expect(await latestPrForBranch(ctx, "octo/tests", "qa-sentinel/s", "main")).toBeUndefined();
       gh.pulls.push(mk(1, "closed", true, 1), mk(2, "closed", false, 5));
       expect(await latestPrForBranch(ctx, "octo/tests", "qa-sentinel/s", "main")).toMatchObject({ iid: 2, state: "closed" });

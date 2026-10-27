@@ -556,14 +556,14 @@ function printNextSteps(c: Config) {
   log.title("Next steps");
   log.info(
     c.level === "intelligence"
-      ? "  Level 1 (QA intelligence): read-only reports on every MR. Switch to level: maintenance when the team trusts them."
-      : "  Level 2 (assisted test maintenance): reports on every MR, and generated tests through reviewed MRs.",
+      ? `  Level 1 (QA intelligence): read-only reports on every ${c.ci.platform === "github" ? "pull request" : "MR"}. Switch to level: maintenance when the team trusts them.`
+      : `  Level 2 (assisted test maintenance): reports on every ${c.ci.platform === "github" ? "pull request" : "MR"}, and generated tests through reviewed ${c.ci.platform === "github" ? "pull requests" : "MRs"}.`,
   );
   const steps = [
     c.mode === "scratch" ? "npm install && npx playwright install --with-deps chromium" : undefined,
     c.tests.web.enabled ? `Set ${c.tests.web.baseUrlEnv} to your front end (no browser download? QA_BROWSER_CHANNEL=chrome uses installed Chrome)` : undefined,
     c.tests.mobile.enabled ? `Mobile: start Appium (npx appium, with the uiautomator2/xcuitest driver) and a device, then set QA_APP (or QA_APP_PACKAGE/QA_BUNDLE_ID) and QA_MOBILE_PLATFORM` : undefined,
-    "Review qa-sentinel.config.yaml (services and their kind: api | web | mobile, run commands, GitLab project)",
+    `Review qa-sentinel.config.yaml (services and their kind: api | web | mobile, run commands, ${c.ci.platform === "github" ? "GitHub repository" : "GitLab project"})`,
     c.requirements.source === "jira"
       ? "qa-sentinel story-check --story <KEY> --fields   # how your stories are read; set the AC field and story template (docs/ONBOARDING.md)"
       : undefined,

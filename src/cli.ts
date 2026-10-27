@@ -33,6 +33,7 @@ import { releaseFeaturesCommand } from "./commands/releaseFeatures.js";
 import { verifyCommand } from "./commands/verify.js";
 import { VERSION } from "./run.js";
 import { log } from "./log.js";
+import { maskSecrets } from "./secrets.js";
 import { API_FRAMEWORKS } from "./config.js";
 
 const program = new Command();
@@ -55,7 +56,7 @@ const wrap =
       const r = await fn(...args);
       if (typeof r === "number") process.exitCode = r;
     } catch (e) {
-      log.fail((e as Error).message);
+      log.fail(maskSecrets((e as Error).message));
       // 3 = Claude can't be used at all (no credentials, no credit, key not allowed): callers can stop early.
       process.exitCode = e instanceof ClaudeAccessError ? 3 : 1;
     }

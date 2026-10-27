@@ -23,6 +23,7 @@ export interface GhPull {
   head: { ref: string; sha: string };
   base: { ref: string; sha: string };
   labels: { name: string }[];
+  node_id: string;
 }
 
 export interface GhOptions {
@@ -31,9 +32,15 @@ export interface GhOptions {
   /** Comments per page (for pagination tests). */
   pageSize?: number;
   /** Fail the first N requests with this status. */
-  failFirst?: { n: number; status: number; headers?: Record<string, string> };
+  failFirst?: { n: number; status: number; headers?: Record<string, string>; message?: string };
   /** Put the token in every error body (to prove it never reaches a message). */
   echoAuthInErrors?: boolean;
+  /** `GET /user` answers this status (a 502, say) instead of the user. */
+  userStatus?: number;
+  /** Pull requests with draft: true answer 422 (a repository whose plan has no drafts). */
+  noDrafts?: boolean;
+  /** The comments list sends this as its rel="next" link. */
+  nextLink?: string;
 }
 
 export async function githubMock(o: GhOptions = {}) {
@@ -52,13 +59,14 @@ export async function githubMock(o: GhOptions = {}) {
     bodies.push(raw);
     if (o.failFirst && failed < o.failFirst.n) {
       failed++;
-      return { status: o.failFirst.status, headers: o.failFirst.headers, body: { message: "try later" } };
+      return { status: o.failFirst.status, headers: o.failFirst.headers, body: { message: o.failFirst.message ?? "try later" } };
     }
     if (o.echoAuthInErrors && url.pathname.startsWith("/nope")) return { status: 422, body: { message: `bad credentials: ${req.headers.authorization}` } };
     const body = raw ? JSON.parse(raw) : {};
     const p = url.pathname;
     const method = req.method ?? "GET";
     const asMe = o.userForbidden ? actions : me;
+    if (p === "/user" && o.userStatus) return { status: o.userStatus, body: { message: "bad gateway" } };
     if (p === "/user") return o.userForbidden ? { status: 403, body: { message: "Resource not accessible by integration" } } : { body: me };
     let m: RegExpMatchArray | null;
     if ((m = p.match(/^\/repos\/([^/]+\/[^/]+)$/))) return { body: { full_name: m[1], permissions: { push: true } } };
@@ -68,6 +76,7 @@ export async function githubMock(o: GhOptions = {}) {
         const size = o.pageSize ?? 100;
         const page = Number(url.searchParams.get("page") ?? 1);
         const slice = comments.slice((page - 1) * size, page * size);
+        if (o.nextLink) return { body: slice, headers: { link: `<${o.nextLink}>; rel="next"` } };
         const next = page * size < comments.length ? { link: `<http://${req.headers.host}${p}?per_page=100&page=${page + 1}>; rel="next", <http://${req.headers.host}${p}?per_page=100&page=9>; rel="last"` } : undefined;
         return { body: slice, headers: next };
       }
@@ -78,7 +87,7 @@ export async function githubMock(o: GhOptions = {}) {
     if ((m = p.match(/^\/repos\/[^/]+\/[^/]+\/issues\/comments\/(\d+)$/)) && method === "PATCH") {
       const c = comments.find((x) => x.id === Number(m![1]));
       if (!c) return { status: 404, body: { message: "Not Found" } };
-      if (c.user.id !== asMe.id) return { status: 403, body: { message: "not your comment" } };
+      // Like real GitHub: a token with write access may edit anyone's comment.
       c.body = body.body;
       return { body: c };
     }
@@ -96,6 +105,12 @@ export async function githubMock(o: GhOptions = {}) {
       return { body: pulls.filter((x) => x.state === "open" && (!label || x.labels.some((l) => l.name === label))).map((x) => ({ number: x.number, html_url: x.html_url, title: x.title, pull_request: { url: "x" } })) };
     }
     // pull requests
+    if (p === "/graphql" && method === "POST") {
+      const pr = pulls.find((x) => x.node_id === body.variables?.id);
+      if (!pr) return { body: { errors: [{ message: "Could not resolve to a node" }] } };
+      pr.draft = String(body.query).includes("convertPullRequestToDraft");
+      return { body: { data: { ok: true } } };
+    }
     if ((m = p.match(/^\/repos\/([^/]+)\/[^/]+\/pulls$/))) {
       if (method === "GET") {
         const head = url.searchParams.get("head");
@@ -103,8 +118,9 @@ export async function githubMock(o: GhOptions = {}) {
         const state = url.searchParams.get("state") ?? "open";
         return { body: pulls.filter((x) => (!head || head === `${m![1]}:${x.head.ref}`) && (!base || base === x.base.ref) && (state === "all" || state === x.state)) };
       }
+      if (o.noDrafts && body.draft) return { status: 422, body: { message: "Validation Failed", errors: [{ message: "Draft pull requests are not supported in this repository" }] } };
       const n = pulls.length + 7;
-      const pr: GhPull = { number: n, state: "open", title: body.title, body: body.body, draft: !!body.draft, html_url: `https://github.com/octo/tests/pull/${n}`, merged_at: null, created_at: new Date(Date.UTC(2026, 0, n)).toISOString(), head: { ref: body.head, sha: "h".repeat(40) }, base: { ref: body.base, sha: "b".repeat(40) }, labels: [] };
+      const pr: GhPull = { number: n, state: "open", title: body.title, body: body.body, draft: !!body.draft, html_url: `https://github.com/octo/tests/pull/${n}`, merged_at: null, created_at: new Date(Date.UTC(2026, 0, n)).toISOString(), head: { ref: body.head, sha: "h".repeat(40) }, base: { ref: body.base, sha: "b".repeat(40) }, labels: [], node_id: `PR_${n}` };
       pulls.push(pr);
       return { status: 201, body: pr };
     }

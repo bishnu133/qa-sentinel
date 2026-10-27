@@ -7,6 +7,7 @@
 import type { Config } from "../config.js";
 import * as gl from "./gitlab.js";
 import * as gh from "./github.js";
+import { log } from "../log.js";
 
 export type CiProvider = "gitlab" | "github";
 
@@ -95,7 +96,7 @@ function gitlabScm(c: Config, env: NodeJS.ProcessEnv): Scm {
 }
 
 function githubScm(c: Config, env: NodeJS.ProcessEnv): Scm {
-  const ctx = gh.githubContext(c.ci.githubApiUrl, env);
+  const ctx = gh.githubContext(c.ci.githubApiUrl, env, c.ci.githubBotLogin);
   const need = (): gh.GitHubContext => {
     if (!ctx) throw new Error("no GitHub token (QA_SENTINEL_GITHUB_TOKEN or GITHUB_TOKEN)");
     return ctx;
@@ -110,7 +111,11 @@ function githubScm(c: Config, env: NodeJS.ProcessEnv): Scm {
     upsertNote: (p, id, body) => gh.upsertPrComment(need(), p, id, body),
     upsertMarkedNote: (p, id, marker, body) => gh.upsertMarkedPrComment(need(), p, id, marker, body),
     isDraft: (p, id, title) => gh.prIsDraft(ctx, p, id, title),
-    createOrUpdateChangeRequest: (p, o) => gh.createOrUpdatePullRequest(need(), p, o),
+    createOrUpdateChangeRequest: async (p, o) => {
+      const r = await gh.createOrUpdatePullRequest(need(), p, o);
+      if (r.note) log.warn(`pull request #${r.iid}: ${r.note}`);
+      return { web_url: r.web_url, iid: r.iid, action: r.action };
+    },
     latestForBranch: (p, s, t) => gh.latestPrForBranch(need(), p, s, t),
     // GitHub's names for the two reactions are "+1" and "-1".
     noteReactions: async (p, _id, noteId) => (await gh.commentReactions(need(), p, noteId)).map((r) => ({ name: r.content === "+1" ? "thumbsup" : r.content === "-1" ? "thumbsdown" : r.content })),
