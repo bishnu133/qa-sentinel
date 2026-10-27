@@ -1,5 +1,9 @@
 import { spawn } from "node:child_process";
 
+/** Output kept per stream (the end of it). */
+export const MAX_OUTPUT_CHARS = 1_000_000;
+const EXIT_GRACE_MS = 250;
+
 export interface ProcResult {
   code: number | null;
   stdout: string;
@@ -43,7 +47,14 @@ export function runProcess(cmd: string, args: string[], o: ProcOptions): Promise
     let stdout = "";
     let stderr = "";
     let timedOut = false;
+    let done = false;
     let killTimer: NodeJS.Timeout | undefined;
+    let graceTimer: NodeJS.Timeout | undefined;
+    // Only the last part of the output is kept: a program that prints without end must not fill our memory.
+    const keep = (acc: string, d: Buffer | string) => {
+      const next = acc + d;
+      return next.length > MAX_OUTPUT_CHARS ? next.slice(next.length - MAX_OUTPUT_CHARS) : next;
+    };
     const killGroup = (sig: NodeJS.Signals) => {
       try {
         if (child.pid) process.kill(process.platform === "win32" ? child.pid : -child.pid, sig);
@@ -57,19 +68,33 @@ export function runProcess(cmd: string, args: string[], o: ProcOptions): Promise
       killTimer = setTimeout(() => killGroup("SIGKILL"), 10_000);
     }, o.timeoutMs);
     child.stdout?.on("data", (d) => {
-      stdout += d;
+      stdout = keep(stdout, d);
       if (o.echoStdout) process.stdout.write(d);
     });
     child.stderr?.on("data", (d) => {
-      stderr += d;
+      stderr = keep(stderr, d);
       if (o.echoStderr) process.stderr.write(d);
     });
     const finish = (code: number | null, error?: string) => {
+      if (done) return;
+      done = true;
       clearTimeout(timer);
       if (killTimer) clearTimeout(killTimer);
+      if (graceTimer) clearTimeout(graceTimer);
+      // A child that outlived the command may still hold the pipes open; we stop reading them.
+      child.stdout?.destroy();
+      child.stderr?.destroy();
       resolve({ code, stdout, stderr, timedOut, durationMs: Date.now() - started, error });
     };
     child.on("error", (err) => finish(null, err.message));
+    // `exit` is the command itself ending. `close` waits for the pipes, which a background child can keep open for as long
+    // as it lives: that must neither delay us nor turn a finished run into a timeout. So after `exit` we give the pipes a
+    // moment to drain, then resolve.
+    child.on("exit", (code) => {
+      if (!timedOut) clearTimeout(timer);
+      if (timedOut) killGroup("SIGKILL");
+      graceTimer = setTimeout(() => finish(code), EXIT_GRACE_MS);
+    });
     child.on("close", (code) => {
       if (timedOut) killGroup("SIGKILL");
       finish(code);

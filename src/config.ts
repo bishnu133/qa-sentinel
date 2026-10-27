@@ -682,7 +682,11 @@ export const ConfigSchema = z.object({
        * (docs/ENGINE-COMMAND.md). `{taskFile}` is replaced by the path of a file holding the same task JSON, quoted.
        * verification.wrapCommand wraps it like the test commands.
        */
-      command: z.string().min(1).optional(),
+      command: z
+        .string()
+        .min(1)
+        .refine((s) => !/["']\{taskFile\}|\{taskFile\}["']/.test(s), "write {taskFile} without quotes around it: qa-sentinel quotes the path itself")
+        .optional(),
       model: z.string().optional().describe("Passed to `claude --model`; omit to use the CLI default"),
       maxTurns: z
         .object({

@@ -214,7 +214,7 @@ export function runChecks(cwd: string, env: NodeJS.ProcessEnv = process.env): Ch
     if (r.status === 7 && (r.stdout ?? "").includes(want)) add("ok", "verification.wrapCommand runs a command", "a command with spaces and quotes ran, its output came back and its exit code (7) passed through; what the wrapper isolates is up to the wrapper (see SECURITY.md)");
     else add("fail", "verification.wrapCommand runs a command", r.error ? `failed to start: ${r.error.message}` : r.status !== 7 ? `a test command that exits 7 came back as exit ${r.status}: the wrapper must pass the exit code through (a failing test would look green)${r.stderr ? `: ${r.stderr.trim().slice(0, 160)}` : ""}` : "the command's output did not come back whole: check the quoting around {cmd} (use sh -c {cmd})");
   }
-  if (c.agent.sandbox.enabled) {
+  if (c.agent.sandbox.enabled && c.agent.engine === "claude-code") {
     // Claude Code's Bash sandbox: on Linux it needs bubblewrap and socat (macOS has Seatbelt built in). Native Windows runs commands unsandboxed.
     if (process.platform === "linux") {
       const missing = ["bwrap", "socat"].filter((b) => spawnSync("sh", ["-c", `command -v ${b}`], { encoding: "utf8" }).status !== 0);
@@ -290,6 +290,11 @@ export function mobileChecks(cwd: string, c: Config, env: NodeJS.ProcessEnv): Ch
     if (platformOf(env, m.platform) === "ios") {
       env.QA_BUNDLE_ID || env.QA_APP || env.QA_APPIUM_CAPS ? add("ok", "iOS app under test", `${env.QA_BUNDLE_ID ? "QA_BUNDLE_ID" : env.QA_APP ? "QA_APP" : "QA_APPIUM_CAPS"} is set`) : add("fail", "iOS app under test (QA_BUNDLE_ID or QA_APP)", "the bundle id of an installed app, or an .app/.ipa to install");
       if (process.platform !== "darwin" && !env[m.appiumUrlEnv]) add("warn", "iOS needs a Mac or a farm", `this machine is ${process.platform} and ${m.appiumUrlEnv} is not set, so there is no Appium server that can drive iOS`);
+    }
+    // Each iOS target on its own: it needs a Mac here, or an Appium URL of its own (set in the target or passed on from the environment).
+    for (const [name, t] of targetsIos) {
+      const hasUrl = Boolean(env[m.appiumUrlEnv] || t.env[m.appiumUrlEnv] || t.passEnv.includes(m.appiumUrlEnv));
+      if (process.platform !== "darwin" && !hasUrl) add("warn", `mobile target ${name}: iOS needs a Mac or a farm`, `this machine is ${process.platform} and the target has no ${m.appiumUrlEnv} (set it in env, list it in passEnv, or run on a Mac)`);
     }
     if (m.explore === "snapshot" && m.deepLinkBase) add("warn", "mobile.explore on iOS", "deep links are not supported on iOS yet; only the screen the app opens on is saved");
   }

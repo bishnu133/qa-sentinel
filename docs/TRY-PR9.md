@@ -7,7 +7,7 @@ Steps marked **FREE** cost nothing. Steps marked **DEVICE** need a real emulator
 1. `export QAS=~/Documents/qa-sentinel`
 2. `cd $QAS && git fetch origin && git checkout pr9-device-engines && npm ci && npm run build`
 3. `npx vitest run test/mobileExplore.test.ts test/mobileRun.test.ts test/commandEngine.test.ts test/engineConformance.test.ts`
-4. Expect 4 files, all passing (about 60 tests). They use temporary folders, a fake Appium server and a scripted engine. They need no internet, no device, no AI, no git name or e-mail.
+4. Expect 4 files, all passing. They use temporary folders, a fake Appium server and a scripted engine. They need no internet, no device, no AI, no git name or e-mail.
 
 ## Part 2. The command engine with the scripted fixture (FREE)
 
@@ -16,7 +16,7 @@ Steps marked **FREE** cost nothing. Steps marked **DEVICE** need a real emulator
    `engine: command` and `command: "node $QAS/test/fixtures/engine-fixture.mjs {taskFile}"` (write the real path of your qa-sentinel folder instead of `$QAS`).
 3. `node $QAS/dist/cli.js doctor`. Expect a line `agent.engine: command (node found)` and a warning that `qa-sentinel learn` still calls Claude Code. No "Claude Code CLI" line.
 4. Add `sandbox: { enabled: true }` under `agent:` and run doctor again. Expect a **fail**: `agent.sandbox covers only Claude Code`. Take the line out again.
-5. `node $QAS/dist/cli.js gap-report --dry-run`. If it stops earlier because the sandbox project has no service or merge request, that is normal here; the command line is shown only when a run reaches the agent. (Unverified: I did not run this against an empty project. The unit tests cover the dry-run line.)
+5. `node $QAS/dist/cli.js gap-report --dry-run --service <name>` (it needs a service from `workspace.services`). The reviewer ran this and saw the engine command line printed.
 
 ## Part 3. The command engine with a real AI program (AI)
 
@@ -26,7 +26,7 @@ Steps marked **FREE** cost nothing. Steps marked **DEVICE** need a real emulator
 
 ## Part 4. Run the mobile suite with a target (FREE for the dry run)
 
-1. In a project with the mobile layer (`add-mobile`), add under `tests.mobile`:
+1. In a project with the mobile layer (`add-mobile`), the config already has `targets: {}` under `tests.mobile`. **Replace** that line with:
    `targets: { ios: { platform: ios, env: { QA_BUNDLE_ID: com.example.shop } } }`
 2. `node $QAS/dist/cli.js mobile-run --target ios --dry-run`. Expect the warning "iOS runs are not proven yet", the line `env: QA_BUNDLE_ID=com.example.shop QA_MOBILE_PLATFORM=ios` and the command `npx wdio run wdio.conf.ts`. Nothing runs.
 3. `node $QAS/dist/cli.js mobile-run --target nope` says there is no such target and lists the ones you have; exit code 1.
@@ -52,5 +52,5 @@ Steps marked **FREE** cost nothing. Steps marked **DEVICE** need a real emulator
 
 1. Get a trial account at a farm that gives an Appium (WebDriver) URL. Copy from the farm's documentation the capabilities block they ask for.
 2. `export QA_APPIUM_URL='https://USER:KEY@hub.example/wd/hub'` and `export QA_APPIUM_CAPS='{ ...the farm block... }'` and the app variable.
-3. Add a target with `passEnv: [QA_APPIUM_URL, QA_APPIUM_CAPS, QA_APP]` and run `mobile-run --target <name> --dry-run`, then without `--dry-run` on one spec.
+3. Add a target (replace `targets: {}`) with `passEnv: [QA_APPIUM_URL, QA_APPIUM_CAPS, QA_APP]` and run `mobile-run --target <name> --dry-run`, then without `--dry-run` on one spec.
 4. Report what the farm needs that this does not do (an app upload step, for example). Those are not built.

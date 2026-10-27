@@ -12,10 +12,14 @@ qa-sentinel talks to an Appium server. Anything that gives you an Appium URL (yo
 | Platform | `QA_MOBILE_PLATFORM=ios` or `android` |
 | App to install, or an installed app | `QA_APP` (.apk/.app/.ipa, path or URL), or `QA_BUNDLE_ID` (iOS) / `QA_APP_PACKAGE` + `QA_APP_ACTIVITY` (Android) |
 | Device | `QA_DEVICE_NAME`, `QA_PLATFORM_VERSION`, `QA_UDID` |
-| A farm's own block | `QA_APPIUM_CAPS`: one JSON object, merged over the capabilities. Copy it from your farm's documentation, for example `{"bstack:options":{"userName":"...","accessKey":"..."}}`. It can hold a key, so qa-sentinel never prints it and does not give it to the AI agent. |
+| A farm's own block | `QA_APPIUM_CAPS`: one JSON object, merged over the capabilities. Copy it from your farm's documentation, for example `{"bstack:options":{"userName":"...","accessKey":"..."}}`. It can hold a key, so qa-sentinel never prints it (also not in error messages) and does not give it to the AI agent or an external engine. |
 | No recording by qa-sentinel (the farm records) | `QA_VIDEO=off` |
 
 `wdio.conf.ts` reads these. A project made before this release has an older `wdio.conf.ts` without `QA_APPIUM_CAPS`; `doctor` warns, and you add the merge shown in `templates/scaffold/wdio-mobile/wdio.conf.ts.tmpl`.
+
+## Where the farm login goes
+
+A farm's login can sit in the Appium URL (`https://USER:KEY@hub/wd/hub`) or in `QA_APPIUM_CAPS`. qa-sentinel treats both as secrets for **its own** runs only (verification, `mobile-run`, screen snapshots): they are sent as a header or in the session request, and removed from error messages and files. The AI agent and an external engine get `QA_APPIUM_URL` **without** the login, and no `QA_APPIUM_CAPS`. So the agent's own trial runs on a farm cannot sign in: it writes the tests, qa-sentinel runs them. If you accept that the agent holds the key, set `tests.auth.shareWithAgent: true`.
 
 ## Targets and `mobile-run`
 
@@ -39,6 +43,8 @@ tests:
 qa-sentinel mobile-run --target farm --dry-run     # shows the command and the variable names
 qa-sentinel mobile-run --target farm --spec tests/mobile/orders/new.spec.ts
 ```
+
+`QA_APPIUM_CAPS` is always shown as `***`, also when you put it in a target's `env` (use `passEnv`).
 
 It runs your command with `--spec <file>` for each file, with the cleaned test environment plus the target's `env` and `passEnv`, inside `verification.wrapCommand` if you set one. The exit code is the command's. It stops with a list of problems (names only) if a `passEnv` variable is missing, `QA_APPIUM_CAPS` is not one JSON object, or no app is given.
 

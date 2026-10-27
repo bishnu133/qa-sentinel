@@ -1,5 +1,5 @@
+import crypto from "node:crypto";
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { z } from "zod";
@@ -58,7 +58,7 @@ const STATUSES = ["ok", "error", "timeout", "max-turns", "max-budget"] as const;
 const ResultSchema = z.object({
   ok: z.boolean().optional(),
   status: z.enum(STATUSES).optional(),
-  result: z.string().default(""),
+  result: z.string().optional(),
   costUsd: z.number().nonnegative().optional(),
   turns: z.number().nonnegative().optional(),
   durationMs: z.number().nonnegative().optional(),
@@ -90,7 +90,10 @@ export function parseEngineOutput(stdout: string, exitCode: number | null, t: Pi
   if (raw === undefined) return { ok: false, status: "error", result: `the engine command printed no JSON object on stdout (exit ${exitCode}): ${stdout.trim().slice(0, 200) || "nothing"}` };
   const p = ResultSchema.safeParse(raw);
   if (!p.success) return { ok: false, status: "error", result: `the engine command's JSON is not an AgentResult: ${p.error.issues.map((i) => `${i.path.join(".") || "(root)"}: ${i.message}`).join("; ").slice(0, 300)}` };
-  const v = p.data;
+  const v = { ...p.data, result: p.data.result ?? "" };
+  // Any JSON object would otherwise count as success (a stray log line such as {"level":"info"} printed last).
+  if (p.data.result === undefined && p.data.ok === undefined && p.data.status === undefined)
+    return { ok: false, status: "error", result: 'the engine command\'s JSON has none of "result", "ok" or "status", so it is not an AgentResult' };
   let status: AgentStatus = v.status ?? (v.ok === false ? "error" : "ok");
   if (v.ok === false && status === "ok") status = "error"; // contradictory: the worse word wins
   let result = v.result;
@@ -116,6 +119,52 @@ export interface CommandEngineOptions {
   sandbox?: { enabled: boolean; failIfUnavailable: boolean };
   /** Variable names the program may receive that look like Claude credentials (ANTHROPIC_*, CLAUDE_*): only those in guardrails.passEnv. */
   passEnv?: string[];
+  /**
+   * The environment a non-agent process would get (no Claude, Bedrock or Vertex credentials; only guardrails.passEnv and the
+   * test variables). The engine passes on only the task's variables that are also in it.
+   */
+  cleanEnv?: () => NodeJS.ProcessEnv;
+}
+
+const seconds = (ms: number) => (ms >= 120_000 ? `${Math.round(ms / 60_000)} min` : `${Math.max(1, Math.round(ms / 1000))} s`);
+
+/** Ignored paths that a test run makes on its own; changes there are not a sign of anything. */
+const NOISY = [/^\.qa-sentinel\//, /^test-results\//, /^playwright-report\//, /^blob-report\//, /^coverage\//, /^node_modules\/\.cache\//, /^node_modules\/\.vite/];
+
+/**
+ * What the path guardrail cannot see: git ignores some files (node_modules, .env) and does not list .git itself. Before and
+ * after the run we note size and time of every ignored file, and the content of .git/config and the hooks, and report
+ * what differs. Not covered: anything outside the repository, and processes the program leaves running.
+ */
+export function guardSnapshot(cwd: string): Map<string, string> | undefined {
+  const git = (args: string[]) => spawnSync("git", args, { cwd, encoding: "utf8", maxBuffer: 256 * 1024 * 1024 });
+  const top = git(["rev-parse", "--git-dir"]);
+  if (top.status !== 0) return undefined;
+  const snap = new Map<string, string>();
+  const ign = git(["ls-files", "--others", "--ignored", "--exclude-standard", "-z"]);
+  if (ign.status === 0)
+    for (const f of ign.stdout.split("\0").filter(Boolean)) {
+      if (NOISY.some((r) => r.test(f))) continue;
+      try {
+        const st = fs.lstatSync(path.join(cwd, f));
+        snap.set(f, `${st.size}:${Math.round(st.mtimeMs)}`);
+      } catch {
+        /* gone */
+      }
+    }
+  const hash = (file: string) => (fs.existsSync(file) && fs.statSync(file).isFile() ? crypto.createHash("sha256").update(fs.readFileSync(file)).digest("hex") : "-");
+  const gp = (name: string) => path.resolve(cwd, git(["rev-parse", "--git-path", name]).stdout.trim());
+  snap.set(".git/config", hash(gp("config")));
+  const hooks = gp("hooks");
+  if (fs.existsSync(hooks)) for (const h of fs.readdirSync(hooks)) if (!h.endsWith(".sample")) snap.set(`.git/hooks/${h}`, hash(path.join(hooks, h)));
+  return snap;
+}
+
+export function snapshotDiff(before: Map<string, string>, after: Map<string, string>): string[] {
+  const out: string[] = [];
+  for (const [k, v] of after) if (before.get(k) !== v) out.push(before.has(k) ? `changed ${k}` : `new ${k}`);
+  for (const k of before.keys()) if (!after.has(k)) out.push(`removed ${k}`);
+  return out;
 }
 
 export class CommandEngine implements AgentEngine {
@@ -143,7 +192,10 @@ export class CommandEngine implements AgentEngine {
     // wrapper that isolates the program would look safe and not be, so stop.
     if (this.o.sandbox?.enabled && this.o.sandbox.failIfUnavailable && !this.o.wrapCommand)
       return { ok: false, status: "error", result: "agent.sandbox is on, but it only covers Claude Code. For agent.engine: command set verification.wrapCommand (a container or similar that isolates the program), or set agent.sandbox.failIfUnavailable: false to accept running it unsandboxed." };
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "qas-engine-"));
+    // The task file lives in the repo's own scratch folder (git-ignored), so a wrapper that mounts the repo can read it too.
+    const scratch = path.join(t.cwd, ".qa-sentinel");
+    fs.mkdirSync(scratch, { recursive: true });
+    const dir = fs.mkdtempSync(path.join(scratch, "engine-"));
     const file = path.join(dir, "task.json");
     const body = JSON.stringify(taskJson(t));
     try {
@@ -153,12 +205,21 @@ export class CommandEngine implements AgentEngine {
         log.dim(`[dry-run] engine command: ${line}`);
         return { ok: true, status: "ok", result: "(dry run: the engine command was not run)" };
       }
-      // The program gets the agent environment, minus Claude credentials unless the team listed them in guardrails.passEnv.
+      // The program gets only what a plain process would: no Claude, Bedrock or Vertex credentials unless the team listed them
+      // in guardrails.passEnv. The task's own variables are kept when they are in that clean set.
+      const clean = this.o.cleanEnv?.();
       const env: NodeJS.ProcessEnv = {};
-      for (const [k, v] of Object.entries(t.env)) if (!/^(ANTHROPIC_|CLAUDE_)/.test(k) || (this.o.passEnv ?? []).includes(k)) env[k] = v;
+      for (const [k, v] of Object.entries(t.env)) {
+        const allowed = clean ? k in clean : !/^(ANTHROPIC_|CLAUDE_)/.test(k) || (this.o.passEnv ?? []).includes(k);
+        if (allowed) env[k] = v;
+      }
+      const before = guardSnapshot(t.cwd);
       const r = await runProcess(line, [], { cwd: t.cwd, env, timeoutMs: t.timeoutMs, shell: true, echoStderr: true, input: body });
+      const after = before ? guardSnapshot(t.cwd) : undefined;
+      const moved = before && after ? snapshotDiff(before, after) : [];
       if (r.error) return { ok: false, status: "error", result: `could not start the engine command: ${r.error}` };
-      if (r.timedOut) return { ok: false, status: "timeout", result: `the engine command exceeded ${Math.round(t.timeoutMs / 60000)} min and was stopped.`, durationMs: r.durationMs };
+      if (r.timedOut) return { ok: false, status: "timeout", result: `the engine command exceeded ${seconds(t.timeoutMs)} and was stopped.`, durationMs: r.durationMs };
+      if (moved.length) return { ok: false, status: "error", result: `the engine command changed files that git ignores or that control git (${moved.slice(0, 8).join(", ")}${moved.length > 8 ? `, and ${moved.length - 8} more` : ""}); the run is not trusted. Look at them before anything else runs.`, durationMs: r.durationMs };
       const out = parseEngineOutput(r.stdout, r.code, t);
       return { ...out, durationMs: out.durationMs ?? r.durationMs };
     } finally {

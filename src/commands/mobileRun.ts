@@ -6,7 +6,7 @@ import { runProcess } from "../proc.js";
 import { testEnv } from "../run.js";
 import { safeUrl } from "../secrets.js";
 import { quoteWord, wrapTestCommand } from "../wrapper.js";
-import { extraCaps, platformOf } from "../mobile/caps.js";
+import { CAPS_ENV, extraCaps, platformOf } from "../mobile/caps.js";
 
 export interface MobileRunPlan {
   command: string;
@@ -53,7 +53,7 @@ export function planMobileRun(c: Config, targetName: string, specs: string[], pr
   const base = (t.runCommand ?? m.runCommand).trim();
   const command = wrapTestCommand(c, specs.length ? `${base} ${specArgs({ specArg: "--spec" }, specs, quoteWord)}` : base);
   const shownEnv = [
-    ...Object.entries(t.env).map(([k, v]) => `${k}=${SECRET_NAME.test(k) ? "***" : safeUrl(v)}`),
+    ...Object.entries(t.env).map(([k, v]) => `${k}=${SECRET_NAME.test(k) || k === CAPS_ENV ? "***" : safeUrl(v)}`),
     ...(t.platform && !t.env.QA_MOBILE_PLATFORM ? [`QA_MOBILE_PLATFORM=${t.platform}`] : []),
     ...t.passEnv.map((n) => `${n}=*** (from your environment)`),
   ];

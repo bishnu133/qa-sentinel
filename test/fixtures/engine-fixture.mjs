@@ -47,6 +47,7 @@ else if (mode === "exit3") {
       fileMatchesStdin: file ? fs.readFileSync(file, "utf8") === stdin : null,
       leaksValue: stdin.includes("super-secret-value"),
       cwd: process.cwd(),
+      taskFile: file ?? null,
     }),
   });
 } else out({ ok: false, status: "error", result: `unknown mode ${mode}` });
