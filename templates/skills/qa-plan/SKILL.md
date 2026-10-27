@@ -62,7 +62,7 @@ For a single-line or trivial diff you may do steps 2 and 3 yourself, but the rul
   "acMismatches": [
     { "requirementId": "AC-3", "requirement": "a slot accepts at most 3 orders", "observed": "MAX_ORDERS_PER_SLOT = 5", "evidence": [{ "source": "source-code", "file": "src/server.js", "line": 5, "reference": "const MAX_ORDERS_PER_SLOT = 5" }] }
   ],
-  "specDrift": ["deliverySlot is required in code but absent from openapi.yaml"],
+  "specDrift": [{ "endpoint": "POST /orders", "spec": "deliverySlot is optional", "code": "deliverySlot is required (400 when missing)", "evidence": [{ "source": "source-code", "file": "src/server.js", "line": 14, "reference": "if (!deliverySlot …) return 400" }] }],
   "requirementStatus": [
     { "id": "AC-1", "status": "implemented", "where": "src/server.js:14", "evidence": [{ "source": "source-code", "file": "src/server.js", "line": 14, "reference": "if (!deliverySlot …) return 400" }] },
     { "id": "AC-2", "status": "implemented", "where": "src/server.js:20", "noScenario": "already proved by tests/api/orders/slots.spec.ts", "evidence": [{ "source": "source-code", "file": "src/server.js", "line": 20, "reference": "listSlots()" }] },
@@ -149,7 +149,8 @@ For a `create` decision, set `"targetFile"` to the new spec file's path; a path 
 - `impactedTests[]`: `{ "file", "reason", "stillValid" }` (all three, nothing else)
 - `acMismatches[]`: `{ "requirementId"?, "requirement", "observed", "evidence": [Evidence] }`
 - `suspicious[]`: `{ "file", "excerpt", "why" }` (no evidence object)
-- `specDrift[]`, `openQuestions[]`: plain strings
+- `openQuestions[]`: plain strings
+- `specDrift[]`: a plain string (old form, still accepted) or, better, `{ "endpoint": "POST /orders", "spec": "what the spec says", "code": "what the code does", "evidence": [Evidence] }`. The evidence needs a `source-code` entry with `file` and `line`. When an observable change in this plan has that endpoint, one of its decisions must be `review` (an endpoint no change touches is only a warning) (the test is written to the spec, marked fixme with a `// QA-AGENT:` note, until the developer fixes the code or the spec). It is not a product bug yet, so do not call it a defect.
 - Evidence: `{ "source", "file"?, "line"?, "reference" }`
 
 ### Enums
@@ -182,6 +183,8 @@ For a `create` decision, set `"targetFile"` to the new spec file's path; a path 
   | type `removed` | update or review |
   | approved, coverage `covered` | reuse or review |
   | approved, coverage `partial`, `outdated`, `missing` or `unknown` | create, update or review |
+- **Computed by qa-sentinel, never chosen by you:** `db-migration`, `config-change`, `toggle-change`, `dependency-bump`, `dependency-major` (from the changed files; listed as `changeKinds` in context.json) and `history` (past defects, flaky runs and incidents; `endpointHistory` in context.json). Do not put them in `riskFactors`; the schema rejects them. Use `changeKinds` and `endpointHistory` to decide what to test (for example, existing data after a migration, a toggle on and off, an area that failed before).
+- **Access control** (`accessControl` in context.json lists the roles in `tests.auth.roles` and the mode): for each changed endpoint with the `auth` factor, and for each new endpoint when roles are configured, give its create/update/review decision scenarios with `"access": { "role": "<role name or none>", "expect": "allowed" | "forbidden" | "no-token" }`: one `no-token` scenario (no credentials: refused), and a `forbidden` one (a role that must not be allowed: refused) when two or more roles exist. One `allowed` scenario per role that may call it is good practice. If the change needs none (say why), set `"noScenario": "<reason>"` on the decision (the report shows the reason; a `noScenario` on the requirement also counts). Endpoints in `accessControl.publicEndpoints` are open on purpose and need no `no-token` scenario; an existing test tagged `@role:none` for the endpoint counts as one. Change ids are `c1`, `c2`, …; `c0` is added by qa-sentinel. In `warn` mode a missing one is a warning; in `require` mode the plan is rejected.
 - Choose risk factors from evidence only. `auth`, `money` and `personal-data` make a change critical, so use them only when the change really touches those.
 - Sensitive factors, defined:
   - `auth`: login, sessions, tokens, roles, permissions, access checks

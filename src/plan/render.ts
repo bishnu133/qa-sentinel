@@ -2,7 +2,9 @@ import type { ContractDiff } from "../analysis/contractDiff.js";
 import { contractDiffMarkdown } from "../analysis/contractDiff.js";
 import { contractCheckMarkdown } from "../contracts.js";
 import type { RiskLevel, TestPlan } from "./schema.js";
-import type { RiskedChange } from "./risk.js";
+import type { RiskedChange, RiskResult } from "./risk.js";
+import { changeKindsMarkdown } from "../analysis/changeKinds.js";
+import { historyLine } from "../analysis/history.js";
 import { workflowLine } from "./workflow.js";
 
 export const RISK_BADGE: Record<RiskLevel, string> = {
@@ -18,7 +20,7 @@ const cite = (e: { file?: string; line?: number; reference: string }) => (e.file
 export interface RenderInput {
   service: string;
   plan: TestPlan;
-  risked: { changes: RiskedChange[]; overall: RiskLevel };
+  risked: RiskResult;
   contract: ContractDiff;
   specPath?: string;
   requirementsLine: string;
@@ -83,7 +85,7 @@ export function implementationMarkdown(plan: TestPlan, items: { id: string; text
 export function decisionTable(plan: TestPlan, changes: RiskedChange[]): string {
   const decisionFor = new Map(plan.decisions.map((d) => [d.changeId, d]));
   const rows = changes
-    .filter((c) => c.observable || decisionFor.has(c.id))
+    .filter((c) => !c.synthetic && (c.observable || decisionFor.has(c.id)))
     .map((c) => {
       const d = decisionFor.get(c.id);
       const what = `${c.endpoint ? `${c.endpoint} – ` : ""}${c.page ? `page ${c.page} – ` : ""}${c.summary}`;
@@ -108,6 +110,14 @@ export function renderGapReport(i: RenderInput): string {
     out.push(decisionTable(plan, risked.changes), "");
   }
 
+  const kinds = changeKindsMarkdown(risked.changeKinds ?? []);
+  if (kinds) out.push(kinds, "");
+  if (risked.historyRaised?.length) {
+    out.push("**Risk raised by history (no AI)**", "");
+    for (const h of risked.historyRaised) out.push(`- ${h.changeId}: ${RISK_BADGE[h.from]} to ${RISK_BADGE[h.to]} – ${historyLine(h.history)}`);
+    out.push("", "_Past defects, flaky runs and incidents that qa-sentinel or the team keep. The risk goes up one level (never to critical)._", "");
+  }
+
   const reuse = plan.decisions.filter((d) => d.decision === "reuse").flatMap((d) => d.existingTests);
   if (plan.impactedTests.length || reuse.length) {
     out.push("**Run these existing tests**");
@@ -127,8 +137,15 @@ export function renderGapReport(i: RenderInput): string {
     out.push("**Missing or outdated scenarios**");
     for (const { d, s } of scenarios) {
       const flow = s.setup.length || s.layer === "web" || s.layer === "mobile" ? workflowLine(s) : "";
-      out.push(`- ${s.layer === "web" ? "🖥️ " : s.layer === "mobile" ? "📱 " : ""}${s.title}${s.requirementIds.length ? ` (${[...s.requirementIds, ...(s.behaviourIds ?? [])].join(", ")})` : ""} – ${d.decision}${flow ? `\n  - flow: ${flow}` : ""}`);
+      out.push(`- ${s.layer === "web" ? "🖥️ " : s.layer === "mobile" ? "📱 " : ""}${s.title}${s.requirementIds.length ? ` (${[...s.requirementIds, ...(s.behaviourIds ?? [])].join(", ")})` : ""}${s.access ? ` 🔒 ${s.access.role === "none" || s.access.expect === "no-token" ? "no token" : `role ${s.access.role}`}: ${s.access.expect}` : ""} – ${d.decision}${flow ? `\n  - flow: ${flow}` : ""}`);
     }
+    out.push("");
+  }
+
+  const skipped = plan.decisions.filter((d) => d.noScenario);
+  if (skipped.length) {
+    out.push("**No access-control scenarios, with the reason given (check it is right)**");
+    for (const d of skipped) out.push(`- ${d.changeId}: ${d.noScenario}`);
     out.push("");
   }
 
@@ -144,8 +161,12 @@ export function renderGapReport(i: RenderInput): string {
   if (i.contract.agreed?.length) out.push(contractCheckMarkdown(i.contract.agreed, new Set(i.contract.changes.map((x) => x.endpoint))), "");
   if (i.traceability) out.push(i.traceability, "");
   if (plan.specDrift.length) {
-    out.push("**Spec drift** (code vs spec)");
-    plan.specDrift.forEach((s) => out.push(`- ${s}`));
+    out.push("**Spec drift: the spec and the code disagree. The developer fixes one of them.**");
+    for (const s of plan.specDrift) {
+      if (typeof s === "string") out.push(`- ${s}`);
+      else out.push(`- \`${s.endpoint}\`: spec says ${s.spec}; code does ${s.code} (${s.evidence.map(cite).join("; ")})`);
+    }
+    if (plan.specDrift.some((s) => typeof s !== "string")) out.push("", "_Until they decide, the test is written to the spec and held (fixme with a QA-AGENT note). This is not raised as a product bug._");
     out.push("");
   }
 
@@ -168,7 +189,7 @@ export function renderGapReport(i: RenderInput): string {
   out.push(`<details><summary>Evidence (${risked.changes.length} change${risked.changes.length === 1 ? "" : "s"})</summary>`, "");
   for (const c of risked.changes) {
     out.push(`- **${c.id}** ${c.type}${c.endpoint ? ` ${c.endpoint}` : ""}${c.page ? ` page ${c.page}` : ""} – ${c.summary}`);
-    out.push(`  - risk ${c.risk} from: ${c.factors.join(", ")}`);
+    out.push(`  - risk ${c.risk} from: ${c.factors.join(", ")}${c.synthetic ? " (added by qa-sentinel)" : ""}`);
     c.evidence.forEach((e) => out.push(`  - ${e.source}: ${cite(e)}`));
   }
   for (const d of plan.decisions) {

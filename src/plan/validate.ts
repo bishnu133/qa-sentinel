@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
-import { type TestPlan, TestPlanSchema } from "./schema.js";
+import { type SpecDrift, type TestPlan, TestPlanSchema } from "./schema.js";
+import { normaliseEndpoint } from "./risk.js";
 import { ruleFor } from "./decide.js";
 import { checkWorkflow, normaliseSetup } from "./workflow.js";
 import type { ExpectedFile } from "../expected/format.js";
@@ -37,6 +38,14 @@ export interface PlanContext {
   heldAcs?: Map<string, string>;
   /** Spec files that open QA agent merge requests add (path → "!12"): a "create" for one of them would be a second copy of the same tests. */
   addedByOpenMrs?: Map<string, string>;
+  /** Role names from tests.auth.roles. With none configured, only auth changes are held to the access-control rule. */
+  roles?: string[];
+  /** risk.accessControl: warn (default; shown, never fails the plan) or require (the plan is rejected without the scenarios). */
+  accessControl?: "warn" | "require";
+  /** risk.publicEndpoints: endpoints that are open on purpose (login, health). They are not asked for a "no-token" scenario. */
+  publicEndpoints?: string[];
+  /** Roles of the tests that already exist, by endpoint ("POST /orders" to ["none", "admin"]), from the @role tags. An existing @role:none test counts as the no-token scenario. */
+  existingRoles?: Record<string, string[]>;
 }
 
 export interface PlanValidation {
@@ -183,6 +192,9 @@ export function validatePlan(raw: unknown, ctx: PlanContext): PlanValidation {
         s.page ??= c.page;
         if (!s.page) errors.push(`${at}: a ${s.layer} scenario needs the ${s.layer === "web" ? 'page it opens ("page": "/orders/new")' : 'screen it opens ("page": "orders/new")'}`);
       }
+      if (s.access && ctx.roles?.length && s.access.expect !== "no-token" && !ctx.roles.includes(s.access.role)) {
+        warnings.push(`${at}: access role "${s.access.role}" is not in tests.auth.roles (${ctx.roles.join(", ")})`);
+      }
       const steps = normaliseSetup(s.setup);
       const wf = checkWorkflow(steps, s.layer, at);
       errors.push(...wf.errors);
@@ -233,7 +245,71 @@ export function validatePlan(raw: unknown, ctx: PlanContext): PlanValidation {
   }
 
   checkAcCoverage(plan, ctx, errors, warnings);
+  checkAccessControl(plan, ctx, errors, warnings);
+  checkSpecDrift(plan, errors, warnings);
   return { ok: errors.length === 0, plan, errors, corrections, warnings, rules };
+}
+
+/**
+ * Access control, as a standard requirement for each changed endpoint that decides who may call it: an auth change, or
+ * a new endpoint when roles are configured. The plan needs a "no-token" scenario, and a "forbidden" one when two or more
+ * roles exist. Otherwise the decision says why (`noScenario`). risk.accessControl: warn shows it; require rejects the plan.
+ */
+function checkAccessControl(plan: TestPlan, ctx: PlanContext, errors: string[], warnings: string[]): void {
+  const roles = ctx.roles ?? [];
+  const sink = (ctx.accessControl ?? "warn") === "require" ? errors : warnings;
+  const isPublic = new Set((ctx.publicEndpoints ?? []).map(normaliseEndpoint));
+  const existing = new Map(Object.entries(ctx.existingRoles ?? {}).map(([k, v]) => [normaliseEndpoint(k), new Set(v.map((r) => r.toLowerCase()))]));
+  for (const c of plan.changes) {
+    if (!c.observable || !c.endpoint || c.type === "suspicious-instruction") continue;
+    const authChange = c.riskFactors.includes("auth");
+    const newEndpoint = roles.length >= 1 && (c.type === "new-endpoint" || c.riskFactors.includes("new-endpoint"));
+    if (!authChange && !newEndpoint) continue;
+    const d = plan.decisions.find((x) => x.changeId === c.id);
+    // Only decisions that write tests are held to it; reuse means existing tests already prove the change.
+    if (!d || !["create", "update", "review"].includes(d.decision) || d.noScenario) continue;
+    // The reason may also sit on the requirement the change belongs to.
+    if (plan.requirementStatus.some((r) => r.noScenario && c.requirementIds.includes(r.id))) continue;
+    const ep = normaliseEndpoint(c.endpoint);
+    const have = new Set(d.proposedScenarios.filter((s) => s.access).map((s) => s.access!.expect));
+    if (existing.get(ep)?.has("none")) have.add("no-token");
+    const open = isPublic.has(ep);
+    const missing = [!open && !have.has("no-token") ? '"no-token" (the call without credentials is refused)' : "", !open && roles.length >= 2 && !have.has("forbidden") ? '"forbidden" (a role that must not be allowed is refused)' : ""].filter(Boolean);
+    if (missing.length)
+      sink.push(`decision for ${c.id} (${c.endpoint}): access control needs scenario(s) ${missing.join(" and ")}: add them with "access": { "role": …, "expect": … }, or give the decision a "noScenario" reason (for example "public endpoint")${roles.length ? ` (roles: ${roles.join(", ")})` : ""}`);
+  }
+}
+
+/** Labels the merge request gets for spec drift: only the structured form counts (old string items are plain notes). */
+export const specDriftLabels = (plan: Pick<TestPlan, "specDrift">): string[] => (plan.specDrift.some((x) => typeof x !== "string") ? ["qa-sentinel::spec-drift"] : []);
+
+/**
+ * Spec drift as a gap: each structured item names the endpoint, what the spec says, what the code does, and cites the
+ * code (file and line). It maps to the changes on that endpoint: at least one of them must have a "review" decision
+ * (the test is written to the spec and held, fixme with a QA-AGENT note, until the developer fixes the code or the spec).
+ * Drift on an endpoint no change in this plan touches is a warning: the item is kept, no test is written for it.
+ * Old string items are kept as they are.
+ */
+function checkSpecDrift(plan: TestPlan, errors: string[], warnings: string[]): void {
+  plan.specDrift.forEach((item, i) => {
+    if (typeof item === "string") return;
+    const d: SpecDrift = item;
+    const at = `specDrift ${i + 1} (${d.endpoint})`;
+    if (!d.evidence.some((e) => e.source === "source-code" && e.file && e.line)) errors.push(`${at}: needs "source-code" evidence with the file and line of the code that disagrees with the spec`);
+    const ep = normaliseEndpoint(d.endpoint);
+    const changes = plan.changes.filter((c) => c.endpoint && normaliseEndpoint(c.endpoint) === ep && c.observable);
+    if (!changes.length) {
+      warnings.push(`${at}: no observable change in this plan touches ${d.endpoint}, so no test is written to the spec for it; the drift is reported as it is`);
+      return;
+    }
+    const decisions = changes.map((c) => plan.decisions.find((x) => x.changeId === c.id));
+    const review = decisions.filter((x) => x?.decision === "review");
+    if (!review.length) {
+      errors.push(`${at}: one decision for ${changes.map((c) => c.id).join(" or ")} must be "review" (the test is written to the spec and held until the developer decides), got ${decisions.map((x) => `"${x?.decision ?? "none"}"`).join(", ")}`);
+      return;
+    }
+    if (!review.some((x) => x!.proposedScenarios.length)) warnings.push(`${at}: review without a proposed scenario; no test is written to the spec`);
+  });
 }
 
 /**

@@ -41,7 +41,7 @@ import { checkDuplicateFiles } from "../guardrails.js";
 import type { ServicePart } from "../feature/manifest.js";
 import { type AgentResult, addUsage } from "../engines/AgentEngine.js";
 import { planChange } from "../plan/planner.js";
-import { actionable } from "../plan/validate.js";
+import { actionable, specDriftLabels } from "../plan/validate.js";
 import { decisionTable } from "../plan/render.js";
 import { log } from "../log.js";
 import { sweepAfterRun } from "../testData.js";
@@ -783,6 +783,7 @@ async function generateRun(o: GenerateOptions, ctl: JobControl): Promise<number>
     `qa-sentinel::${verification.status.toLowerCase()}`,
     `risk::${planned.risked.overall}`,
     ...(discrepancies.length ? ["qa-sentinel::discrepancy"] : []),
+    ...(planned.plan ? specDriftLabels(planned.plan) : []),
     ...(review.review?.tests.some((t) => t.verdict === "weak" || t.verdict === "wrong-oracle") ? ["qa-sentinel::weak-tests"] : []),
   ];
   if (o.push && o.deferPublish) {

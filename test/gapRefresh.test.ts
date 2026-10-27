@@ -3,8 +3,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { ConfigSchema, writeConfig } from "../src/config.js";
-import { gapReportCommand } from "../src/commands/gapReport.js";
+import { ConfigSchema, loadConfig, writeConfig } from "../src/config.js";
+import { gapReportCommand, riskInputs } from "../src/commands/gapReport.js";
 import { changeSet, git as srcGit } from "../src/git.js";
 import { gapFingerprint, parseStamp, relevantDiffDigest, stampOf, updatedLine } from "../src/plan/fingerprint.js";
 import { MARKER } from "../src/scm/gitlab.js";
@@ -68,7 +68,7 @@ describe("gap report refresh on a ready merge request", () => {
   it("makes no new report when the stamp on the MR comment matches", async () => {
     const cs = changeSet(repo, "main", "HEAD");
     const digest = relevantDiffDigest((f) => srcGit(repo, ["-c", "core.quotePath=false", "diff", "--relative", "--binary", "--full-index", `${cs.base}...${cs.head}`, "--", f]), cs.files);
-    const fp = gapFingerprint(digest, [], ["", "[]", "[]"])!;
+    const fp = gapFingerprint(digest, [], ["", "[]", "[]", riskInputs(loadConfig(root), root)])!;
     const body = `${MARKER}\nold report\n${stampOf(fp, "0".repeat(40))}\n`;
     const calls: string[] = [];
     vi.stubGlobal("fetch", async (url: string, init?: RequestInit) => {
@@ -86,7 +86,7 @@ describe("gap report refresh on a ready merge request", () => {
   it("ignores a stamp pasted by someone else", async () => {
     const cs = changeSet(repo, "main", "HEAD");
     const digest = relevantDiffDigest((f) => srcGit(repo, ["-c", "core.quotePath=false", "diff", "--relative", "--binary", "--full-index", `${cs.base}...${cs.head}`, "--", f]), cs.files);
-    const fp = gapFingerprint(digest, [], ["", "[]", "[]"])!;
+    const fp = gapFingerprint(digest, [], ["", "[]", "[]", riskInputs(loadConfig(root), root)])!;
     const { getMrNoteBody } = await import("../src/scm/gitlab.js");
     vi.stubGlobal("fetch", async (url: string) => {
       if (url.endsWith("/user")) return new Response(JSON.stringify({ id: 99 }), { status: 200 });

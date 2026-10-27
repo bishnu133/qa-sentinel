@@ -60,9 +60,15 @@ export const RISK_FACTORS = [
   "ui-visible",
 ] as const;
 
+/**
+ * Risk factors qa-sentinel derives itself from the changed files, the config and the team's history. The agent never
+ * picks these (the schema above does not accept them); it only sees them in context.json and in the report.
+ */
+export const DERIVED_RISK_FACTORS = ["db-migration", "config-change", "toggle-change", "dependency-bump", "dependency-major", "history"] as const;
+
 export const ChangeSchema = z
   .object({
-    id: z.string().regex(/^c\d+$/, "change ids are c1, c2, …"),
+    id: z.string().regex(/^c[1-9]\d*$/, "change ids are c1, c2, … (c0 is added by qa-sentinel)"),
     type: z.enum(CHANGE_TYPES),
     endpoint: opt(z.string()),
     /** Front-end route the change is on, e.g. /orders/new or /orders/:id. */
@@ -103,6 +109,10 @@ export const SetupStepSchema = z
   })
   .strict();
 
+/** Access-control scenario: who calls, and what must happen. `no-token` sends no credentials at all. */
+export const ACCESS_EXPECTS = ["allowed", "forbidden", "no-token"] as const;
+export const AccessSchema = z.object({ role: z.string().min(1), expect: z.enum(ACCESS_EXPECTS) }).strict();
+
 export const ScenarioSchema = z
   .object({
     title: z.string().min(1),
@@ -116,6 +126,8 @@ export const ScenarioSchema = z
     assertions: z.array(z.string()).min(1, "a scenario must name at least one assertion"),
     /** The expected behaviours (expected/<STORY>.md: B1, B2, …) this scenario proves. Only `ready` ones. */
     behaviourIds: z.array(z.string().regex(/^B\d+$/, "behaviour ids are B1, B2, …")).default([]),
+    /** Access-control scenario: the role that calls (a name from tests.auth.roles; "none" for no token) and the expected outcome. */
+    access: AccessSchema.optional(),
   })
   .strict();
 
@@ -130,6 +142,8 @@ export const DecisionSchema = z
     proposedScenarios: z.array(ScenarioSchema).default([]),
     evidence: z.array(EvidenceSchema).default([]),
     reason: z.string().min(1),
+    /** Why this change needs no access-control scenarios (no-token / forbidden) although it touches who may call an endpoint. */
+    noScenario: opt(z.string()),
   })
   .strict();
 
@@ -185,6 +199,21 @@ export const RequirementStatusSchema = z
   })
   .strict();
 
+/**
+ * The spec and the code disagree on an endpoint. The developer fixes one of them; QA writes the test to the spec (as
+ * fixme, with a QA-AGENT note) until they decide. Not a product defect yet, so no bug card.
+ */
+export const SpecDriftSchema = z
+  .object({
+    endpoint: z.string().min(1),
+    /** What the spec (OpenAPI or the agreed contract) says. */
+    spec: z.string().min(1),
+    /** What the code does. */
+    code: z.string().min(1),
+    evidence: z.array(EvidenceSchema).min(1),
+  })
+  .strict();
+
 export const TestPlanSchema = z
   .object({
     schemaVersion: z.literal(1),
@@ -207,7 +236,7 @@ export const TestPlanSchema = z
           .strict(),
       )
       .default([]),
-    specDrift: z.array(z.string()).default([]),
+    specDrift: z.array(z.union([z.string(), SpecDriftSchema])).default([]),
     requirementStatus: z.array(RequirementStatusSchema).default([]),
     manualTests: z.array(ManualTestSchema).default([]),
     suspicious: z.array(z.object({ file: z.string(), excerpt: z.string(), why: z.string() }).strict()).default([]),
@@ -224,5 +253,7 @@ export type RequirementStatus = z.infer<typeof RequirementStatusSchema>;
 export type ManualTest = z.infer<typeof ManualTestSchema>;
 export type Decision = z.infer<typeof DecisionSchema>;
 export type TestPlan = z.infer<typeof TestPlanSchema>;
-export type RiskFactor = (typeof RISK_FACTORS)[number];
+export type SpecDrift = z.infer<typeof SpecDriftSchema>;
+export type AgentRiskFactor = (typeof RISK_FACTORS)[number];
+export type RiskFactor = AgentRiskFactor | (typeof DERIVED_RISK_FACTORS)[number];
 export type RiskLevel = "low" | "medium" | "high" | "critical";

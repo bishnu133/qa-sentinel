@@ -239,6 +239,7 @@ describe("flaky retry", () => {
     const r = await verifyChanges({ cwd: repo, c: { ...c, verification: { ...c.verification, preflight: false, typecheck: "never" } }, changes: [{ status: "A", path: "tests/api/a.spec.ts" }], runDir: tmp(), env: { PATH: process.env.PATH } });
     expect(r.status).toBe("VERIFIED");
     expect(r.flaky).toEqual(["t"]);
+    expect(r.flakyKeys).toEqual(["tests/api/a.spec.ts::t"]);
     expect(r.checks.find((x) => x.name === "tests")!.detail).toContain("1 only on retry (flaky)");
   });
 
@@ -255,6 +256,7 @@ describe("flaky retry", () => {
     const r = await verifyChanges({ cwd: repo, c: { ...c, verification: { ...c.verification, preflight: false, typecheck: "never" } }, changes: [{ status: "A", path: "tests/api/a.spec.ts" }, { status: "A", path: "tests/api/b.spec.ts" }], runDir: tmp(), env: { PATH: process.env.PATH } });
     expect(r.status).toBe("FAILED");
     expect(r.flaky).toEqual(["t"]);
+    expect(r.flakyKeys).toEqual(["tests/api/a.spec.ts::t"]);
     expect(r.cases.filter((x) => x.status === "failed").map((x) => x.file)).toEqual(["tests/api/b.spec.ts"]);
   });
 });

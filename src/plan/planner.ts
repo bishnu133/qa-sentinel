@@ -11,8 +11,11 @@ import type { RequirementSnapshot } from "../requirements.js";
 import { type RunDir, agentEnv, testEnv } from "../run.js";
 import { writeKnowledge } from "../kb.js";
 import { type PlanValidation, validatePlan } from "./validate.js";
-import { type RiskedChange, applyRisk } from "./risk.js";
-import type { RiskLevel, TestPlan } from "./schema.js";
+import { type RiskResult, applyRisk, normaliseEndpoint } from "./risk.js";
+import type { TestPlan } from "./schema.js";
+import { type ChangeKindFinding, changeKinds } from "../analysis/changeKinds.js";
+import { type HistoryMap, historyLine, historySignals } from "../analysis/history.js";
+import { indexTests } from "../analysis/testIndex.js";
 import { log } from "../log.js";
 import { type ContractCheck, checkContract, contractCheckMarkdown, loadContract, warnContract } from "../contracts.js";
 import type { StoryPart } from "../story.js";
@@ -21,7 +24,7 @@ import { layers, primaryLayer } from "../layers.js";
 export interface PlanOutcome {
   status: "valid" | "invalid" | "agent-failed" | "dry-run";
   plan?: TestPlan;
-  risked?: { changes: RiskedChange[]; overall: RiskLevel };
+  risked?: RiskResult;
   contract: ContractDiff;
   validation?: PlanValidation;
   runs: AgentResult[];
@@ -50,6 +53,40 @@ export interface PlanInput {
   heldAcs?: Map<string, string>;
   /** Spec files that open QA agent merge requests add (path → "!12"). */
   addedByOpenMrs?: Map<string, string>;
+}
+
+/** Change types over ALL changed files of the change (every service of a story), found in code. */
+export function changeKindsOf(i: Pick<PlanInput, "c" | "repo" | "cs" | "parts">): ChangeKindFinding[] {
+  const one = (repo: string, cs: ChangeSet, service?: string) => {
+    try {
+      return changeKinds(i.c, { repo, base: cs.base, head: cs.head, files: cs.files, service });
+    } catch (e) {
+      log.warn(`change types skipped${service ? ` for ${service}` : ""}: ${(e as Error).message}`);
+      return [];
+    }
+  };
+  return i.parts?.length ? i.parts.flatMap((p) => one(p.repo, p.cs, p.service.name)) : one(i.repo, i.cs);
+}
+
+/**
+ * The history the agent is shown (context.json): only endpoints of this change's service(s) that the change touches (the
+ * spec diff names them, or the diff contains the start of their path), at most 15, with at most 3 short signals each.
+ * The risk itself is computed from the full history.
+ */
+export function changedEndpointHistory(history: HistoryMap, services: string[], diffs: string[], contractEndpoints: string[] = []): { endpoint: string; service?: string; signals: number; why: string }[] {
+  const text = diffs.join("\n");
+  const changed = new Set(contractEndpoints.map(normaliseEndpoint));
+  const touched = (endpoint: string) => {
+    if (changed.has(normaliseEndpoint(endpoint))) return true;
+    const p = normaliseEndpoint(endpoint).split(" ")[1] ?? "";
+    const stem = p.split("/{}")[0].replace(/\/$/, "");
+    return stem.length > 1 && text.includes(stem);
+  };
+  return [...history.values()]
+    .filter((h) => (!h.service || services.includes(h.service)) && touched(h.endpoint))
+    .sort((a, b) => b.count - a.count || a.endpoint.localeCompare(b.endpoint))
+    .slice(0, 15)
+    .map((h) => ({ endpoint: h.endpoint, ...(h.service ? { service: h.service } : {}), signals: h.count, why: `${h.signals.slice(0, 3).map((s) => s.detail.slice(0, 160)).join("; ")}${h.signals.length > 3 ? `; and ${h.signals.length - 3} more` : ""}` }));
 }
 
 export const oracleOf = (req: RequirementSnapshot): "provided" | "ambiguous" | "missing" =>
@@ -124,6 +161,27 @@ export async function planChange(i: PlanInput): Promise<PlanOutcome> {
   const planAbs = path.join(i.cwd, planRel);
   const oracle = oracleOf(i.req);
   const knowledge = writeKnowledge(i.cwd, c, run.dir, run.rel);
+  // Facts qa-sentinel finds itself (no AI): the kinds of change, and the history of the endpoints. The agent only sees them.
+  const kinds = changeKindsOf(i);
+  let history: HistoryMap = new Map();
+  let existingRoles: Record<string, string[]> = {};
+  try {
+    const index = indexTests(i.cwd, c);
+    const h = historySignals({ cwd: i.cwd, c, index });
+    history = h.map;
+    for (const p of h.problems) log.warn(`history: ${p}`);
+    // Roles of the tests that already exist for this service, by endpoint: an existing @role:none test is the no-token scenario.
+    const mine = new Set([i.service.name, ...(i.parts ?? []).map((p) => p.service.name)]);
+    for (const t of index) {
+      if (!t.roles.length || (t.services.length && !t.services.some((s) => mine.has(s)))) continue;
+      for (const ep of t.endpoints) existingRoles[ep] = [...new Set([...(existingRoles[ep] ?? []), ...t.roles])];
+    }
+  } catch (e) {
+    log.warn(`history skipped: ${(e as Error).message}`);
+  }
+  const roleNames = c.tests.auth.roles.map((r) => r.name);
+  const endpointHistory = changedEndpointHistory(history, [i.service.name, ...(i.parts ?? []).map((p) => p.service.name)], [i.cs.diff, ...(i.parts ?? []).map((p) => p.cs.diff)], contract.changes.map((x) => x.endpoint));
+  fs.writeFileSync(path.join(run.dir, "change-kinds.json"), JSON.stringify(kinds, null, 2));
   fs.writeFileSync(
     path.join(run.dir, "context.json"),
     JSON.stringify(
@@ -147,6 +205,11 @@ export async function planChange(i: PlanInput): Promise<PlanOutcome> {
         ...(i.service.routes.length ? { serviceRoutes: i.service.routes } : {}),
         testData: c.testData,
         ...(c.tests.hooks.length ? { testHooks: c.tests.hooks } : {}),
+        // Computed by qa-sentinel from the changed files, the config and the team's history. Not for the agent to choose.
+        // Capped: the full lists are in change-kinds.json; the risk itself is computed from the full history.
+        ...(kinds.length ? { changeKinds: kinds.slice(0, 30).map((k) => ({ ...k, ...(k.detail ? { detail: k.detail.slice(0, 200) } : {}) })), ...(kinds.length > 30 ? { changeKindsMore: kinds.length - 30 } : {}) } : {}),
+        ...(endpointHistory.length ? { endpointHistory } : {}),
+        accessControl: { mode: c.risk.accessControl, roles: roleNames, ...(c.risk.publicEndpoints.length ? { publicEndpoints: c.risk.publicEndpoints } : {}) },
         acceptanceCriteriaIds: i.req.acceptanceCriteria.map((a) => a.id),
         ...(i.acScope ? { acScope: i.acScope } : {}),
         ...(i.heldAcs?.size ? { heldAcs: Object.fromEntries(i.heldAcs) } : {}),
@@ -194,6 +257,7 @@ export async function planChange(i: PlanInput): Promise<PlanOutcome> {
       ...(i.expected && typeof i.context?.expectedBehaviour === "string" ? [`Expected behaviour (written from the story alone, before the code was read; QA reviews it in the merge request; the oracle for values): ${i.context.expectedBehaviour}. Plan scenarios for its ready behaviours and cite them in behaviourIds.`] : []),
       ...(i.acScope ? [`Plan only for the ACs in acScope (context.json). ACs in heldAcs wait for other services or for their status: give them no scenario and no requirementStatus, and do not cite them anywhere.`] : []),
       ...(typeof i.context?.openAgentMrs === "string" ? [`Other open QA agent merge requests already add tests: ${i.context.openAgentMrs}. Do not plan the same tests again; for a "create" decision name the new spec file in targetFile.`] : []),
+      ...(kinds.length ? [`qa-sentinel found these change types in the changed files (changeKinds in context.json; their risk is added in code): plan checks for them, for example data kept after a migration or the behaviour with a toggle on and off.`] : []),
       ...(knowledge ? [`Team domain rules: ${knowledge}. They rank after the story and the API contract as an oracle; cite them as evidence source "domain-rule".`] : []),
       `Write the plan as JSON to ${planRel}. That is the only file you may write. Then answer "done".`,
     ].join("\n"),
@@ -219,6 +283,10 @@ export async function planChange(i: PlanInput): Promise<PlanOutcome> {
     ...(i.acScope ? { acScope: i.acScope } : {}),
     ...(i.heldAcs ? { heldAcs: i.heldAcs } : {}),
     ...(i.addedByOpenMrs ? { addedByOpenMrs: i.addedByOpenMrs } : {}),
+    roles: roleNames,
+    accessControl: c.risk.accessControl,
+    publicEndpoints: c.risk.publicEndpoints,
+    existingRoles,
   };
   const read = () => {
     try {
@@ -254,7 +322,7 @@ export async function planChange(i: PlanInput): Promise<PlanOutcome> {
   }
 
   const crossService = (i.parts?.length ?? 0) > 1 || c.workspace.services.some((s) => s.dependsOn.includes(i.service.name));
-  const risked = applyRisk(validation.plan, { breakingEndpoints: breakingEndpoints(contract), crossService });
-  fs.writeFileSync(path.join(run.dir, "test-plan.validated.json"), JSON.stringify({ ...validation.plan, risk: { overall: risked.overall, changes: risked.changes.map((x) => ({ id: x.id, risk: x.risk, factors: x.factors })) }, corrections: validation.corrections, warnings: validation.warnings }, null, 2));
+  const risked = applyRisk(validation.plan, { breakingEndpoints: breakingEndpoints(contract), crossService, changeKinds: kinds, history, service: i.service.name, historyThreshold: c.risk.history.threshold });
+  fs.writeFileSync(path.join(run.dir, "test-plan.validated.json"), JSON.stringify({ ...validation.plan, risk: { overall: risked.overall, changes: risked.changes.map((x) => ({ id: x.id, risk: x.risk, factors: x.factors })), ...(risked.changeKinds ? { changeKinds: risked.changeKinds } : {}), ...(risked.historyRaised ? { historyRaised: risked.historyRaised.map((h) => ({ changeId: h.changeId, from: h.from, to: h.to, evidence: historyLine(h.history) })) } : {}) }, corrections: validation.corrections, warnings: validation.warnings }, null, 2));
   return { status: "valid", plan: validation.plan, risked, contract, validation, runs };
 }

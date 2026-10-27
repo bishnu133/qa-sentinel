@@ -40,6 +40,8 @@ export interface IndexedTest {
   /** Bug cards this test belongs to (tag @bug:SHOP-210): a test written for a fix, run again when the bug's feature is re-tested. */
   bugs: string[];
   acs: string[]; // "AC-2"
+  /** Access-control tests: the role a test logs in as (tag @role:admin; @role:none when no token is sent). */
+  roles: string[];
   tags: string[]; // other bare tags, e.g. "smoke"
   assertions: number;
   /** Every assertion only checks the HTTP status (a common sign of a weak test). */
@@ -63,8 +65,8 @@ export const endpointTag = (e: string) => e.trim().replace(/^([A-Z]+)\s+/, "$1_"
 /** "/orders/{id}/", "orders/:orderId" → "/orders/:id": one spelling per route so tags, plans and maps compare. */
 export const normPage = (p: string) => ("/" + p.trim().replace(/^\/+/, "").replace(/\/+$/, "")).replace(/\{[^}]*\}|:[A-Za-z_]\w*/g, ":id");
 
-export function parseTags(raw: string): Pick<IndexedTest, "services" | "endpoints" | "pages" | "stories" | "bugs" | "acs" | "tags"> & { title: string } {
-  const out = { services: [] as string[], endpoints: [] as string[], pages: [] as string[], stories: [] as string[], bugs: [] as string[], acs: [] as string[], tags: [] as string[] };
+export function parseTags(raw: string): Pick<IndexedTest, "services" | "endpoints" | "pages" | "stories" | "bugs" | "acs" | "roles" | "tags"> & { title: string } {
+  const out = { services: [] as string[], endpoints: [] as string[], pages: [] as string[], stories: [] as string[], bugs: [] as string[], acs: [] as string[], roles: [] as string[], tags: [] as string[] };
   const title = raw.replace(/\s*@([\w-]+)(?::(\S+))?/g, (_m, k: string, v?: string) => {
     const vals = (v ?? "").split(",").filter(Boolean);
     if (k === "service") out.services.push(...vals);
@@ -73,6 +75,7 @@ export function parseTags(raw: string): Pick<IndexedTest, "services" | "endpoint
     else if (k === "page" || k === "screen") out.pages.push(...vals.map(normPage));
     else if (k === "story") out.stories.push(...vals);
     else if (k === "bug") out.bugs.push(...vals);
+    else if (k === "role") out.roles.push(...vals);
     else if (k === "ac") {
       // "@ac:none" says on purpose that no acceptance criterion covers this test (e.g. contract-only behaviour).
       if (vals.some((a) => /^(none|-)$/i.test(a))) out.tags.push("ac:none");
@@ -155,6 +158,8 @@ export function indexSource(file: string, src: string): IndexedTest[] {
       assertions: (body.match(ASSERT) ?? []).length,
       statusOnly: asserts.length > 0 && asserts.every((l) => /\.status\(\)\)?\s*\)?\s*\.(toBe|toEqual)\(\s*\d{3}\s*\)/.test(l) || /expect\([^)]*status\(\)\)/.test(l)),
       ...parsed,
+      // A @role tag on an enclosing describe applies to its tests (it is part of the full test name).
+      roles: [...new Set([...parsed.roles, ...parseTags(String((f as any).describe ?? "")).roles])],
     } satisfies IndexedTest;
   });
 }
