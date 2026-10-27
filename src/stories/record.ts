@@ -114,6 +114,36 @@ export type StoryRecord = z.infer<typeof StoryRecordSchema>;
 
 export const emptyRecord = (key: string, now = new Date()): StoryRecord => ({ version: RECORD_VERSION, key, updatedAt: now.toISOString(), acs: [], jobs: {}, ledger: [], totalCostUsd: 0, parts: [], linked: [], crossService: {}, singleService: {}, acEvidence: {}, results: [], notified: [], overrides: [] });
 
+/**
+ * The analysis job of the split CI jobs has two copies of a story's record: its own file (it keeps spending, job keys and failure counts
+ * there) and the Jira copy (written by `publish`: written/held per AC, evidence, conflict, the agent's merge request). They are merged
+ * field by field, never "the newer wins": the Jira copy carries no spending, so taking it whole would wipe the budgets.
+ *  - spending and job state: the union of jobs and ledger, the larger total (the file's value for a job both have);
+ *  - written / held / evidence / conflict / agent MR: the Jira copy (per AC, the file's entry only where Jira has none);
+ *  - everything else: the newer copy.
+ */
+export function mergeLocalAndJira(mine: StoryRecord | undefined, theirs: StoryRecord | undefined): StoryRecord | undefined {
+  if (!mine || !theirs) return mine ?? theirs;
+  const newer = mine.updatedAt >= theirs.updatedAt ? mine : theirs;
+  const ledger = new Map<string, StoryRecord["ledger"][number]>();
+  for (const e of [...theirs.ledger, ...mine.ledger]) ledger.set(JSON.stringify(e), e);
+  const out: StoryRecord = {
+    ...newer,
+    updatedAt: newer.updatedAt,
+    jobs: { ...theirs.jobs, ...mine.jobs },
+    ledger: [...ledger.values()],
+    totalCostUsd: Math.max(mine.totalCostUsd, theirs.totalCostUsd),
+    crossService: { ...mine.crossService, ...theirs.crossService },
+    singleService: { ...mine.singleService, ...theirs.singleService },
+    acEvidence: { ...mine.acEvidence, ...theirs.acEvidence },
+  };
+  if (theirs.conflict) out.conflict = theirs.conflict;
+  else delete out.conflict;
+  if (theirs.agentMr) out.agentMr = theirs.agentMr;
+  else if (mine.agentMr) out.agentMr = mine.agentMr;
+  return out;
+}
+
 /** A story key becomes a file name: keep it to plain characters, so no key can point outside the records folder. */
 export const SAFE_KEY = /^[A-Za-z0-9_][A-Za-z0-9_.-]{0,63}$/;
 export function assertSafeKey(key: string): string {

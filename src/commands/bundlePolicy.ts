@@ -59,6 +59,18 @@ export function ownChanges(cwd: string, base: string, tip: string, targetRef: st
   // This also covers a merge of an OLD target commit (it can bring back an old file, drop a newer one, or add a link only it has).
   const differsFromTarget = new Set(changesBetween(cwd, targetRef, tip).flatMap((ch) => [ch.path, ...(ch.from ? [ch.from] : [])]));
   for (const ch of changesBetween(cwd, base, tip)) if (differsFromTarget.has(ch.path) || (ch.from && differsFromTarget.has(ch.from))) add(ch);
+  // On a story branch the base is the branch's tip on the server, not where it split from the target. A merge can move the merge-base, and
+  // then the merge request newly SHOWS paths that base..tip never touched (an old main file taken back after a normal merge of main).
+  // So: every path that changed between merge-base(target, tip) and tip, still differs from the target, and was not in the merge request
+  // diff before (merge-base(target, base) to base) is the branch's own too.
+  const mbTip = tryGit(cwd, ["merge-base", targetRef, tip]);
+  if (mbTip) {
+    const mbBase = tryGit(cwd, ["merge-base", targetRef, base]);
+    const before = new Set(mbBase ? changesBetween(cwd, mbBase, base).flatMap((ch) => [ch.path, ...(ch.from ? [ch.from] : [])]) : []);
+    const vsTarget = changesBetween(cwd, targetRef, tip);
+    const shown = new Set(changesBetween(cwd, mbTip, tip).flatMap((ch) => [ch.path, ...(ch.from ? [ch.from] : [])]));
+    for (const ch of vsTarget) if ((shown.has(ch.path) || (ch.from && shown.has(ch.from))) && !before.has(ch.path) && !(ch.from && before.has(ch.from))) add(ch);
+  }
   return [...out.values()];
 }
 

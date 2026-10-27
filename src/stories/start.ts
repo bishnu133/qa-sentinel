@@ -6,7 +6,7 @@ import { ClaudeAccessError } from "../claude.js";
 import type { AgentEngine } from "../engines/AgentEngine.js";
 import { type JobHandle, beginJob, budgetedEngine, endJob, jobPolicy } from "./jobs.js";
 import { deferInNewRun } from "../reporting/deferred.js";
-import { type JobKind, type StoryRecord, NO_STORY, type RecordStore, fileStore, jiraStore } from "./record.js";
+import { type JobKind, type StoryRecord, NO_STORY, type RecordStore, fileStore, jiraStore, mergeLocalAndJira } from "./record.js";
 
 /** The configured record store. A Jira store that can't be set up (no credentials, no URL) falls back to files, with a warning. */
 export function openStore(cwd: string, c: Config, env: NodeJS.ProcessEnv = process.env, local = false): RecordStore {
@@ -29,7 +29,7 @@ export function openStore(cwd: string, c: Config, env: NodeJS.ProcessEnv = proce
           } catch (e) {
             log.warn(`could not read the Jira record of ${key} (${(e as Error).message.split("\n")[0]}); using the local one`);
           }
-          return mine && (!theirs || mine.updatedAt >= theirs.updatedAt) ? mine : theirs ?? mine;
+          return mergeLocalAndJira(mine, theirs);
         },
       };
     }

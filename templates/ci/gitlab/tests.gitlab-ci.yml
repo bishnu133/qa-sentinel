@@ -68,6 +68,9 @@ variables:
   after_script:
     - cd "$CI_PROJECT_DIR/{{testsPrefix}}."
     - |
+      # The sweep needs the environment URL and its own cleanup login, nothing else: the secrets of this pipeline are dropped first
+      # (the work tree's config and .qa-env.sh are written by code the agent may have changed).
+      unset QA_SENTINEL_GITLAB_TOKEN QA_SENTINEL_GITLAB_WRITE_TOKEN QA_SENTINEL_GITLAB_READ_TOKEN QA_JIRA_PUBLISH_PAT QA_JIRA_PUBLISH_EMAIL QA_JIRA_PUBLISH_API_TOKEN JIRA_PAT JIRA_EMAIL JIRA_API_TOKEN ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN ANTHROPIC_BASE_URL CLAUDE_CODE_USE_BEDROCK CLAUDE_CODE_USE_VERTEX AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN CI_JOB_TOKEN CI_REGISTRY_PASSWORD
       qa_url="$(sed -n "s/^export {{baseUrlEnv}}='\(.*\)'$/\1/p" "$CI_PROJECT_DIR/.qa-env.sh" 2>/dev/null | head -n 1)"
       case "$qa_url" in https://*|http://*) case "$qa_url" in *[!A-Za-z0-9._:/@%?=\&~+-]*) qa_url="" ;; esac ;; *) qa_url="" ;; esac
       if [ -n "$qa_url" ]; then export {{baseUrlEnv}}="$qa_url"; fi
@@ -107,9 +110,7 @@ qa-generate:
   after_script:
     - cd "$CI_PROJECT_DIR/{{testsPrefix}}."
     - |
-      if [ "$QA_SPLIT_JOBS" = "true" ]; then
-        unset QA_SENTINEL_GITLAB_WRITE_TOKEN QA_JIRA_PUBLISH_PAT QA_JIRA_PUBLISH_EMAIL QA_JIRA_PUBLISH_API_TOKEN
-      fi
+      unset QA_SENTINEL_GITLAB_TOKEN QA_SENTINEL_GITLAB_WRITE_TOKEN QA_SENTINEL_GITLAB_READ_TOKEN QA_JIRA_PUBLISH_PAT QA_JIRA_PUBLISH_EMAIL QA_JIRA_PUBLISH_API_TOKEN JIRA_PAT JIRA_EMAIL JIRA_API_TOKEN ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN ANTHROPIC_BASE_URL CLAUDE_CODE_USE_BEDROCK CLAUDE_CODE_USE_VERTEX AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN CI_JOB_TOKEN CI_REGISTRY_PASSWORD
       qa_url="$(sed -n "s/^export {{baseUrlEnv}}='\(.*\)'$/\1/p" "$CI_PROJECT_DIR/.qa-env.sh" 2>/dev/null | head -n 1)"
       case "$qa_url" in https://*|http://*) case "$qa_url" in *[!A-Za-z0-9._:/@%?=\&~+-]*) qa_url="" ;; esac ;; *) qa_url="" ;; esac
       if [ -n "$qa_url" ]; then export {{baseUrlEnv}}="$qa_url"; fi

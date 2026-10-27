@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { netFetch } from "./net.js";
 import type { Config } from "./config.js";
-import type { Finding } from "./guardrails.js";
+import { hostAllowed, type Finding } from "./guardrails.js";
 
 /**
  * The test-data ledger. Tests that create data (a program, then a company in it, an event, a session…) record each
@@ -171,6 +171,30 @@ export function sweepMarkdown(r: SweepResult, dryRun = false): string {
   ].join("\n");
 }
 
+/** Names of variables that hold qa-sentinel's, GitLab's, Jira's or a model's credentials: never what the sweeper sends to the test environment. */
+const SECRET_ENV = /^(QA_SENTINEL_.*|QA_JIRA_.*|JIRA_.*|GITLAB_.*|GL_.*|CI_JOB_TOKEN|CI_REGISTRY_PASSWORD|CI_DEPLOY_PASSWORD|ANTHROPIC_.*|CLAUDE_.*|OPENAI_.*|AWS_.*|AZURE_.*|GOOGLE_.*|GITHUB_.*|GH_.*|NPM_TOKEN|NODE_AUTH_TOKEN)$/;
+
+/**
+ * The sweeper deletes with a credential and a base URL that the (agent-writable) config and environment name. So it refuses, before any
+ * request: a credential variable that is one of the known secrets, and a base URL whose host is not in guardrails.allowedHosts (or the
+ * environment's own host, which the pipeline put there). Returns the reason, or undefined when the sweep may go ahead.
+ */
+export function sweepRefusal(c: Config, env: NodeJS.ProcessEnv): string | undefined {
+  const name = c.testData.sweepAuthEnv;
+  if (SECRET_ENV.test(name)) return `testData.sweepAuthEnv names ${name}, which is a credential of qa-sentinel, GitLab, Jira or a model: the sweeper will not send it to the test environment`;
+  const url = env[c.tests.api.baseUrlEnv];
+  if (url && env[name]) {
+    let host = "";
+    try {
+      host = new URL(url).hostname;
+    } catch {
+      return `${c.tests.api.baseUrlEnv} is not a URL: the sweeper will not send a credential there`;
+    }
+    if (!hostAllowed(host, c.guardrails.allowedHosts)) return `the host ${host} (${c.tests.api.baseUrlEnv}) is not in guardrails.allowedHosts: the sweeper will not send a credential there`;
+  }
+  return undefined;
+}
+
 /**
  * After qa-sentinel's own test runs (verify, generate): sweep the leftovers of tests started since `startedAt` (not
  * those of another run on the same machine); what can't be deleted becomes a finding.
@@ -178,6 +202,8 @@ export function sweepMarkdown(r: SweepResult, dryRun = false): string {
 export async function sweepAfterRun(cwd: string, c: Config, startedAt: number, env: NodeJS.ProcessEnv = process.env): Promise<Finding[]> {
   const dir = path.resolve(cwd, c.testData.ledgerDir);
   if (!pendingRecords(dir, { startedAfter: startedAt }).length) return [];
+  const refusal = sweepRefusal(c, env);
+  if (refusal) return [{ level: "warning" as const, rule: "test-data" as const, file: c.testData.ledgerDir, message: `test data was not swept: ${refusal}` }];
   const r = await sweep({ dir, baseUrl: env[c.tests.api.baseUrlEnv], authHeader: env[c.testData.sweepAuthEnv], startedAfter: startedAt });
   return [...r.failed, ...r.manual].map((p) => ({
     level: "warning" as const,

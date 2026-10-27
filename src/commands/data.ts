@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { loadConfig } from "../config.js";
-import { pendingRecords, sweep, sweepMarkdown } from "../testData.js";
+import { pendingRecords, sweep, sweepMarkdown, sweepRefusal } from "../testData.js";
 import { log } from "../log.js";
 
 export interface DataOptions {
@@ -39,6 +39,11 @@ export async function dataSweepCommand(o: DataOptions): Promise<number> {
   const dir = path.resolve(cwd, c.testData.ledgerDir);
   const baseUrl = env[c.tests.api.baseUrlEnv];
   const authHeader = env[c.testData.sweepAuthEnv];
+  const refusal = sweepRefusal(c, env);
+  if (refusal) {
+    log.fail(refusal);
+    return 2;
+  }
   if (!baseUrl && !o.dryRun && pendingRecords(dir, { olderThanMinutes: o.olderThan }).length) {
     log.fail(`${c.tests.api.baseUrlEnv} is not set: the sweeper only deletes on the test environment`);
     return 2;
