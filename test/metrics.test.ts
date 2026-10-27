@@ -206,3 +206,92 @@ describe("cost by change size (B6)", () => {
     expect(metricsMarkdown(m)).toContain("Budgets these runs suggest");
   });
 });
+
+describe("budget suggestions from story records", () => {
+  const rec = async (key: string, cost: number, o: { generate?: boolean; days?: string[] } = {}) => {
+    const { emptyRecord } = await import("../src/stories/record.js");
+    const r = emptyRecord(key);
+    r.totalCostUsd = cost;
+    if (o.generate !== false) r.jobs.g = { key: "g", kind: "generate", state: "done", startedAt: "2026-10-01T00:00:00Z", attempts: 1, costUsd: cost };
+    r.ledger = (o.days ?? []).map((d, i) => ({ at: `${d}T0${i % 9}:00:00Z`, job: "g", kind: "generate" as const, costUsd: cost / Math.max(1, (o.days ?? []).length) }));
+    r.updatedAt = "2026-10-20T00:00:00Z";
+    return r;
+  };
+  it("perStory = p90 of story totals (stories with a generate job) x 1.5; perDay = p90 of daily sums x 1.5; perMonth = perDay x 22 to the next $5", async () => {
+    const { suggestAutomationBudgets } = await import("../src/commands/metrics.js");
+    // 12 stories with totals 1..12 dollars, each spent on its own day; one more story with no generate job is not counted.
+    const records = [
+      ...(await Promise.all(Array.from({ length: 12 }, (_, i) => rec(`SHOP-${100 + i}`, i + 1, { days: [`2026-10-${String(i + 1).padStart(2, "0")}`] })))),
+      await rec("SHOP-999", 500, { generate: false }),
+    ];
+    const s = suggestAutomationBudgets(records);
+    expect(s.stories).toBe(12);
+    expect(s.days).toBe(12);
+    // p90 of 1..12 is the 11th value (11) -> 16.5; the daily sums are the same numbers.
+    expect(s.perStoryUsd).toBe(16.5);
+    expect(s.perDayUsd).toBe(16.5);
+    expect(s.perMonthUsd).toBe(365); // 16.5 x 22 = 363 -> next $5
+    expect(s.notes).toEqual([]);
+  });
+  it("says how many are still needed below 10, and counts the same story once across folders", async () => {
+    const { suggestAutomationBudgets } = await import("../src/commands/metrics.js");
+    const few = await Promise.all(Array.from({ length: 9 }, (_, i) => rec(`SHOP-${i}`, 2, { days: [`2026-10-0${i + 1}`] })));
+    const s = suggestAutomationBudgets([...few, ...few]); // a downloaded cache holding the same records
+    expect(s).toMatchObject({ stories: 9, days: 9 });
+    expect(s.perStoryUsd).toBeUndefined();
+    expect(s.perDayUsd).toBeUndefined();
+    expect(s.perMonthUsd).toBeUndefined();
+    expect(s.notes.join(" ")).toMatch(/needs 10 stories with a generate job \(found 9\)/);
+    expect(s.notes.join(" ")).toMatch(/need 10 days with AI spend \(found 9\)/);
+  });
+  it("a story seen in two folders with different jobs is summed (a job in both counts once); $0 dry-run stories are not samples", async () => {
+    const { suggestAutomationBudgets } = await import("../src/commands/metrics.js");
+    const a = await rec("SHOP-1", 3);
+    const b = await rec("SHOP-1", 4);
+    a.jobs = { g1: { key: "g1", kind: "generate", state: "done", startedAt: "2026-10-01T00:00:00Z", attempts: 1, costUsd: 3 }, shared: { key: "shared", kind: "generate", state: "done", startedAt: "2026-10-02T00:00:00Z", attempts: 1, costUsd: 1 } };
+    b.jobs = { g2: { key: "g2", kind: "generate", state: "done", startedAt: "2026-10-03T00:00:00Z", attempts: 1, costUsd: 4 }, shared: { key: "shared", kind: "generate", state: "done", startedAt: "2026-10-02T00:00:00Z", attempts: 1, costUsd: 1 } };
+    a.totalCostUsd = 4;
+    b.totalCostUsd = 5;
+    const others = await Promise.all(Array.from({ length: 9 }, (_, i) => rec(`SHOP-${10 + i}`, 1, { days: [`2026-10-${String(i + 1).padStart(2, "0")}`] })));
+    const dry = await Promise.all(Array.from({ length: 5 }, (_, i) => rec(`SHOP-${50 + i}`, 0)));
+    const eight = await rec("SHOP-2", 8);
+    const s = suggestAutomationBudgets([a, b, eight, ...others, ...dry]);
+    expect(s.stories).toBe(11); // SHOP-1 once (3 + 1 + 4 = 8), SHOP-2, nine others; the five $0 stories are left out
+    expect(s.perStoryUsd).toBe(12); // p90 of [1 x 9, 8, 8] is 8 (SHOP-1 summed, not dropped) -> x 1.5
+  });
+  it("is part of the report and the JSON, and --records reads a folder of downloaded records read only", async () => {
+    const { computeMetrics, metricsMarkdown } = await import("../src/commands/metrics.js");
+    const { readRecordsFrom } = await import("../src/stories/record.js");
+    const dir = tmp();
+    for (let i = 0; i < 10; i++) write(dir, `cache/.qa-sentinel/stories/SHOP-${i}.json`, JSON.stringify(await rec(`SHOP-${i}`, 3, { days: [`2026-10-${String(i + 1).padStart(2, "0")}`] })));
+    write(dir, "cache/.qa-sentinel/stories/_sweep.json", "{}");
+    write(dir, "cache/.qa-sentinel/stories/SHOP-bad.json", "{not json");
+    const records = readRecordsFrom(dir);
+    expect(records).toHaveLength(10);
+    expect(fs.existsSync(path.join(dir, "cache/.qa-sentinel/stories/SHOP-bad.json"))).toBe(true); // not moved aside
+    const m = computeMetrics([], [], undefined, records);
+    expect(m.suggestedAutomationBudgets).toMatchObject({ stories: 10, days: 10, perStoryUsd: 4.5, perDayUsd: 4.5, perMonthUsd: 100 });
+    const md = metricsMarkdown(m);
+    expect(md).toContain("automation.budgets.perStoryUsd | $4.50");
+    expect(md).toContain("automation.budgets.perMonthUsd | $100.00");
+    expect(metricsMarkdown(computeMetrics([], [], undefined, []))).toMatch(/perStoryUsd needs 10 stories/);
+  });
+});
+
+describe("story-mode run size counts every part", () => {
+  it("the manifest's size.diffLines is the sum of all parts' diff lines, and changedFiles all their files", async () => {
+    const { ConfigSchema, writeConfig } = await import("../src/config.js");
+    const { combinedChange } = await import("../src/story.js");
+    const { startManifest, createRunDir } = await import("../src/run.js");
+    const dir = tmp();
+    const c = ConfigSchema.parse({ version: 1, mode: "existing", project: { name: "t" }, tests: { api: { framework: "playwright", runCommand: "x" } }, ci: { platform: "gitlab" } });
+    writeConfig(dir, c);
+    const diff = (n: number, file: string) => [`diff --git a/${file} b/${file}`, `--- a/${file}`, `+++ b/${file}`, "@@ -1 +1 @@", ...Array.from({ length: n }, (_, i) => `+line ${i}`), "-old"].join("\n");
+    const part = (name: string, n: number) => ({ service: { name, path: `../${name}`, kind: "api" as const, routes: [], dependsOn: [] }, repo: `/x/${name}`, cs: { base: "a".repeat(40), head: "b".repeat(40), files: [`src/${name}.ts`], diff: diff(n, `src/${name}.ts`) }, heads: ["b".repeat(40)], relevant: [`src/${name}.ts`], merged: true, label: `${name} merged` });
+    const { cs, relevant, service } = combinedChange("SHOP-1", [part("orders", 7), part("storefront", 5)] as never);
+    const run = createRunDir(dir, "gen-story");
+    const m = startManifest(dir, c, run, "generate", { service, base: cs.base, head: cs.head, changedFiles: relevant, diff: cs.diff }, { source: "none", acceptanceCriteria: [] } as never);
+    // (7 + 1) + (5 + 1) lines starting with + or -, not the file headers (--- / +++) and not the "# =====" part headers.
+    expect(m.size).toMatchObject({ changedFiles: 2, diffLines: 14 });
+  });
+});

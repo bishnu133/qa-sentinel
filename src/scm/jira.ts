@@ -5,21 +5,37 @@
  * Auth: Cloud → JIRA_EMAIL + JIRA_API_TOKEN (basic); Server/DC → JIRA_PAT (bearer).
  */
 import { maskSecrets } from "../secrets.js";
-import { netFetch } from "../net.js";
+import { netFetch, looksLikeHtml, parseJsonAnswer } from "../net.js";
+import { log } from "../log.js";
 
 export interface JiraContext {
   baseUrl: string;
   authHeader: string;
 }
 
-export function jiraContext(baseUrl: string | undefined, env: NodeJS.ProcessEnv = process.env): JiraContext | undefined {
+export type JiraAuthMode = "auto" | "cloud" | "pat";
+
+const JIRA_WEB_PAGE_HINT = "a login or SSO proxy in front of Jira? Check the baseUrl and the token";
+
+/**
+ * How to log in. `auto`: Jira Cloud (JIRA_EMAIL + JIRA_API_TOKEN, Basic) when JIRA_EMAIL is set, else the Data Center
+ * personal access token JIRA_PAT (Bearer). Cloud does not take a Bearer PAT, so with both set `auto` goes to Cloud;
+ * `pat` and `cloud` force one form. The first argument is the Jira base URL, or the `requirements.jira` config.
+ */
+export function jiraContext(jira: string | { baseUrl?: string; auth?: JiraAuthMode } | undefined, env: NodeJS.ProcessEnv = process.env): JiraContext | undefined {
+  const baseUrl = typeof jira === "string" ? jira : jira?.baseUrl;
+  const mode: JiraAuthMode = (typeof jira === "object" && jira?.auth) || "auto";
   if (!baseUrl) return undefined;
-  if (env.JIRA_PAT) return { baseUrl: baseUrl.replace(/\/$/, ""), authHeader: `Bearer ${env.JIRA_PAT}` };
-  if (env.JIRA_EMAIL && env.JIRA_API_TOKEN) {
-    return { baseUrl: baseUrl.replace(/\/$/, ""), authHeader: `Basic ${Buffer.from(`${env.JIRA_EMAIL}:${env.JIRA_API_TOKEN}`).toString("base64")}` };
-  }
-  return undefined;
+  const base = baseUrl.replace(/\/$/, "");
+  const cloud = () => (env.JIRA_EMAIL && env.JIRA_API_TOKEN ? { baseUrl: base, authHeader: `Basic ${Buffer.from(`${env.JIRA_EMAIL}:${env.JIRA_API_TOKEN}`).toString("base64")}` } : undefined);
+  const pat = () => (env.JIRA_PAT ? { baseUrl: base, authHeader: `Bearer ${env.JIRA_PAT}` } : undefined);
+  if (mode === "cloud") return cloud();
+  if (mode === "pat") return pat();
+  return env.JIRA_EMAIL ? (cloud() ?? pat()) : (pat() ?? cloud());
 }
+
+/** True when both login forms are set, which is usually a mistake (`auto` then uses Cloud). */
+export const jiraAuthAmbiguous = (env: NodeJS.ProcessEnv = process.env) => !!(env.JIRA_PAT && env.JIRA_EMAIL);
 
 export interface JiraIssue {
   key: string;
@@ -84,8 +100,9 @@ export async function fetchIssue(ctx: JiraContext, key: string, acField?: string
   const res = await netFetch(`${ctx.baseUrl}/rest/api/2/issue/${encodeURIComponent(key)}?fields=${fields}`, {
     headers: { Authorization: ctx.authHeader, Accept: "application/json" },
   });
-  if (!res.ok) throw new JiraHttpError(`Jira GET ${key} failed: ${res.status} ${(await res.text()).slice(0, 200)}`, res.status);
-  const j: any = await res.json();
+  const body = await res.text();
+  if (!res.ok) throw new JiraHttpError(`Jira GET ${key} failed: ${res.status} ${looksLikeHtml(body, res.headers.get("content-type")) ? `(a web page, not JSON: ${JIRA_WEB_PAGE_HINT})` : body.slice(0, 200)}`, res.status);
+  const j: any = parseJsonAnswer(body, res.headers.get("content-type"), "Jira", JIRA_WEB_PAGE_HINT) ?? {};
   const f = j.fields ?? {};
   return {
     key: j.key ?? key,
@@ -244,8 +261,8 @@ async function jiraCall(ctx: JiraContext, method: string, route: string, body?: 
       continue;
     }
     const text = await res.text();
-    if (!res.ok) throw new Error(`Jira ${method} ${route}: ${res.status} ${text.slice(0, 200)}`);
-    return text ? JSON.parse(text) : {};
+    if (!res.ok) throw new Error(`Jira ${method} ${route}: ${res.status} ${looksLikeHtml(text, res.headers.get("content-type")) ? `(a web page, not JSON: ${JIRA_WEB_PAGE_HINT})` : text.slice(0, 200)}`);
+    return parseJsonAnswer(text, res.headers.get("content-type"), "Jira", JIRA_WEB_PAGE_HINT) ?? {};
   }
 }
 
@@ -424,7 +441,7 @@ export async function attachFile(ctx: JiraContext, key: string, fileName: string
   });
   const text = await res.text();
   if (!res.ok) throw new Error(`Jira attach ${fileName} to ${key}: ${res.status} ${text.slice(0, 200)}`);
-  const [a] = JSON.parse(text);
+  const [a] = parseJsonAnswer(text, res.headers.get("content-type"), "Jira", JIRA_WEB_PAGE_HINT);
   return { id: String(a.id), filename: a.filename };
 }
 
@@ -504,7 +521,7 @@ const MAX_ATTACHMENT = 5 * 1024 * 1024;
 
 /** Download a text attachment. Only from this Jira site: the URL comes from Jira, but the credentials must not follow it elsewhere. */
 export async function downloadAttachment(ctx: JiraContext, url: string, size?: number): Promise<string> {
-  if (new URL(url).origin !== new URL(ctx.baseUrl).origin) throw new Error(`attachment URL is not on ${new URL(ctx.baseUrl).origin}`);
+  if (new URL(url).origin !== new URL(ctx.baseUrl).origin) throw new Error(`attachment URL ${new URL(url).origin} is not on the Jira baseUrl origin ${new URL(ctx.baseUrl).origin}, so the login was not sent. Behind a reverse proxy, set requirements.jira.baseUrl to the URL Jira itself reports (its "Base URL" setting), the one the attachment links start with`);
   if (size !== undefined && size > MAX_ATTACHMENT) throw new Error(`attachment larger than ${MAX_ATTACHMENT / 1024 / 1024} MB`);
   const res = await netFetch(url, { headers: { Authorization: ctx.authHeader }, redirect: "follow" });
   if (!res.ok) throw new Error(`Jira attachment download: ${res.status}`);
@@ -614,3 +631,18 @@ export async function allIssueTypes(ctx: JiraContext, projectKey: string): Promi
   const j = await jiraCall(ctx, "GET", `/rest/api/2/project/${encodeURIComponent(projectKey)}/statuses`);
   return [...new Set((Array.isArray(j) ? j : []).map((t: any) => String(t.name)))] as string[];
 }
+
+/** What the Jira server says about itself (`/rest/api/2/serverInfo`). */
+export interface JiraServerInfo {
+  deploymentType?: string;
+  version?: string;
+  baseUrl?: string;
+}
+
+export async function serverInfo(ctx: JiraContext): Promise<JiraServerInfo> {
+  const j = await jiraCall(ctx, "GET", "/rest/api/2/serverInfo");
+  return { deploymentType: j.deploymentType ? String(j.deploymentType) : undefined, version: j.version ? String(j.version) : undefined, baseUrl: j.baseUrl ? String(j.baseUrl) : undefined };
+}
+
+/** Cloud answers deploymentType "Cloud"; Server and Data Center both answer "Server". */
+export const jiraFlavour = (info: JiraServerInfo): "cloud" | "datacenter" => (/cloud/i.test(info.deploymentType ?? "") ? "cloud" : "datacenter");

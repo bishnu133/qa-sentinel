@@ -12,6 +12,8 @@
 # Model through Amazon Bedrock or Google Vertex AI instead of an Anthropic key: CLAUDE_CODE_USE_BEDROCK=1 + AWS_REGION
 # + AWS credentials (or a runner role), or CLAUDE_CODE_USE_VERTEX=1 + CLOUD_ML_REGION + ANTHROPIC_VERTEX_PROJECT_ID + GCP credentials.
 # The service's name in qa-sentinel.config.yaml must equal $CI_PROJECT_NAME (or set QA_SERVICE_NAME).
+# Split jobs (opt-in, QA_SPLIT_JOBS: "true"): the gap report runs with the model key and QA_SENTINEL_GITLAB_READ_TOKEN
+# (read_api), and qa-gap-report-publish posts it with QA_SENTINEL_GITLAB_WRITE_TOKEN (api) and no model key.
 
 variables:
   QA_SENTINEL_VERSION: "0.8.0-beta.2"
@@ -67,16 +69,65 @@ qa-gap-report:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
   allow_failure: true
   interruptible: true
+  # Scope the model key to this environment (Environment scope = qa-analysis) so the publish job never gets it.
+  environment:
+    name: qa-analysis
+    action: prepare
   script:
-    - >
-      qa-sentinel -C "$QA_TESTS_DIR" gap-report
-      --service "$QA_SERVICE_NAME" --service-path "$CI_PROJECT_DIR"
-      --base "$CI_MERGE_REQUEST_DIFF_BASE_SHA" --head "$CI_COMMIT_SHA" --checkout
-      --out "$CI_PROJECT_DIR/qa-gap-report.md" --post
+    # Split jobs (QA_SPLIT_JOBS: "true"): this job keeps the model key and a read-only token and only DEFERS the posting;
+    # qa-gap-report-publish below holds the write token and no model key.
+    - |
+      if [ "$QA_SPLIT_JOBS" = "true" ]; then
+        QA_POST_ARG="--defer-publish"
+        export QA_SENTINEL_GITLAB_TOKEN="${QA_SENTINEL_GITLAB_READ_TOKEN:?QA_SPLIT_JOBS needs QA_SENTINEL_GITLAB_READ_TOKEN (read_api)}"
+        unset QA_SENTINEL_GITLAB_WRITE_TOKEN QA_JIRA_PUBLISH_PAT QA_JIRA_PUBLISH_EMAIL QA_JIRA_PUBLISH_API_TOKEN
+      else
+        QA_POST_ARG="--post"
+      fi
+      qa-sentinel -C "$QA_TESTS_DIR" gap-report \
+        --service "$QA_SERVICE_NAME" --service-path "$CI_PROJECT_DIR" \
+        --base "$CI_MERGE_REQUEST_DIFF_BASE_SHA" --head "$CI_COMMIT_SHA" --checkout \
+        --out "$CI_PROJECT_DIR/qa-gap-report.md" $QA_POST_ARG
+  # The run folders (publish.json) live in the test repo checkout, outside the project folder: copy them where artifacts can be collected.
+  after_script:
+    - mkdir -p "$CI_PROJECT_DIR/qa-runs" && cp -r "$QA_TESTS_DIR/.qa-sentinel/runs/." "$CI_PROJECT_DIR/qa-runs/" 2>/dev/null || true
   artifacts:
     when: always
-    paths: [qa-gap-report.md]
+    paths: [qa-gap-report.md, qa-runs/]
     expire_in: 2 weeks
+
+# Split jobs only (QA_SPLIT_JOBS: "true"): post the report on the merge request and in Jira, record the MR. It holds the
+# write token and a Jira login that may comment, and NO model key.
+qa-gap-report-publish:
+  image: node:22
+  stage: test
+  needs:
+    - job: qa-gap-report
+      artifacts: true
+  rules:
+{{#if skipBranchesRe}}
+    - if: $CI_MERGE_REQUEST_SOURCE_BRANCH_NAME =~ /{{skipBranchesRe}}/
+      when: never
+{{/if}}
+    - if: $QA_SPLIT_JOBS == "true" && $CI_PIPELINE_SOURCE == "merge_request_event"
+  allow_failure: true
+  # One publish at a time per merge request (a rerun or a second push does not race the first).
+  resource_group: qa-gap-report-publish-$CI_MERGE_REQUEST_IID
+  # Scope the write token and the Jira publishing login to this environment (Environment scope = qa-publish).
+  environment:
+    name: qa-publish
+    action: prepare
+  variables:
+    QA_TESTS_DIR: "/tmp/qa-tests{{#if testsSubdir}}/{{testsSubdir}}{{/if}}"
+  script:
+    - !reference [.qa-sentinel-install, script]
+    - git clone --depth 1 --branch {{targetBranch}} "https://gitlab-ci-token:${CI_JOB_TOKEN}@${CI_SERVER_HOST}/${QA_TESTS_PROJECT}.git" /tmp/qa-tests
+    - git -C /tmp/qa-tests remote remove origin
+    - mkdir -p "$QA_TESTS_DIR/.qa-sentinel/runs" && cp -r qa-runs/. "$QA_TESTS_DIR/.qa-sentinel/runs/"
+    - export QA_SENTINEL_GITLAB_TOKEN="${QA_SENTINEL_GITLAB_WRITE_TOKEN:?qa-gap-report-publish needs QA_SENTINEL_GITLAB_WRITE_TOKEN (api)}"
+    - unset ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN ANTHROPIC_BASE_URL CLAUDE_CODE_USE_BEDROCK CLAUDE_CODE_USE_VERTEX AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN
+    # The Jira publishing login (QA_JIRA_PUBLISH_*) is picked by `qa-sentinel publish` itself; the read login (JIRA_*) is not used for writing.
+    - qa-sentinel -C "$QA_TESTS_DIR" publish --run all
 
 {{#if isMaintenance}}
 # Phase 2: ask the test repo to generate/update tests for the merged change.

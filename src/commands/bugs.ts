@@ -36,7 +36,7 @@ export async function bugsCommand(o: BugsOptions): Promise<number> {
   if (!fs.existsSync(file) && !haveMobile) throw new Error(`No test results at ${path.relative(cwd, file)}`);
   const results = [...(fs.existsSync(file) ? readRunResults(file) : []), ...(haveMobile ? readRunResults(mobileDir!) : [])];
   const index = indexTests(cwd, c);
-  const ctx = jiraContext(c.requirements.jira.baseUrl);
+  const ctx = jiraContext(c.requirements.jira);
   if (!ctx && !o.dryRun) throw new Error("Jira is not configured (requirements.jira.baseUrl + JIRA_EMAIL/JIRA_API_TOKEN or JIRA_PAT)");
   const stories = o.story?.length ? o.story : [...new Set(index.flatMap((t) => t.stories))].sort();
   let raised = 0;

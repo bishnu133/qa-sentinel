@@ -237,7 +237,7 @@ async function storiesRun(o: StoriesOptions): Promise<number> {
     try {
       const since = sweepSince(cwd, c, now, { rebuild: o.rebuild });
       log.step(`looking at merge requests updated since ${since.slice(0, 16)}Z`);
-      const sw = await sweepMrs(c, gitlab, jiraContext(c.requirements.jira.baseUrl, env), store, { since, now });
+      const sw = await sweepMrs(c, gitlab, jiraContext(c.requirements.jira, env), store, { since, now });
       touched = sw.touched;
       sw.notes.forEach((n) => log.warn(n));
       if (sw.noKey.length) log.warn(`MRs with no story key: ${sw.noKey.map((m) => `!${m.iid} ${m.service}`).join(", ")}`);
@@ -280,7 +280,7 @@ async function storiesRun(o: StoriesOptions): Promise<number> {
   const shared = sharedFacts(cwd, c);
   const policy = jobPolicy(c, {}, env);
   // Jira for the stories' own comments: the /qa ready overrides are read and the status comment is kept current. Not with story files.
-  const jira = o.storiesDir ? undefined : jiraContext(c.requirements.jira.baseUrl, env);
+  const jira = o.storiesDir ? undefined : jiraContext(c.requirements.jira, env);
   const list: Assessment[] = [];
   const changes = new Map<string, string[]>();
   const crossReady = new Map<string, string[]>();

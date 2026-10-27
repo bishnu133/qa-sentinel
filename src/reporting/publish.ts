@@ -17,7 +17,7 @@ export async function publish(
   for (const target of i.targets ?? c.reporting.targets) {
     try {
       if (target === "gitlab-mr") {
-        const ctx = gitlabContext(c.ci.gitlabUrl);
+        const ctx = gitlabContext(c.ci.gitlabUrl, env);
         if (!ctx) log.warn("--post (gitlab-mr): set QA_SENTINEL_GITLAB_TOKEN (or GITLAB_TOKEN) to comment on the MR");
         else if (!i.mr.project || !i.mr.mrIid) log.warn("--post (gitlab-mr): no merge request context (CI_PROJECT_ID / CI_MERGE_REQUEST_IID)");
         else {
@@ -26,7 +26,7 @@ export async function publish(
           done.push("gitlab-mr");
         }
       } else if (target === "jira") {
-        const ctx = jiraContext(c.requirements.jira.baseUrl, env);
+        const ctx = jiraContext(c.requirements.jira, env);
         if (!ctx) log.warn("--post (jira): set requirements.jira.baseUrl and JIRA_EMAIL + JIRA_API_TOKEN (Cloud) or JIRA_PAT (Server/DC)");
         else if (!i.storyKey) log.warn("--post (jira): no story key found in the MR title, branch or commits; nothing to comment on");
         else {

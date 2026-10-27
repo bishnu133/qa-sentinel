@@ -167,7 +167,7 @@ export async function postDeployCommand(o: PostDeployOptions): Promise<number> {
     const records = await store.list().catch(() => [] as StoryRecord[]);
     for (const k of await keysBehindCommits(c, svc, isGitRepo(repo) ? deployedCommits(repo, o.sha, o.before) : [], records, gl)) keys.add(k);
   }
-  const { targets, notes: keyNotes } = await featuresForKeys(c, jiraContext(c.requirements.jira.baseUrl), [...keys]);
+  const { targets, notes: keyNotes } = await featuresForKeys(c, jiraContext(c.requirements.jira), [...keys]);
   keyNotes.forEach((n) => log.warn(n));
   const stories = new Set(targets.map((t) => t.feature));
   const targetOf = new Map(targets.map((t) => [t.feature, t]));
@@ -215,7 +215,7 @@ export async function postDeployCommand(o: PostDeployOptions): Promise<number> {
     const body = [`## ${x.story}: ${head}`, ...(x.reason ? ["", `_${x.reason}_`] : []), "", featureMarkdown(x.manifest).replace(/^#+ .*\n/, ""), ...(x.report ? ["", verificationMarkdown(x.report)] : [])].join("\n");
     md.push(body, "");
     if (o.post && (x.status === "passed" || x.status === "failed" || x.status === "waiting")) {
-      const jira = jiraContext(c.requirements.jira.baseUrl);
+      const jira = jiraContext(c.requirements.jira);
       if (jira) await postToStory(c, jira, x.story, { name: "post-deploy", wiki: markdownToJiraWiki(body), legacyKind: "post-deploy", legacyMarker: "qa-sentinel:post-deploy", cwd, parts: x.manifest.parts }).catch((e) => log.warn(`  Jira ${x.story}: ${(e as Error).message}`));
     }
     log[x.status === "passed" ? "ok" : x.status === "failed" ? "fail" : "warn"](`${x.story}: ${head}`);

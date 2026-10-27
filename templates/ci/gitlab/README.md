@@ -13,6 +13,20 @@ Two files, two repos:
 3. `qa-generate` pins the service clone to the merged SHA, fetches the acceptance criteria from the MR that introduced it, and writes or updates API tests. qa-sentinel then checks the guardrails and verifies the result independently. It opens an MR labelled `qa-agent` and `qa-sentinel::<status>` (Draft unless VERIFIED). Only one generation runs at a time for the whole test repo (`resource_group: qa-sentinel-generate`).
 4. `qa-agent-mr-checks` runs `qa-sentinel verify --policy` on that MR, which blocks unless VERIFIED. A QA engineer reviews and merges.
 
+## Split jobs (opt-in): analysis without publishing tokens, publishing without the model key
+
+Set `QA_SPLIT_JOBS: "true"` (a CI/CD variable) and the work is done by two jobs instead of one:
+
+| Job | Has | Should not have | Does |
+| --- | --- | --- | --- |
+| `qa-generate`, `qa-gap-report` (analysis) | the model key; `QA_SENTINEL_GITLAB_READ_TOKEN` (read_api + read_repository; the gap report needs read_api only); the Jira login for reading | the GitLab write token, the Jira publishing login | plan, write and verify the tests; leave the branch as `branch.bundle` and every write in `publish.json` (`--defer-publish`). It writes no GitLab or Jira object, and keeps the story record in files |
+| `qa-generate-publish`, `qa-gap-report-publish` | `QA_SENTINEL_GITLAB_WRITE_TOKEN` (api + write_repository); optionally `QA_JIRA_PUBLISH_PAT` (or `QA_JIRA_PUBLISH_EMAIL` + `QA_JIRA_PUBLISH_API_TOKEN`); the non-secret base URL variables | the model key | `qa-sentinel publish`: re-checks the bundle against the agent write policy from a base it computes itself, pushes one `qa-sentinel/...` branch with a lease, opens or updates the merge request in the project from its own config, comments on the MR and in Jira, writes the story record |
+
+The run folder the analysis job hands over is **untrusted**: `publish` takes the project, the merge request, the target branch and the remote from its own config and CI variables, never from `publish.json`. The publish jobs run one at a time (`resource_group`), with full history (`GIT_DEPTH: 0`), in the environment `qa-publish`; the analysis jobs run in `qa-analysis`.
+
+Variables: GitLab lists every project variable to every job, and an `unset` in a script cannot reach `after_script` (a new shell). The analysis job therefore has its own `after_script` that drops the publish secrets and reads `.qa-env.sh` as text instead of running it. To keep a secret out of a job entirely, give the variable an **environment scope** (Settings › CI/CD › Variables): `qa-publish` for the write token and the Jira publishing login, `qa-analysis` for the model key; or protect them. Check how your GitLab version matches variables to jobs before relying on it; we have not run this on a real GitLab (docs/TRY-PR5.md). The status `VERIFIED` that publish writes into the MR and Jira is the analysis job's claim: `qa-agent-mr-checks` is the independent gate.
+Without `QA_SPLIT_JOBS` nothing changes: one job does everything with `QA_SENTINEL_GITLAB_TOKEN`.
+
 ## Setup checklist
 - [ ] Masked variables in both repos (group level is easiest): `ANTHROPIC_API_KEY`, `QA_SENTINEL_GITLAB_TOKEN`. Using Amazon Bedrock or Google Vertex AI instead of an Anthropic key: `CLAUDE_CODE_USE_BEDROCK=1`, `AWS_REGION` and AWS credentials (or a runner role), or `CLAUDE_CODE_USE_VERTEX=1`, `CLOUD_ML_REGION`, `ANTHROPIC_VERTEX_PROJECT_ID` and GCP credentials; `qa-sentinel doctor` shows which route is used.
 - [ ] `{{baseUrlEnv}}` in this repo, pointing to the QA environment

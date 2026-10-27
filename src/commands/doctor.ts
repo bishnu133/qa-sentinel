@@ -15,10 +15,11 @@ import { isGitRepo } from "../git.js";
 import { log } from "../log.js";
 import { SECRET_NAME } from "../env.js";
 import { currentUser, getProject, gitlabContext } from "../scm/gitlab.js";
-import { jiraContext, projectStatuses, allIssueTypes, linkTypes, myself, type JiraContext } from "../scm/jira.js";
+import { jiraContext, jiraAuthAmbiguous, projectStatuses, allIssueTypes, linkTypes, myself, serverInfo, jiraFlavour, searchStories, type JiraContext, type JiraServerInfo } from "../scm/jira.js";
 import { statusSets } from "../stories/resolve.js";
 import { junitReporter, layers, roleEnvNames, runCommandRunsEverything, runnerOf } from "../layers.js";
 import { packageScripts } from "../verification.js";
+import { wrapTestCommand } from "../wrapper.js";
 
 type Level = "ok" | "warn" | "fail";
 export interface Check {
@@ -169,11 +170,32 @@ export function runChecks(cwd: string, env: NodeJS.ProcessEnv = process.env): Ch
   if (c.requirements.source === "none") add("warn", "requirements source", "without stories/AC, tests only check what the code does");
   if (c.requirements.source === "jira") {
     if (!c.requirements.jira.baseUrl) add("fail", "requirements.jira.baseUrl set", "e.g. https://yourcompany.atlassian.net");
-    else if (!(env.JIRA_PAT || (env.JIRA_EMAIL && env.JIRA_API_TOKEN))) add("warn", "Jira credentials set", "JIRA_EMAIL + JIRA_API_TOKEN (Cloud) or JIRA_PAT (Server/DC); without them, MR text is used");
+    else if (!jiraContext(c.requirements.jira, env)) add("warn", "Jira credentials set", `${c.requirements.jira.auth === "pat" ? "JIRA_PAT (auth: pat)" : c.requirements.jira.auth === "cloud" ? "JIRA_EMAIL + JIRA_API_TOKEN (auth: cloud)" : "JIRA_EMAIL + JIRA_API_TOKEN (Cloud) or JIRA_PAT (Server/DC)"}; without them, MR text is used`);
     else add("ok", `Jira configured (${c.requirements.jira.baseUrl})`);
+    if (c.requirements.jira.auth === "auto" && jiraAuthAmbiguous(env)) add("warn", "Jira login: both JIRA_PAT and JIRA_EMAIL are set", "auto uses JIRA_EMAIL + JIRA_API_TOKEN (Cloud). On Data Center unset JIRA_EMAIL, or set requirements.jira.auth: pat");
     if (!c.requirements.jira.projectKeys.length) add("warn", "requirements.jira.projectKeys set", "limits story-key matching to your projects (avoids false keys like UTF-8)");
     else if (c.requirements.jira.projectKeys.some((k) => !new RegExp(`^(?:${c.requirements.storyKeyPattern})$`).test(`${k}-1`)))
       add("warn", "requirements.storyKeyPattern matches every project key", `${c.requirements.storyKeyPattern} doesn't match ${c.requirements.jira.projectKeys.filter((k) => !new RegExp(`^(?:${c.requirements.storyKeyPattern})$`).test(`${k}-1`)).join(", ")}`);
+  }
+  if (c.verification.wrapCommand) {
+    // A command with spaces and quotes that exits 7: the wrapper must run it as one command, print its output, and pass the exit code through
+    // (`true` would pass a wrapper that drops arguments or always exits 0). It does not prove that the wrapper isolates anything.
+    const probe = `printf '%s' 'a b "c" d'"'"'e'; exit 7`;
+    const want = `a b "c" d'e`;
+    const shown = wrapTestCommand(c, probe);
+    const r = spawnSync(shown, { shell: true, encoding: "utf8", timeout: 60_000 });
+    if (r.status === 7 && (r.stdout ?? "").includes(want)) add("ok", "verification.wrapCommand runs a command", "a command with spaces and quotes ran, its output came back and its exit code (7) passed through; what the wrapper isolates is up to the wrapper (see SECURITY.md)");
+    else add("fail", "verification.wrapCommand runs a command", r.error ? `failed to start: ${r.error.message}` : r.status !== 7 ? `a test command that exits 7 came back as exit ${r.status}: the wrapper must pass the exit code through (a failing test would look green)${r.stderr ? `: ${r.stderr.trim().slice(0, 160)}` : ""}` : "the command's output did not come back whole: check the quoting around {cmd} (use sh -c {cmd})");
+  }
+  if (c.agent.sandbox.enabled) {
+    // Claude Code's Bash sandbox: on Linux it needs bubblewrap and socat (macOS has Seatbelt built in). Native Windows runs commands unsandboxed.
+    if (process.platform === "linux") {
+      const missing = ["bwrap", "socat"].filter((b) => spawnSync("sh", ["-c", `command -v ${b}`], { encoding: "utf8" }).status !== 0);
+      if (missing.length) add(c.agent.sandbox.failIfUnavailable ? "fail" : "warn", `agent.sandbox: ${missing.join(" and ")} not found`, "apt-get install bubblewrap socat (the agent will not start without them while failIfUnavailable is true)");
+      else add("ok", "agent.sandbox: bubblewrap and socat found");
+    } else if (process.platform === "win32") add("warn", "agent.sandbox on native Windows", "Claude Code runs commands unsandboxed on native Windows; use WSL2");
+    else add("ok", "agent.sandbox on", "macOS has the sandbox built in");
+    if (!c.agent.sandbox.allowedDomains.length) add("warn", "agent.sandbox.allowedDomains is empty", "the agent's shell commands can reach no host, so it cannot run the tests against the QA environment: list its host");
   }
   add("ok", `operating level: ${c.level}${c.level === "intelligence" ? " (read-only; set level: maintenance to enable generation)" : ""}`);
 
@@ -294,8 +316,11 @@ export async function doctorCommand(cwd: string, o: { online?: boolean } = {}): 
   if (o.online && !checks.some((c) => c.level === "fail" && c.label.includes("valid"))) checks.push(...(await onlineChecks(path.resolve(cwd))));
   if (o.online && !checks.some((c) => c.level === "fail" && c.label.includes("valid"))) {
     const c = loadConfig(path.resolve(cwd));
-    const ctx = jiraContext(c.requirements.jira.baseUrl);
-    if (ctx) checks.push(await jiraIdentityCheck(ctx, c.reporting.targets.includes("jira")));
+    const ctx = jiraContext(c.requirements.jira);
+    if (ctx) {
+      checks.push(await jiraIdentityCheck(ctx, c.reporting.targets.includes("jira")));
+      checks.push(...(await jiraFlavourChecks(c, { serverInfo: () => serverInfo(ctx), search: (jql, api) => searchStories(ctx, jql, { max: 1, api }) })));
+    }
     if (ctx && (c.requirements.jira.projectKeys.length || c.requirements.jira.hierarchy.links.length)) checks.push(...(await jiraConfigChecks(c, { statuses: (p) => projectStatuses(ctx, p), issueTypes: (p) => allIssueTypes(ctx, p), linkTypes: () => linkTypes(ctx) })));
   }
   for (const ch of checks) {
@@ -367,5 +392,38 @@ export async function jiraConfigChecks(c: ReturnType<typeof loadConfig>, probe: 
     }
   }
   if (j.hierarchy.links.length && !j.featureIssueTypes.length) out.push({ level: "warn", label: "requirements.jira.featureIssueTypes set", hint: "hierarchy.links is set but with no feature types every card is its own feature, so nothing is followed" });
+  return out;
+}
+
+/** What the flavour check asks Jira, injectable so it can be tested. */
+export interface JiraFlavourProbe {
+  serverInfo(): Promise<JiraServerInfo>;
+  search(jql: string, api: "cloud" | "server"): Promise<unknown[]>;
+}
+
+/** Cloud or Data Center (from serverInfo.deploymentType), and whether the search API of that flavour answers. */
+export async function jiraFlavourChecks(c: ReturnType<typeof loadConfig>, probe: JiraFlavourProbe): Promise<Check[]> {
+  const j = c.requirements.jira;
+  const out: Check[] = [];
+  let info: JiraServerInfo;
+  try {
+    info = await probe.serverInfo();
+  } catch (e) {
+    return [{ level: "warn", label: "Jira flavour (Cloud or Data Center) readable", hint: `${(e as Error).message.slice(0, 160)}; check requirements.jira.baseUrl and the login` }];
+  }
+  const flavour = jiraFlavour(info);
+  out.push({ level: "ok", label: `Jira flavour: ${flavour === "cloud" ? "Cloud" : "Data Center"}${info.version ? ` (version ${info.version})` : ""}` });
+  if (flavour === "cloud" && j.auth === "pat") out.push({ level: "warn", label: "Jira Cloud with auth: pat", hint: "Cloud does not take a Bearer token; use JIRA_EMAIL + JIRA_API_TOKEN" });
+  if (flavour === "datacenter" && j.auth === "cloud") out.push({ level: "warn", label: "Jira Data Center with auth: cloud", hint: "Data Center takes a personal access token: JIRA_PAT with auth: auto or pat" });
+  if (info.baseUrl && j.baseUrl && new URL(info.baseUrl).origin !== new URL(j.baseUrl).origin)
+    out.push({ level: "warn", label: "requirements.jira.baseUrl differs from the URL Jira reports", hint: `Jira says ${info.baseUrl}; attachment links start with that, and qa-sentinel refuses attachments from another origin. Set baseUrl to it.` });
+  const jql = j.projectKeys.length ? `project in (${j.projectKeys.map((k) => `"${k}"`).join(",")}) ORDER BY created DESC` : "ORDER BY created DESC";
+  const api = flavour === "cloud" ? "cloud" : "server";
+  try {
+    await probe.search(jql, api);
+    out.push({ level: "ok", label: `Jira search works (${api === "cloud" ? "/rest/api/3/search/jql" : "/rest/api/2/search"})` });
+  } catch (e) {
+    out.push({ level: "warn", label: `Jira search (${api === "cloud" ? "/rest/api/3/search/jql" : "/rest/api/2/search"}) answers`, hint: (e as Error).message.slice(0, 160) });
+  }
   return out;
 }

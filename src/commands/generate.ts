@@ -22,6 +22,7 @@ import { publish } from "../reporting/publish.js";
 import { reviewMarkdown, reviewTests, type ReviewOutcome } from "../review/reviewer.js";
 import { TEST_FILE, addedLines } from "../guardrails.js";
 import { indexTests, changedTests, checkNewTests, checkTestMap, readTestMap, traceMarkdown, traceStory } from "../analysis/testIndex.js";
+import { bundleBranch, deferInNewRun, deferSteps, type PublishStep } from "../reporting/deferred.js";
 import { createOrUpdateMergeRequest, gitlabContext, latestMrForBranch, pushUrl, upsertMarkedNote } from "../scm/gitlab.js";
 import { engineFor } from "../engines/ClaudeCodeEngine.js";
 import { ClaudeAccessError } from "../claude.js";
@@ -85,6 +86,11 @@ export interface GenerateOptions {
    * API contract is the oracle (no story), so a test that disagrees with the code is written as review/fixme.
    */
   backfill?: BackfillTarget[];
+  /**
+   * Do not push or open the merge request: leave the branch as `branch.bundle` and the rest in `publish.json` in the run
+   * folder, for `qa-sentinel publish` (write tokens, no model key). Implies --push.
+   */
+  deferPublish?: boolean;
 }
 
 export interface BackfillTarget {
@@ -103,6 +109,7 @@ export interface BackfillTarget {
  * Returns the exit code: 0 when VERIFIED, or when the plan needs no test changes.
  */
 export async function generateCommand(o: GenerateOptions): Promise<number> {
+  if (o.deferPublish) o = { ...o, push: true };
   const ctl: JobControl = {};
   let code: number;
   try {
@@ -141,7 +148,7 @@ async function generateRun(o: GenerateOptions, ctl: JobControl): Promise<number>
   if (o.story && (!SAFE_KEY.test(o.story) || o.story.includes(".."))) throw new Error(`"${o.story}" is not a story key (letters, digits, - _ . only)`);
   if (o.acs?.length && !o.story) throw new Error("--acs needs --story: it names the ACs of one story");
   if (o.story) {
-    const record = await openStore(cwd, c, penv).load(o.story).catch(() => undefined);
+    const record = await openStore(cwd, c, penv, o.deferPublish).load(o.story).catch(() => undefined);
     storyRec = record;
     const sp = await storyParts({ c, cwd, story: o.story, gitlab: c.workspace.services.some((x) => x.gitlabProject) ? gitlabContext(c.ci.gitlabUrl, penv) : undefined, record });
     sp.notes.forEach((n) => log.warn(n));
@@ -235,7 +242,7 @@ async function generateRun(o: GenerateOptions, ctl: JobControl): Promise<number>
   }
   if (storyKey && !o.backfill) {
     const key = storyKey;
-    storyRec ??= await openStore(cwd, c, penv).load(key).catch(() => undefined);
+    storyRec ??= await openStore(cwd, c, penv, o.deferPublish).load(key).catch(() => undefined);
     let sp: Awaited<ReturnType<typeof storyParts>> | undefined;
     if (triggerService) {
       try {
@@ -329,7 +336,7 @@ async function generateRun(o: GenerateOptions, ctl: JobControl): Promise<number>
         ? crossServiceJobKey(storyKey, scope.crossInScope.length ? scope.crossInScope : scope.acScope, scope.crossInScope.length ? scope.heads : scope.allHeads, hashes)
         : generateJobKey(story === NO_STORY ? undefined : story, triggerService ?? (parts ? "story" : service.name), head, hashes);
     // Two generate jobs of one story write the same test branch: only one runs at a time.
-    const start = await startJob({ cwd, c, story, kind: "generate", key: jobKey, force: o.force, once: o.once, env: penv, exclusive: Boolean(storyKey && parts) });
+    const start = await startJob({ cwd, c, story, kind: "generate", key: jobKey, force: o.force, once: o.once, env: penv, exclusive: Boolean(storyKey && parts), local: o.deferPublish });
     if (!start.run) return start.exitCode;
     ctl.store = start.store;
     ctl.handle = start.handle;
@@ -344,6 +351,17 @@ async function generateRun(o: GenerateOptions, ctl: JobControl): Promise<number>
     if (!prep.ok) {
       log.fail(prep.message);
       ctl.outcome = `blocked-${prep.reason}`;
+      if (o.deferPublish) {
+        // Split CI jobs: this job writes nothing to Jira or GitLab; the note waits for `qa-sentinel publish`.
+        if (storyKey) {
+          const steps: PublishStep[] = [];
+          if (prep.reason === "conflict") steps.push({ type: "notify", story: storyKey, event: "merge-conflict", text: `the test branch ${prep.branch} cannot take ${c.ci.targetBranch}: ${prep.message}`.slice(0, 2000), key: prep.branch });
+          steps.push({ type: "branch-note", story: storyKey, marker: "<!-- qa-sentinel:story-branch-blocked -->", text: `**QA agent: blocked.** ${prep.message}`.slice(0, 4000) });
+          const dir = deferInNewRun(cwd, "generate", "gen-blocked", steps);
+          log.ok(`blocked note left for \`qa-sentinel publish\`: ${path.relative(cwd, dir)}/publish.json`);
+        }
+        return 1;
+      }
       if (prep.reason === "conflict" && storyKey) await reportConflict(cwd, c, storyKey, prep.branch, prep.message, penv, ctl.store);
       if (ctx && testProject !== undefined) {
         try {
@@ -513,7 +531,13 @@ async function generateRun(o: GenerateOptions, ctl: JobControl): Promise<number>
     git(cwd, ["add", "--", pendingExpected.rel]);
     git(cwd, ["commit", "-q", "-m", expectedCommitMessage(req.storyKey!, req.acceptanceCriteria, VERSION, run.id)]);
     log.ok(`expected behaviour committed on ${branch}: ${pendingExpected.rel}`);
-    if (o.push) {
+    if (o.push && o.deferPublish) {
+      bundleBranch(cwd, run.dir, branch);
+      deferSteps(run.dir, "generate", run.id, [
+        { type: "merge-request", branch, headSha: git(cwd, ["rev-parse", "HEAD"]), ...(sb.remoteSha ? { expectSha: sb.remoteSha } : {}), storyKey, title: `QA agent: tests for ${subject}`, description: `## QA agent: ${subject}\n\nExpected behaviour proposed for review (${pendingExpected.rel}). No test changes were needed yet.\n\n${plan.verdict}`, labels: ["qa-agent", `story::${storyKey}`] },
+      ]);
+      log.ok(`publishing deferred: ${run.rel}/publish.json (run \`qa-sentinel publish --run ${run.id}\`)`);
+    } else if (o.push) {
       const pushed = pushStoryBranch(cwd, { branch, remote: remoteFor(c, penv), expect: sb.remoteSha, env: o.processEnv });
       log.ok(`pushed ${branch}${pushed.retried ? " (after merging what a reviewer pushed meanwhile)" : ""}`);
       if (ctx && testProject !== undefined) {
@@ -732,7 +756,12 @@ async function generateRun(o: GenerateOptions, ctl: JobControl): Promise<number>
 
   // Bug cards (bugs.mode): requirements the product doesn't meet, seen failing by the author and written as fixme.
   if (c.bugs.mode !== "off" && req.storyKey && discrepancies.length && !o.dryRun) {
-    const jira = jiraContext(c.requirements.jira.baseUrl);
+    const jira = o.deferPublish ? undefined : jiraContext(c.requirements.jira);
+    if (o.deferPublish) {
+      // Split CI jobs: the Jira writes belong to `qa-sentinel publish`.
+      const candidates = bugsFromDiscrepancies(req.storyKey, requirementItems(req), discrepancies, index, plan, { environment, runCommand: (t) => runCommandsFor(c, [`${t.file}:${t.line}`])[0] });
+      if (candidates.length) deferSteps(run.dir, "generate", run.id, [{ type: "bugs", story: req.storyKey, candidates: JSON.parse(JSON.stringify(candidates)) }]);
+    }
     if (jira) {
       const candidates = bugsFromDiscrepancies(req.storyKey, requirementItems(req), discrepancies, index, plan, { environment, runCommand: (t) => runCommandsFor(c, [`${t.file}:${t.line}`])[0] });
       const r = await fileBugs(jira, c, req.storyKey, candidates, cwd).catch((e) => (log.warn(`bugs: ${(e as Error).message}`), undefined));
@@ -745,7 +774,38 @@ async function generateRun(o: GenerateOptions, ctl: JobControl): Promise<number>
     log.warn(`not pushed: verification is ${verification.status}${environment ? ` on ${environment}` : ""} and verification.requireVerifiedToPush is on. The branch ${branch} stays local for inspection.`);
     return finish(`not-pushed-${verification.status.toLowerCase()}`, 1);
   }
-  if (o.push) {
+  const verifiedOk = verification.status === "VERIFIED";
+  const mrTitle = `${verifiedOk ? "" : "Draft: "}QA agent: tests for ${subject}${verifiedOk ? "" : ` (${verification.status === "WAITING_FOR_DEPLOYMENT" ? "waiting for deployment" : verification.status})`}`;
+  const mrLabels = [
+    "qa-agent",
+    ...(storyMode ? [`story::${storyKey}`, ...[...new Set([...manifestParts.filter((p) => p.merged).map((p) => p.service), ...(parts ?? []).map((p) => p.service.name)])].map((n) => `service::${n}`)] : parts ? [`story::${o.story}`, ...parts.map((p) => `service::${p.service.name}`)] : [`service::${service.name}`]),
+    ...(o.backfill ? ["qa-sentinel::backfill"] : []),
+    `qa-sentinel::${verification.status.toLowerCase()}`,
+    `risk::${planned.risked.overall}`,
+    ...(discrepancies.length ? ["qa-sentinel::discrepancy"] : []),
+    ...(review.review?.tests.some((t) => t.verdict === "weak" || t.verdict === "wrong-oracle") ? ["qa-sentinel::weak-tests"] : []),
+  ];
+  if (o.push && o.deferPublish) {
+    // The analysis is done. The branch travels as a bundle and the writing (push, merge request, Jira, record) is left to `qa-sentinel publish`.
+    bundleBranch(cwd, run.dir, branch);
+    const crossAcs = storyMode && storyKey && scope?.crossInScope.length ? scope.crossInScope : [];
+    const acText = new Map(requirementItems(req).map((a) => [a.id, a.text]));
+    deferSteps(run.dir, "generate", run.id, [
+      {
+        type: "merge-request",
+        branch,
+        headSha: git(cwd, ["rev-parse", "HEAD"]),
+        ...(sb?.remoteSha ? { expectSha: sb.remoteSha } : {}),
+        ...(storyMode && storyKey ? { storyKey } : {}),
+        title: mrTitle,
+        description,
+        labels: mrLabels,
+        ...(crossAcs.length && storyKey ? { notify: { story: storyKey, event: "cross-service-tests-ready", text: `end-to-end tests for ${crossAcs.join(", ")} are ready for review: {mr}`, key: `${crossAcs.join("+")}@{iid}` } } : {}),
+        ...(c.reporting.targets.includes("jira") ? { jira: { storyKey: req.storyKey, service: service.name, risk: planned.risked.overall, verification: verification.status, environment, trace: trace.acs, acText: [...acText], discrepancies, weakTests: review.review?.tests.filter((t) => t.verdict === "weak" || t.verdict === "wrong-oracle").length, report: description } } : {}),
+      },
+    ]);
+    log.ok(`publishing deferred: ${run.rel}/publish.json and ${run.rel}/branch.bundle (run \`qa-sentinel publish --run ${run.id}\`)`);
+  } else if (o.push) {
     // Push with a one-off URL so the token never sits in .git/config where an agent could read it.
     if (sb) {
       // The story branch is built on, never rebuilt: pushed only if nobody pushed to it since this run started (a reviewer's commits are merged in and kept).
@@ -762,21 +822,12 @@ async function generateRun(o: GenerateOptions, ctl: JobControl): Promise<number>
     if (!ctx || !project) {
       log.warn("pushed; set QA_SENTINEL_GITLAB_TOKEN and ci.testRepoProject to open the MR automatically");
     } else {
-      const verified = verification.status === "VERIFIED";
       const mr = await createOrUpdateMergeRequest(ctx, project, {
         source: branch,
         target: c.ci.targetBranch,
-        title: `${verified ? "" : "Draft: "}QA agent: tests for ${subject}${verified ? "" : ` (${verification.status === "WAITING_FOR_DEPLOYMENT" ? "waiting for deployment" : verification.status})`}`,
+        title: mrTitle,
         description,
-        labels: [
-          "qa-agent",
-          ...(storyMode ? [`story::${storyKey}`, ...[...new Set([...manifestParts.filter((p) => p.merged).map((p) => p.service), ...(parts ?? []).map((p) => p.service.name)])].map((n) => `service::${n}`)] : parts ? [`story::${o.story}`, ...parts.map((p) => `service::${p.service.name}`)] : [`service::${service.name}`]),
-          ...(o.backfill ? ["qa-sentinel::backfill"] : []),
-          `qa-sentinel::${verification.status.toLowerCase()}`,
-          `risk::${planned.risked.overall}`,
-          ...(discrepancies.length ? ["qa-sentinel::discrepancy"] : []),
-          ...(review.review?.tests.some((t) => t.verdict === "weak" || t.verdict === "wrong-oracle") ? ["qa-sentinel::weak-tests"] : []),
-        ],
+        labels: mrLabels,
       });
       log.ok(`merge request ${mr.action}: ${mr.web_url}`);
       if (storyMode && storyKey && ctl.store) await recordAgentMr(ctl.store, storyKey, { branch, iid: mr.iid, url: mr.web_url, headSha: git(cwd, ["rev-parse", "HEAD"]) });
@@ -887,7 +938,7 @@ async function reportConflict(cwd: string, c: Config, story: string, branch: str
       const at = new Date().toISOString();
       await st.save({ ...rec, conflict: { branch, message: message.slice(0, 300), at, key }, updatedAt: at });
     });
-    const ctx = jiraContext(c.requirements.jira.baseUrl, env);
+    const ctx = jiraContext(c.requirements.jira, env);
     const rec = await st.load(story);
     if (ctx && rec && jiraMode(c) !== "legacy") await refreshStaleness(ctx, story, { pending: pendingWiki(rec, {}), visibility: c.reporting.jira.visibility, basis: rec.basis, rec });
   } catch (e) {
@@ -896,7 +947,7 @@ async function reportConflict(cwd: string, c: Config, story: string, branch: str
   await notifyStory(cwd, c, story, "merge-conflict", `the test branch ${branch} cannot take ${c.ci.targetBranch}: ${message}`, key, env, st);
 }
 
-async function recordAgentMr(store: RecordStore, story: string, mr: { branch: string; iid: number; url: string; headSha: string }): Promise<void> {
+export async function recordAgentMr(store: RecordStore, story: string, mr: { branch: string; iid: number; url: string; headSha: string }): Promise<void> {
   const at = new Date().toISOString();
   try {
     await store.locked(story, async () => {

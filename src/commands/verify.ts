@@ -3,10 +3,10 @@ import { useEnvironment } from "../run.js";
 import fs from "node:fs";
 import path from "node:path";
 import { loadConfig } from "../config.js";
-import { changesSince, git, resolveSha } from "../git.js";
+import { changesSince, git, resolveSha, specialModes } from "../git.js";
 import { matchesAny } from "../fsutil.js";
 import { ARTIFACT_GLOBS, createRunDir, testEnv } from "../run.js";
-import { checkContent, checkPaths, findingsMarkdown, generatePolicy, violations } from "../guardrails.js";
+import { checkContent, checkPaths, checkSpecialModes, findingsMarkdown, generatePolicy, violations } from "../guardrails.js";
 import { findDiscrepancies, verificationMarkdown, verifyChanges } from "../verification.js";
 import { layers } from "../layers.js";
 import { applyDeploymentGate, deploymentStates, needsFromCommits } from "../deployment.js";
@@ -48,6 +48,7 @@ export async function verifyCommand(o: VerifyOptions): Promise<number> {
           extraBaseUrls: layers(c).map((l) => process.env[l.baseUrlEnv]).filter((u): u is string => Boolean(u)),
           assertionRemoval: c.guardrails.assertionRemoval,
         }),
+        ...checkSpecialModes(specialModes(cwd, base, "HEAD")),
         // Expected values follow the story: qa-sentinel's commits may not move them; people's edits are listed.
         ...(await lockByAuthor(cwd, c, base)),
       ]

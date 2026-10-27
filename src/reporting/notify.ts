@@ -96,7 +96,7 @@ export async function notify(o: NotifyOptions): Promise<boolean> {
 /** For commands that only have the working folder: open the Jira connection and the record, then notify. Does nothing without Jira credentials. */
 export async function notifyStoryOutcome(cwd: string, c: Config, story: string, event: NotifyEvent, text: string, key: string, env: NodeJS.ProcessEnv = process.env, store?: RecordStore): Promise<NotifyOutcome> {
   if (!c.reporting.jira.notify[event].on) return "off";
-  const ctx = jiraContext(c.requirements.jira.baseUrl, env);
+  const ctx = jiraContext(c.requirements.jira, env);
   if (!ctx) return "off";
   return notifyOutcome({ c, ctx, store: store ?? openStore(cwd, c, env), story, event, text, key });
 }

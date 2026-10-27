@@ -48,6 +48,7 @@ async function learnRun(o: LearnOptions, handle?: JobHandle): Promise<number> {
     deny: perms.deny,
     addDirs: serviceDirs,
     model: c.agent.model,
+    sandbox: c.agent.sandbox,
     maxBudgetUsd: Math.min(c.agent.maxBudgetUsd.learn, handle?.remainingUsd() ?? Infinity),
     timeoutMs: c.agent.timeoutMinutes.learn * 60_000,
     env: agentEnv(c),

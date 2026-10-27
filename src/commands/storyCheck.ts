@@ -24,7 +24,7 @@ export async function storyCheckCommand(o: { cwd: string; story?: string; storyF
   const source = o.storyFile ? `file ${o.storyFile}` : `Jira ${o.story}`;
   if (o.storyFile) text = fs.readFileSync(path.resolve(cwd, o.storyFile), "utf8");
   else {
-    const ctx = jiraContext(c.requirements.jira.baseUrl);
+    const ctx = jiraContext(c.requirements.jira);
     if (!ctx) throw new Error("Jira is not configured: set requirements.jira.baseUrl and JIRA_EMAIL + JIRA_API_TOKEN (or JIRA_PAT)");
     const issue = await fetchIssue(ctx, o.story!, c.requirements.jira.acceptanceCriteriaField, c.requirements.jira.scopeFields.map((f) => f.field));
     title = issue.summary;

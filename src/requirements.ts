@@ -224,7 +224,7 @@ export async function resolveRequirements(c: Config, o: ResolveOptions): Promise
   if (c.requirements.source === "jira") {
     const keys = [o.mr?.title, o.mr?.sourceBranch, looked?.title, looked?.source_branch, ...(o.keyHints ?? []), o.mr?.description, looked?.description];
     const key = o.storyKey ?? extractStoryKey(jiraKeyPattern(c), ...keys);
-    const jctx = jiraContext(c.requirements.jira.baseUrl, env);
+    const jctx = jiraContext(c.requirements.jira, env);
     if (key && jctx) {
       const branch = o.mr?.sourceBranch ?? looked?.source_branch;
       try {

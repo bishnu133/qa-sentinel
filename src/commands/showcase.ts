@@ -55,7 +55,7 @@ export async function showcaseCommand(o: ShowcaseOptions): Promise<number> {
   if (!fs.existsSync(resultsFile) && !haveMobile) throw new Error(`No test results at ${path.relative(cwd, resultsFile)}. Run the suite first (Playwright: add the json reporter, see the scaffold's playwright.config.ts).`);
   const results = [...(fs.existsSync(resultsFile) ? readRunResults(resultsFile) : []), ...(haveMobile ? readRunResults(mobileDir!) : [])];
   const index = indexTests(cwd, c);
-  const ctx = jiraContext(c.requirements.jira.baseUrl);
+  const ctx = jiraContext(c.requirements.jira);
   const stories = o.story?.length ? o.story : [...new Set(index.flatMap((t) => t.stories))].sort();
   log.step(`showcase: ${results.length} results, ${stories.length} stor${stories.length === 1 ? "y" : "ies"} tagged in the tests${environment ? `, environment ${environment}` : ""}`);
   if (!ctx && !o.dryRun) log.warn("Jira is not configured (requirements.jira.baseUrl + JIRA_EMAIL/JIRA_API_TOKEN or JIRA_PAT): assessing only");
