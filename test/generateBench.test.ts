@@ -91,6 +91,14 @@ describe("scoring a generation run (B2)", () => {
     expect(names({ a: `await api.post("/orders", { item: "x" });` })["tests use a reference value"]).toBe(false);
   });
 
+  it("a reference held in a variable is followed to its definition: a fixed string there fails, a built value passes (L8)", () => {
+    const pass = (src: string) => referenceChecks({ a: src })[1].pass;
+    expect(pass('const ref = "REF-9";\nawait api.post("/orders", { item: "x", reference: ref });')).toBe(false);
+    expect(pass('const reference = "REF-9";\nawait api.post("/orders", { item: "x", reference });')).toBe(false);
+    expect(pass('const ref = `REF-${Date.now()}`;\nawait api.post("/orders", { reference: ref });')).toBe(true);
+    expect(pass('await api.post("/orders", { reference: uniqueRef() });')).toBe(true);
+  });
+
   it("the default generation scenarios exist, and the markdown sums the runs", () => {
     expect(GENERATION_DEFAULT.every((id) => SCENARIOS.some((s) => s.id === id))).toBe(true);
     const r = scoreGeneration(scenario("new-validation"), 1, runDir(clean), { "tests/a.spec.ts": "x" });

@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { z } from "zod";
-import { createRunDir } from "../run.js";
+import { VERSION, createRunDir, type RunDir } from "../run.js";
 
 /**
  * Deferred publishing (F3). With `--defer-publish`, gap-report and generate do their analysis and leave what they
@@ -140,9 +140,21 @@ export function deferSteps(runDir: string, kind: PublishFile["kind"], runId: str
   return doc;
 }
 
+/**
+ * A run folder for a note no analysis run owns (the joined comment of a merge request that names several stories, a
+ * waiting note). It gets a small manifest, so the note's id can be saved in it (`mr`) and `metrics --online` can count
+ * the reactions on that comment too. The outcome is the label ("gap-joined", "gap-waiting").
+ */
+export function noteRun(cwd: string, kind: PublishFile["kind"], label: string): RunDir {
+  const run = createRunDir(cwd, label);
+  const now = new Date().toISOString();
+  fs.writeFileSync(path.join(run.dir, "manifest.json"), JSON.stringify({ qaSentinelVersion: VERSION, kind, runId: run.id, startedAt: now, finishedAt: now, outcome: label }, null, 2));
+  return run;
+}
+
 /** For steps with no run of their own (the joined comment of a merge request that names several stories, a waiting note). */
 export function deferInNewRun(cwd: string, kind: PublishFile["kind"], label: string, steps: PublishStep[]): string {
-  const run = createRunDir(cwd, label);
+  const run = noteRun(cwd, kind, label);
   deferSteps(run.dir, kind, run.id, steps);
   return run.dir;
 }

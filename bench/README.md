@@ -4,8 +4,8 @@ Known developer changes with human-agreed expected QA decisions. The benchmark r
 (`gap-report`) and scores the validated test plan, so prompt, model or rule changes can be measured instead of guessed.
 
 ```bash
-npm run bench                               # all scenarios once (~$0.70 with Claude Sonnet-class models)
-npm run bench -- --only ac-conflict --runs 3   # three runs: also writes the consistency table (about $0.30)
+npm run bench                               # all 12 scenarios once (measured: $1.64 on 2026-10-27 with the default model; it was about $0.70 for the first 8)
+npm run bench -- --only ac-conflict --runs 3   # three runs: also writes the consistency table (measured: about $0.12 per run of ac-conflict, so about $0.36)
 npm run bench -- --summarise bench/results/<file>.json   # the consistency table of a saved file (free)
 npm run bench -- --features                 # cases decided by qa-sentinel's own rules (free, no AI)
 npm run bench -- --generate                 # runs `generate` too, on new-validation and test-data-collision (costs AI money)
@@ -54,7 +54,7 @@ The first two are mostly deterministic (the AI only has to produce a valid plan)
 ## What each part measures, and what needs the owner
 | Part | Measures | Cost | Run by |
 | --- | --- | --- | --- |
-| `npm run bench` (gap report) | the plan: gaps, decisions, risk, checks | AI, about $0.70 for all scenarios | owner |
+| `npm run bench` (gap report) | the plan: gaps, decisions, risk, checks | AI, $1.64 for all 12 scenarios (measured) | owner |
 | `--runs N` consistency table | how much N runs of the same scenario agree | AI, N times the above | owner (`--summarise` is free) |
 | `--features` | the readiness rules across a three-service story | none | anyone, and unit tests |
 | `--generate` | verification status, expected values present, review verdicts, collision check on written tests | AI; a rough estimate is $1-3 per scenario, not measured | owner (needs `npm install` and a free port) |
@@ -63,6 +63,14 @@ The first two are mostly deterministic (the AI only has to produce a valid plan)
 | `metrics --online` votes | 👍 and 👎 on gap report comments | none (GitLab calls) | owner with a GitLab token |
 
 The unit tests cover the scoring and the summaries with fake engines and fixture files (test/mutate.test.ts, agreement.test.ts, benchCases.test.ts, generateBench.test.ts, trustMetrics.test.ts); no AI call is measured by them.
+
+## Arguments are checked first
+`npm run bench` stops with the usage and exit code 2 on anything unclear, before any AI call: a flag without its value (`--summarise` with no file, `--runs` with nothing after it), a bad number (`--runs abc`, `--runs 0`), an unknown flag (a typo such as `--summarize`), an unknown scenario id, a stray word, or modes that cannot be combined. Without this check, `--summarise` with no file name once fell through to the full paid benchmark. `bench:mutate` checks `--scenario`, `--work` and `--tests-ref` the same way.
+
+## Limits to know
+- The vote line is added when the comment is posted, so a new commit that edits the comment keeps the old 👍/👎 on it (GitLab keeps reactions on an edited note). `reporting.votes: false` takes effect the next time the report changes: an unchanged report is not posted again.
+- `bench:mutate` starts and stops the ShopLite environment about 16 times. `stop.sh` (older than this PR) stops every `node src/server.js` and gateway process of the machine, so do not run it next to another ShopLite or a service of yours that is started that way. It refuses to run when `/tmp/services/<service>` exists (the CI layout), because `start.sh` would then run that code instead of the mutant, and it checks that the orders service reports the commit of the mutant copy before the tests count.
+- The test-data collision checks (`uniqueDataChecks`, `referenceChecks`) read wording and code text, not behaviour. A plan that names the clash in unusual words fails the wording check, and a test that builds its reference in a way the code check cannot read counts as unique. Read the plan or the test when a check looks wrong.
 
 ## Mutation check
 `bench/mutations/<scenario>/` holds `reference.patch` (the correct implementation of the scenario, applied first), one `*.patch` per planted defect and `tests/` (a reference test suite laid over qa-tests). Each defect patch starts with `# mutation:`, `# service:`, `# describes:` and `# expect-killed-by:` (words of the test name that should fail; `none` means no test should notice). The runner copies the service, applies the reference and one defect, starts the local ShopLite environment, runs the API tests and counts a defect as caught when a test fails. It only means something when the tests pass on the correct code first, so that is checked and reported. The defects are few and hand-written: "6 of 7 caught" describes these tests against these defects, not a general mutation score. A defect that survives is either a gap in the tests or one no test could see (the shipped `slot-equal-to-now-accepted` is the second kind, and is expected to survive).

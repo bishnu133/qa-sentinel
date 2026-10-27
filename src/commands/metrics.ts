@@ -210,7 +210,8 @@ function patchId(repo: string, from: string, to: string, files: string[]): strin
   }
 }
 
-const TEST_TITLE = /\b(?:test|it)(?:\.\w+)*\(\s*(["'`])((?:\\.|(?!\1).)*)\1/;
+/** `test("…")` and `it("…")`, with `.only .skip .fixme .fail .slow`; not `test.describe`, `test.step`, `describe`, `.test(` on a regex or object. */
+const TEST_TITLE = /(?<![\w$.])(?:test|it)(?:\.(?:only|skip|fixme|fail|slow))?\(\s*(["'`])((?:\\.|(?!\1).)*)\1/;
 
 /** Titles of the tests a commit added: `test("…")` and `it("…")` calls on its added lines (Playwright, Jest, Vitest, Mocha). */
 export function addedTestTitles(repo: string, sha: string, files: string[]): string[] {
@@ -249,8 +250,11 @@ export function collectFlaky(dirs: string[], since?: Date): string[] {
   return [...out];
 }
 
-/** Does a flaky name (a JUnit name often carries a describe prefix) belong to this test title? */
-const sameTest = (flaky: string, title: string) => flaky.trim() === title || flaky.includes(title);
+/** Does a flaky name belong to this test title? The whole name, or its last part after "›" (reporters prefix the file and the describe names). Never a substring: "works" must not match "it works with a coupon". */
+export const sameTest = (flaky: string, title: string) => {
+  const last = flaky.split("›").at(-1)?.trim();
+  return flaky.trim() === title || last === title;
+};
 
 /**
  * Reactions on the gap report comments. One comment per merge request is counted once (the newest run that wrote it).

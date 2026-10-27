@@ -9,7 +9,7 @@ vi.mock("../src/engines/ClaudeCodeEngine.js", () => ({
 }));
 
 import { gapReportCommand } from "../src/commands/gapReport.js";
-import { addedTestTitles, agentCommits, collectFlaky, computeMetrics, fetchUsefulness, metricsCommand, metricsMarkdown, type AgentCommit } from "../src/commands/metrics.js";
+import { addedTestTitles, agentCommits, collectFlaky, computeMetrics, sameTest, fetchUsefulness, metricsCommand, metricsMarkdown, type AgentCommit } from "../src/commands/metrics.js";
 import { VOTE_LINE } from "../src/reporting/publish.js";
 import { commitDate, markMrOpened, patchManifest, type Manifest } from "../src/run.js";
 import { gitlabContext } from "../src/scm/gitlab.js";
@@ -35,6 +35,36 @@ describe("flakiness of agent-written tests (B4)", () => {
     expect(titles).toContain("single quotes ok");
     expect(titles).not.toContain("old one @story:S-1");
     expect(addedTestTitles(repo, g(repo, "rev-parse", "HEAD"), [])).toEqual([]);
+  });
+
+  it("describe blocks, steps, helpers and regex tests are not tests", () => {
+    const repo = tmp("qas-added2-");
+    g(repo, "init", "-q", "-b", "main");
+    commit(repo, "tests/a.spec.ts", "// base\n", "init");
+    const body = [
+      'test.describe("Orders", () => {',
+      '  test.only("a real test", async () => {',
+      '    await test.step("post the order", async () => {});',
+      '    expect(/x/.test("abc")).toBe(true);',
+      "  });",
+      '  test.fixme("a pending one", async () => {});',
+      '  test.slow("a slow one", async () => {});',
+      "});",
+      'describe("Jest block", () => { it("jest style", () => {}); });',
+      'submit("not a test");',
+      "",
+    ].join("\n");
+    commit(repo, "tests/a.spec.ts", body, "add");
+    expect(addedTestTitles(repo, g(repo, "rev-parse", "HEAD"), ["tests/a.spec.ts"]).sort()).toEqual(["a pending one", "a real test", "a slow one", "jest style"]);
+  });
+
+  it("a flaky name matches a test by its whole name or its last part after ›, never by a piece of the title", () => {
+    expect(sameTest("works", "works")).toBe(true);
+    expect(sameTest("Orders › post › it works with a coupon", "works")).toBe(false);
+    expect(sameTest("file.spec.ts › Orders › works", "works")).toBe(true);
+    expect(sameTest("Orders", "Orders")).toBe(true);
+    const m = computeMetrics([], [agentCommit({ addedTests: ["works", "a real test", "Orders"] })], undefined, [], { flakyNames: ["Orders › it works with a coupon", "x › a real test"] });
+    expect(m.agentTestFlakiness).toMatchObject({ agentTests: 3, flaky: 1, flakyTests: ["a real test"] });
   });
 
   it("agentCommits lists the tests each agent commit added", () => {

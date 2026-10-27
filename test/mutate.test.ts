@@ -1,8 +1,9 @@
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { applyPatch, commandRunner, loadMutations, mutationMarkdown, parseMutationPatch, parseOutcome, runMutations, type Mutation } from "../bench/mutate.js";
-import { cleanTmp, tmp } from "./helpers/mocks.js";
+import { applyPatch, commandRunner, extractRef, leftoverServiceFolders, loadMutations, mutationMarkdown, parseMutationPatch, parseOutcome, prepareTests, runMutations, shopliteRunner, type Mutation } from "../bench/mutate.js";
+import { cleanTmp, commit, g, tmp } from "./helpers/mocks.js";
 
 afterEach(cleanTmp);
 
@@ -136,5 +137,148 @@ describe("reading test output", () => {
     expect(parseOutcome("ok 1 - a\nnot ok 2 - b c\n", 1)).toEqual({ total: 2, failed: ["b c"] });
     expect(parseOutcome("", 0).error).toMatch(/no results/);
     expect(parseOutcome("", 2).error).toMatch(/exit 2/);
+  });
+});
+
+describe("a test run that did not really run is never a result (L1)", () => {
+  it("Playwright's own errors, an exit code with no failed test, and a different number of tests are errors", async () => {
+    const errs = JSON.stringify({ errors: [{ message: "global setup failed" }], suites: [{ file: "a.spec.ts", specs: [{ title: "one", ok: true }] }] });
+    expect(parseOutcome(errs, 1)).toMatchObject({ total: 0, error: expect.stringMatching(/1 error\(s\) of its own/) });
+    const green = JSON.stringify({ suites: [{ file: "a.spec.ts", specs: [{ title: "one", ok: true }] }] });
+    expect(parseOutcome(green, 1).error).toMatch(/exited 1 although no test failed/);
+    expect(parseOutcome(green, 0)).toEqual({ total: 1, failed: [] });
+    expect(parseOutcome("", 0).error).toBeDefined();
+
+    const { src } = world();
+    let n = 0;
+    const counts = async () => ({ total: n++ === 0 ? 2 : 1, failed: [] as string[] });
+    const report = await runMutations({ scenario: "T-5", sourceDir: src, mutations: [mut("m", patchOf("exports.cap = 3;", "exports.cap = 5;"), [])], run: counts });
+    expect(report.rows[0]).toMatchObject({ status: "error", note: "1 tests ran, 2 on the correct code" });
+    expect(report.survived).toBe(0);
+  });
+});
+
+describe("no shell touches a ref or a path (M1)", () => {
+  const repoWithBranch = (branch: string) => {
+    const root = tmp("qas-hostile-");
+    const qa = path.join(root, "qa-tests");
+    fs.mkdirSync(qa);
+    g(qa, "init", "-q", "-b", "main");
+    commit(qa, "tests/a.spec.ts", "// main\n", "init");
+    g(qa, "checkout", "-q", "-b", branch);
+    commit(qa, "tests/b.spec.ts", "// on the branch\n", "branch");
+    return { root, qa };
+  };
+
+  it("a branch name made of shell syntax is read as a name: its files come out, and nothing is executed", () => {
+    const marker = path.join(tmp("qas-marker-"), "pwned");
+    const branch = `qa/x$(touch\${"{IFS}"}${marker})`;
+    const { root, qa } = repoWithBranch(branch);
+    const dest = tmp("qas-dest-");
+    extractRef(qa, branch, dest);
+    expect(fs.existsSync(path.join(dest, "tests/b.spec.ts"))).toBe(true);
+    expect(fs.existsSync(marker)).toBe(false);
+    // The same through prepareTests, which is what bench:mutate calls with --tests-ref.
+    const t = prepareTests(root, { ref: branch });
+    expect(fs.existsSync(path.join(t, "tests/b.spec.ts"))).toBe(true);
+    expect(fs.existsSync(marker)).toBe(false);
+    fs.rmSync(t, { recursive: true, force: true });
+  });
+
+  it("backticks, quotes and semicolons in a branch or a work folder are just characters; a ref that looks like an option is refused", () => {
+    const marker = path.join(tmp("qas-marker2-"), "pwned");
+    const branch = `a;touch ${marker};'b"c`;
+    let made = true;
+    let repo: { root: string; qa: string } | undefined;
+    try {
+      repo = repoWithBranch(branch);
+    } catch {
+      made = false; // git refuses the name: nothing to extract, and nothing can run either
+    }
+    if (made && repo) {
+      const dest = tmp("qas-dest2-");
+      extractRef(repo.qa, branch, dest);
+      expect(fs.existsSync(path.join(dest, "tests/b.spec.ts"))).toBe(true);
+    }
+    expect(fs.existsSync(marker)).toBe(false);
+    const { qa } = repoWithBranch("fine");
+    expect(() => extractRef(qa, "--output=/tmp/x", tmp("qas-d3-"))).toThrow(/not a usable git ref/);
+    expect(() => extractRef(qa, "no-such-branch", tmp("qas-d4-"))).toThrow(/cannot read no-such-branch/);
+  });
+
+  it("prepareTests removes its folder when the ref cannot be read (L5)", () => {
+    const { root } = repoWithBranch("fine");
+    const before = fs.readdirSync(os.tmpdir()).filter((d) => d.startsWith("qas-mutate-tests-")).length;
+    expect(() => prepareTests(root, { ref: "no-such-branch" })).toThrow();
+    expect(fs.readdirSync(os.tmpdir()).filter((d) => d.startsWith("qas-mutate-tests-")).length).toBe(before);
+  });
+});
+
+describe("the ShopLite runner (M2)", () => {
+  // Stub scripts stand in for qa-env/start.sh, stop.sh and Playwright, so the runner's own logic is tested without a sandbox.
+  const stubs = (o: { start?: string; verify?: string; test?: string } = {}) => {
+    const dir = tmp("qas-stubs-");
+    const work = path.join(dir, "work");
+    fs.mkdirSync(path.join(work, "payments-service"), { recursive: true });
+    fs.mkdirSync(path.join(work, "orders-service"), { recursive: true });
+    const tests = path.join(dir, "tests");
+    fs.mkdirSync(tests);
+    fs.writeFileSync(path.join(dir, "start.sh"), o.start ?? 'echo "started with $QA_ENV_LOCAL_SERVICES" >&2\nexport QA_BASE_URL=http://127.0.0.1:1\n');
+    fs.writeFileSync(path.join(dir, "stop.sh"), "echo stopped >> \"$(dirname \"$0\")/stops\"\n");
+    const src = path.join(dir, "mutant");
+    fs.mkdirSync(src);
+    fs.writeFileSync(path.join(src, "server.js"), "x\n");
+    return {
+      dir,
+      src,
+      runner: shopliteRunner({ servicesRoot: path.join(dir, "no-services"), work, testsDir: tests, startScript: path.join(dir, "start.sh"), stopScript: path.join(dir, "stop.sh"), verifyCommand: o.verify ?? "true", testCommand: o.test ?? 'printf "ok 1 - a\\nnot ok 2 - b\\n"' }),
+    };
+  };
+
+  it("starts the environment on a copy of the mutant, runs the tests, always stops it, and reads the result", async () => {
+    const w = stubs();
+    const out = await w.runner(w.src);
+    expect(out).toEqual({ total: 2, failed: ["b"] });
+    expect(fs.readFileSync(path.join(w.dir, "stops"), "utf8").trim().split("\n").length).toBeGreaterThanOrEqual(2); // before and after
+  });
+
+  it("an environment that does not start is an error, not a catch", async () => {
+    const w = stubs({ start: "echo boom >&2\nreturn 1\n" });
+    expect((await w.runner(w.src)).error).toMatch(/did not start/);
+  });
+
+  it("an environment that is not serving the mutant is an error, not a survivor", async () => {
+    const w = stubs({ verify: "false", test: 'printf "ok 1 - a\\n"' });
+    expect((await w.runner(w.src)).error).toMatch(/not the mutant copy/);
+  });
+
+  it("the check compares the commit the mutant folder was given: EXPECT_SHA reaches the verify command", async () => {
+    const w = stubs({ verify: '[ -n "$EXPECT_SHA" ] && [ ${#EXPECT_SHA} -eq 40 ]', test: 'printf "ok 1 - a\\n"' });
+    expect(await w.runner(w.src)).toEqual({ total: 1, failed: [] });
+  });
+
+  it("paths reach bash as variables: a work folder with quotes and spaces still works", async () => {
+    const dir = tmp("qas-weird-");
+    const weird = path.join(dir, `we"ird $(x) dir`);
+    fs.mkdirSync(path.join(weird, "orders-service"), { recursive: true });
+    const tests = path.join(weird, "t e s t s");
+    fs.mkdirSync(tests);
+    fs.writeFileSync(path.join(weird, "start.sh"), "export QA_BASE_URL=http://127.0.0.1:1\n");
+    fs.writeFileSync(path.join(weird, "stop.sh"), "true\n");
+    const src = path.join(dir, "m");
+    fs.mkdirSync(src);
+    fs.writeFileSync(path.join(src, "a.js"), "1\n");
+    const run = shopliteRunner({ servicesRoot: path.join(dir, "no-services"), work: weird, testsDir: tests, startScript: path.join(weird, "start.sh"), stopScript: path.join(weird, "stop.sh"), verifyCommand: "true", testCommand: 'printf "ok 1 - a\\n"' });
+    expect(await run(src)).toEqual({ total: 1, failed: [] });
+  });
+
+  it("leftover /tmp/services folders are detected and make a run an error", async () => {
+    const root = tmp("qas-svcroot-");
+    expect(leftoverServiceFolders(root)).toEqual([]);
+    fs.mkdirSync(path.join(root, "orders-service"));
+    expect(leftoverServiceFolders(root)).toEqual([path.join(root, "orders-service")]);
+    const w = stubs();
+    const run = shopliteRunner({ servicesRoot: root, work: path.join(w.dir, "work"), testsDir: path.join(w.dir, "tests"), startScript: path.join(w.dir, "start.sh"), stopScript: path.join(w.dir, "stop.sh"), verifyCommand: "true", testCommand: "true" });
+    expect((await run(w.src)).error).toMatch(/would run that code instead of the mutant/);
   });
 });

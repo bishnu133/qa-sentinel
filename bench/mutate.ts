@@ -24,7 +24,8 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { spawnSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
+import { parseFlags } from "./args.js";
 import { fileURLToPath } from "node:url";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -115,9 +116,11 @@ export function applyPatch(dir: string, patch: string): void {
 
 const copyTree = (from: string, to: string) => fs.cpSync(from, to, { recursive: true, filter: (src) => !/(^|[\\/])(\.git|node_modules)$/.test(src) });
 
-const classify = (m: Mutation, out: TestOutcome): MutationRow => {
+const classify = (m: Mutation, out: TestOutcome, baselineTotal: number): MutationRow => {
   const base = { id: m.id, description: m.description, expectKilledBy: m.expectKilledBy };
   if (out.error) return { ...base, status: "error", killedBy: [], expectationMet: null, note: out.error };
+  // Fewer or more tests than on the correct code means the run was not the same run: no verdict either way.
+  if (out.total !== baselineTotal) return { ...base, status: "error", killedBy: [], expectationMet: null, note: `${out.total} tests ran, ${baselineTotal} on the correct code` };
   const killed = out.failed.length > 0;
   const named = m.expectKilledBy.length ? out.failed.some((f) => m.expectKilledBy.some((w) => f.toLowerCase().includes(w.toLowerCase()))) : !killed;
   return {
@@ -150,7 +153,7 @@ export async function runMutations(o: { scenario: string; sourceDir: string; ref
       for (const [i, m] of o.mutations.entries()) {
         let row: MutationRow;
         try {
-          row = classify(m, await o.run(prepare(`m${i}`, ...refs, m)));
+          row = classify(m, await o.run(prepare(`m${i}`, ...refs, m)), baseline.total);
         } catch (e) {
           row = { id: m.id, description: m.description, status: "error", killedBy: [], expectKilledBy: m.expectKilledBy, expectationMet: null, note: (e as Error).message };
         }
@@ -178,6 +181,8 @@ export function parseOutcome(stdout: string, status: number | null): TestOutcome
   if (start >= 0) {
     try {
       const j = JSON.parse(stdout.slice(start)) as { suites?: any[]; errors?: unknown[] };
+      // Playwright lists run-level errors (a worker crash, a failing global setup) here: the run is not a result.
+      if (Array.isArray(j.errors) && j.errors.length) return { total: 0, failed: [], error: `the test run reported ${j.errors.length} error(s) of its own (worker or setup failure)` };
       let total = 0;
       const failed: string[] = [];
       const walk = (s: any, file: string) => {
@@ -189,6 +194,7 @@ export function parseOutcome(stdout: string, status: number | null): TestOutcome
         for (const child of s.suites ?? []) walk(child, f);
       };
       for (const s of j.suites ?? []) walk(s, s.file ?? "");
+      if (total && !failed.length && status) return { total, failed: [], error: `the test command exited ${status} although no test failed` };
       if (total || !status) return { total, failed };
     } catch {
       /* not JSON: try the line format */
@@ -241,31 +247,93 @@ export function mutationMarkdown(r: MutationReport, extra: { tests?: string } = 
 
 /* ---------- the ShopLite sandbox harness ---------- */
 
-const sh = (cmd: string, args: string[], cwd?: string) => spawnSync(cmd, args, { cwd, encoding: "utf8" });
+const GIT_IDENTITY = { GIT_AUTHOR_NAME: "bench", GIT_AUTHOR_EMAIL: "bench@x", GIT_COMMITTER_NAME: "bench", GIT_COMMITTER_EMAIL: "bench@x" };
+
+/**
+ * `qa-env/start.sh` runs a service from /tmp/services/<name> BEFORE it looks at the local folder we give it (CI puts the
+ * service under test there). A leftover folder would make the environment run that code and every defect would
+ * "survive". The sandbox's own services are the ones to check.
+ */
+export function leftoverServiceFolders(root = "/tmp/services"): string[] {
+  return ["orders-service", "payments-service", "notifications-service", "storefront"].map((s) => path.join(root, s)).filter((d) => fs.existsSync(d));
+}
+
+/** A ref that git would read as an option is refused; everything else goes to git as one argument, never through a shell. */
+function checkRef(ref: string): void {
+  if (!ref.trim() || ref.startsWith("-") || /[\0\n]/.test(ref)) throw new Error(`not a usable git ref: ${JSON.stringify(ref)}`);
+}
+
+/** Extract `ref` of a repository into `dest`: `git archive -o <tar>` and `tar`, with no shell. */
+export function extractRef(repo: string, ref: string, dest: string): void {
+  checkRef(ref);
+  const tarFile = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "qas-archive-")), "tree.tar");
+  try {
+    execFileSync("git", ["-C", repo, "archive", "--format=tar", "-o", tarFile, ref, "--"], { stdio: ["ignore", "pipe", "pipe"] });
+    execFileSync("tar", ["-x", "-f", tarFile, "-C", dest], { stdio: ["ignore", "pipe", "pipe"] });
+  } catch (e) {
+    throw new Error(`cannot read ${ref} from ${repo}: ${String((e as { stderr?: Buffer }).stderr ?? (e as Error).message).trim().split("\n")[0]}`);
+  } finally {
+    fs.rmSync(path.dirname(tarFile), { recursive: true, force: true });
+  }
+}
+
+export interface ShopliteOptions {
+  work: string;
+  testsDir: string;
+  /** The scripts and commands, replaceable in tests. Defaults: the sandbox's qa-env scripts and Playwright's API project. */
+  startScript?: string;
+  stopScript?: string;
+  testCommand?: string;
+  /** Run after the environment is up: exit 0 only when the orders service answers with the commit in $EXPECT_SHA. */
+  verifyCommand?: string;
+  /** Where start.sh looks first for a service (default /tmp/services). */
+  servicesRoot?: string;
+}
+
+const VERIFY_SERVES_MUTANT = `node -e 'fetch(process.env.QA_BASE_URL + "/orders/version").then(r=>r.json()).then(j=>process.exit(j.commit===process.env.EXPECT_SHA?0:1),()=>process.exit(1))'`;
 
 /**
  * Tests against the local ShopLite environment: a mutant folder replaces orders-service, the other services are the
  * ones from the work folder, the environment is started with qa-env/start.sh, the API tests run, the environment is
- * stopped. Needs `node sandbox/shoplite/local.mjs setup` first.
+ * stopped. The mutant folder is given a git commit and, after the start, the orders service must report that commit
+ * (/orders/version): if it does not, something else is serving and the run is an error, not a result.
+ * Every path reaches bash as an environment variable, never inside the script text. Needs `local.mjs setup` first.
  */
-export function shopliteRunner(o: { work: string; testsDir: string }): Runner {
+export function shopliteRunner(o: ShopliteOptions): Runner {
   const services = ["payments-service", "notifications-service", "storefront"].filter((s) => fs.existsSync(path.join(o.work, s)));
-  const stop = path.resolve(here, "../sandbox/shoplite/tests-extra/qa-env/stop.sh");
+  const stop = o.stopScript ?? path.resolve(here, "../sandbox/shoplite/tests-extra/qa-env/stop.sh");
+  const start = o.startScript ?? path.join(o.testsDir, "qa-env/start.sh");
+  const script = [
+    'bash "$QAS_STOP" >/dev/null 2>&1',
+    'export QA_ENV_LOCAL_SERVICES="$QAS_ROOT" QA_ENV_DIR="$QAS_ROOT/.qa-env"',
+    'source "$QAS_START" >&2 || { bash "$QAS_STOP" >/dev/null 2>&1; echo "SERVICE_DID_NOT_START" >&2; exit 97; }',
+    'if ! bash -c "$QAS_VERIFY" >&2; then bash "$QAS_STOP" >/dev/null 2>&1; echo "NOT_SERVING_THE_MUTANT" >&2; exit 96; fi',
+    'cd "$QAS_TESTS" && bash -c "$QAS_TEST_CMD"',
+    'code=$?; bash "$QAS_STOP" >/dev/null 2>&1; exit $code',
+  ].join("\n");
   return async (mutant) => {
+    const leftovers = leftoverServiceFolders(o.servicesRoot);
+    if (leftovers.length) return { total: 0, failed: [], error: `${leftovers.join(", ")} exist(s); start.sh would run that code instead of the mutant. Remove them and run again` };
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "qas-mutenv-"));
     try {
       for (const s of services) fs.symlinkSync(path.join(o.work, s), path.join(root, s));
-      fs.cpSync(mutant, path.join(root, "orders-service"), { recursive: true });
-      if (fs.existsSync(path.join(o.work, "orders-service/node_modules"))) fs.symlinkSync(path.join(o.work, "orders-service/node_modules"), path.join(root, "orders-service/node_modules"));
-      const script = [
-        `bash "${stop}" >/dev/null 2>&1`,
-        `export QA_ENV_LOCAL_SERVICES="${root}" QA_ENV_DIR="${root}/.qa-env"`,
-        `source "${o.testsDir}/qa-env/start.sh" >&2 || { bash "${stop}" >/dev/null 2>&1; echo "SERVICE_DID_NOT_START" >&2; exit 97; }`,
-        `cd "${o.testsDir}" && npx playwright test --project=api --reporter=json`,
-        `code=$?; bash "${stop}" >/dev/null 2>&1; exit $code`,
-      ].join("\n");
-      const r = spawnSync("bash", ["-c", script], { encoding: "utf8", timeout: 300_000, maxBuffer: 64 * 1024 * 1024 });
+      const orders = path.join(root, "orders-service");
+      fs.cpSync(mutant, orders, { recursive: true });
+      const gitEnv = { ...process.env, ...GIT_IDENTITY, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" };
+      fs.writeFileSync(path.join(orders, ".gitignore"), "node_modules\n");
+      execFileSync("git", ["init", "-q", "-b", "main"], { cwd: orders, env: gitEnv, stdio: "ignore" });
+      execFileSync("git", ["add", "-A"], { cwd: orders, env: gitEnv, stdio: "ignore" });
+      execFileSync("git", ["commit", "-q", "-m", "mutant"], { cwd: orders, env: gitEnv, stdio: "ignore" });
+      const sha = execFileSync("git", ["rev-parse", "HEAD"], { cwd: orders, env: gitEnv, encoding: "utf8" }).trim();
+      if (fs.existsSync(path.join(o.work, "orders-service/node_modules"))) fs.symlinkSync(path.join(o.work, "orders-service/node_modules"), path.join(orders, "node_modules"));
+      const r = spawnSync("bash", ["-c", script], {
+        encoding: "utf8",
+        timeout: 300_000,
+        maxBuffer: 64 * 1024 * 1024,
+        env: { ...process.env, QAS_STOP: stop, QAS_START: start, QAS_ROOT: root, QAS_TESTS: o.testsDir, EXPECT_SHA: sha, QAS_VERIFY: o.verifyCommand ?? VERIFY_SERVES_MUTANT, QAS_TEST_CMD: o.testCommand ?? "npx playwright test --project=api --reporter=json" },
+      });
       if (r.status === 97) return { total: 0, failed: [], error: "the service did not start with this patch" };
+      if (r.status === 96) return { total: 0, failed: [], error: "the environment started, but the orders service is not the mutant copy (another process or folder is serving)" };
       return parseOutcome(r.stdout ?? "", r.status);
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
@@ -273,42 +341,50 @@ export function shopliteRunner(o: { work: string; testsDir: string }): Runner {
   };
 }
 
-/** The tests to run: a copy of qa-tests (at a ref when given) with the scenario's reference tests laid over it. */
-function prepareTests(work: string, o: { ref?: string; overlay?: string }): string {
+/** The tests to run: a copy of qa-tests (at a ref when given) with the scenario's reference tests laid over it. The caller removes the folder. */
+export function prepareTests(work: string, o: { ref?: string; overlay?: string }): string {
   const src = path.join(work, "qa-tests");
   const dest = fs.mkdtempSync(path.join(os.tmpdir(), "qas-mutate-tests-"));
-  if (o.ref) {
-    const tar = spawnSync("sh", ["-c", `git -C "${src}" archive "${o.ref}" | tar -x -C "${dest}"`], { encoding: "utf8" });
-    if (tar.status !== 0) throw new Error(`cannot read ${o.ref} from ${src}: ${(tar.stderr || "").trim()}`);
-  } else copyTree(src, dest);
-  if (o.overlay) fs.cpSync(o.overlay, dest, { recursive: true });
-  if (fs.existsSync(path.join(src, "node_modules"))) fs.symlinkSync(path.join(src, "node_modules"), path.join(dest, "node_modules"));
+  try {
+    if (o.ref) extractRef(src, o.ref, dest);
+    else copyTree(src, dest);
+    if (o.overlay) fs.cpSync(o.overlay, dest, { recursive: true });
+    if (fs.existsSync(path.join(src, "node_modules"))) fs.symlinkSync(path.join(src, "node_modules"), path.join(dest, "node_modules"));
+  } catch (e) {
+    fs.rmSync(dest, { recursive: true, force: true });
+    throw e;
+  }
   return dest;
 }
 
+export const MUTATE_USAGE = "usage: npm run bench:mutate -- --scenario SHOP-101 [--work ./shoplite-local] [--tests-ref <branch in qa-tests>]";
+
 export async function mutateMain(argv: string[]): Promise<number> {
-  const opt = (k: string) => {
-    const i = argv.indexOf(`--${k}`);
-    return i >= 0 ? argv[i + 1] : undefined;
-  };
-  const scenario = opt("scenario");
-  if (!scenario) {
-    console.error("usage: npm run bench:mutate -- --scenario SHOP-101 [--work ./shoplite-local] [--tests-ref <branch in qa-tests>]");
+  const parsed = parseFlags(argv, { values: { scenario: "string", work: "string", "tests-ref": "string" }, switches: [] });
+  if (!parsed.ok || !parsed.values.scenario) {
+    console.error(`${parsed.ok ? "--scenario is required" : parsed.error}\n${MUTATE_USAGE}`);
     return 2;
   }
-  const work = path.resolve(opt("work") ?? "shoplite-local");
+  const scenario = parsed.values.scenario;
+  const work = path.resolve(parsed.values.work ?? "shoplite-local");
   if (!fs.existsSync(path.join(work, "qa-tests")) || !fs.existsSync(path.join(work, "orders-service"))) {
     console.error(`No ShopLite sandbox in ${work}. Run: node sandbox/shoplite/local.mjs setup`);
     return 2;
   }
+  const left = leftoverServiceFolders();
+  if (left.length) {
+    console.error(`${left.join(", ")} exist(s). The ShopLite environment would run that code instead of the mutant copies, so every defect would seem to survive. Remove them and run again.`);
+    return 2;
+  }
+  const ref = parsed.values["tests-ref"];
   const { reference, mutations, testsDir } = loadMutations(scenario);
-  const ref = opt("tests-ref");
-  // With --tests-ref the tests are the ones an agent wrote; the reference tests are only laid over the default tests.
-  const tests = prepareTests(work, { ref, overlay: ref ? undefined : testsDir });
-  const source = fs.mkdtempSync(path.join(os.tmpdir(), "qas-mutate-src-"));
-  const tar = spawnSync("sh", ["-c", `git -C "${path.join(work, "orders-service")}" archive main | tar -x -C "${source}"`], { encoding: "utf8" });
-  if (tar.status !== 0) throw new Error(`cannot read main of orders-service: ${tar.stderr}`);
+  let tests: string | undefined;
+  let source: string | undefined;
   try {
+    // With --tests-ref the tests are the ones an agent wrote; the reference tests are only laid over the default tests.
+    tests = prepareTests(work, { ref, overlay: ref ? undefined : testsDir });
+    source = fs.mkdtempSync(path.join(os.tmpdir(), "qas-mutate-src-"));
+    extractRef(path.join(work, "orders-service"), "main", source);
     const report = await runMutations({ scenario, sourceDir: source, reference, mutations, run: shopliteRunner({ work, testsDir: tests }) });
     const md = mutationMarkdown(report, { tests: ref ? `qa-tests at ${ref}` : "the reference tests shipped with the scenario (bench/mutations)" });
     const stamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
@@ -317,9 +393,9 @@ export async function mutateMain(argv: string[]): Promise<number> {
     console.log(md);
     return report.baselineOk ? 0 : 1;
   } finally {
-    sh("bash", [path.resolve(here, "../sandbox/shoplite/tests-extra/qa-env/stop.sh")]);
-    fs.rmSync(tests, { recursive: true, force: true });
-    fs.rmSync(source, { recursive: true, force: true });
+    spawnSync("bash", [path.resolve(here, "../sandbox/shoplite/tests-extra/qa-env/stop.sh")], { stdio: "ignore" });
+    if (tests) fs.rmSync(tests, { recursive: true, force: true });
+    if (source) fs.rmSync(source, { recursive: true, force: true });
   }
 }
 

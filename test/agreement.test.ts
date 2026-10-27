@@ -56,6 +56,11 @@ describe("benchmark scenarios added for the review's list", () => {
     expect(bad.map((c) => c.pass)).toEqual([false, false]);
   });
 
+  it("the wording check accepts more ways to name the clash, but the story's own word 'unique' is not enough", () => {
+    expect(uniqueDataChecks(plan(["create a unique reference"], "tests must not share data between runs: re-runs would leave leftovers"))[1].pass).toBe(true);
+    expect(uniqueDataChecks(plan(["create a unique reference"], "covers the rule that a reference is unique"))[1].pass).toBe(false);
+  });
+
   it("score() adds the checks, records the decision per expected change and counts proposed scenarios", () => {
     const s = SCENARIOS.find((x) => x.id === "test-data-collision")!;
     const p = {

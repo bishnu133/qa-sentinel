@@ -15,20 +15,14 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { SCENARIOS, type Scenario } from "./scenarios.js";
 import { buildWorkspace } from "./workspace.js";
+import { parseFlags } from "./args.js";
 import { agreementMarkdown, summariseAgreement } from "./agreement.js";
 import { gapReportCommand } from "../src/commands/gapReport.js";
 import { normaliseEndpoint } from "../src/plan/risk.js";
 import { quietly } from "./quiet.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
-const args = process.argv.slice(2);
-const opt = (name: string) => {
-  const i = args.indexOf(`--${name}`);
-  return i >= 0 ? args[i + 1] : undefined;
-};
-const only = opt("only")?.split(",");
-const runs = Number(opt("runs") ?? 1);
-const parallel = Number(opt("parallel") ?? 3);
+let runs = 1;
 
 const RISK = ["low", "medium", "high", "critical"];
 
@@ -165,16 +159,20 @@ export function score(s: Scenario, plan: any, r: ScenarioResult): ScenarioResult
 }
 
 /**
- * Test-data collision, judged by wording (no AI): do the proposed scenarios' setup and assertions ask for unique values,
- * and does the plan itself (a decision's reason, a change summary, the verdict) mention the clash risk?
+ * Test-data collision, judged by wording (no AI, so a heuristic): do the proposed scenarios' setup steps ask for unique
+ * values, and does the plan itself (verdict, recommended action, decision reasons, scenario titles and setup) name the
+ * clash risk: collision, clash, re-runs, parallel runs, shared or left-over data, isolation, cleanup, "same value"? The bare
+ * word "unique" does not count there: the story's own rule ("a reference must be unique") would satisfy it. It was too
+ * strict in a real run (only a few phrasings counted), so the list of phrasings is wide on purpose; a plan that cites the
+ * risk in other words still fails, which is a reason to read the plan, not proof that it is wrong.
  */
 export function uniqueDataChecks(plan: any): { name: string; pass: boolean; detail?: string }[] {
   const scenarios: any[] = (plan.decisions ?? []).flatMap((d: any) => d.proposedScenarios ?? []);
   const setupText = scenarios.map((sc: any) => (sc.setup ?? []).map((x: any) => (typeof x === "string" ? x : `${x.action} ${x.helper ?? ""}`)).join(" ")).join("\n");
-  const planText = [plan.verdict, plan.recommendedAction, ...(plan.decisions ?? []).map((d: any) => d.reason)].join("\n");
+  const planText = [plan.verdict, plan.recommendedAction, ...(plan.decisions ?? []).map((d: any) => d.reason), ...scenarios.map((sc: any) => `${sc.title ?? ""} ${(sc.setup ?? []).map((x: any) => (typeof x === "string" ? x : x.action)).join(" ")}`)].join("\n");
   return [
     { name: "setup uses unique values", pass: /unique|random|uuid|timestamp|fresh|generated|per[- ]test|distinct/i.test(setupText) },
-    { name: "plan flags the test-data collision risk", pass: /collid|collision|clash|re-?run|parallel|shared (data|state)|same (fixed )?(value|reference|id)/i.test(planText) },
+    { name: "plan flags the test-data collision risk", pass: /collid|collision|clash|re-?run|repeat(ed)? run|parallel|concurren|shared (test )?(data|state)|left-?overs?|stale|isolat|clean-?up|between tests|each test|per[- ]test|idempoten|same (fixed )?(value|reference|id)/i.test(planText) },
   ];
 }
 
@@ -219,27 +217,68 @@ function markdown(results: ScenarioResult[], s: ReturnType<typeof summarise>): s
   ].join("\n");
 }
 
-async function main() {
+export const USAGE = `usage: npm run bench -- [options]
+  (no options)               all scenarios once (costs AI money)
+  --only a,b                 only these scenario ids
+  --runs N                   N runs of each scenario (N >= 1); with N >= 2 the consistency table is written
+  --parallel N               scenarios at the same time (default 3)
+  --summarise <results.json> the consistency table of a saved results file (free)
+  --features                 cases decided by qa-sentinel's own rules (free)
+  --generate                 run generate too, on new-validation and test-data-collision (costs AI money)`;
+
+export interface BenchDeps {
+  runScenario: (s: Scenario, run: number) => Promise<ScenarioResult>;
+  generationMain: (o: { only?: string[]; runs: number; args: string[] }) => Promise<void>;
+}
+
+/** Returns the exit code. Bad arguments give 2 and start nothing. */
+export async function main(argv: string[], deps?: Partial<BenchDeps>): Promise<number> {
+  const parsed = parseFlags(argv, { values: { only: "list", runs: "positive-int", parallel: "positive-int", summarise: "string" }, switches: ["features", "generate", "help"] });
+  if (!parsed.ok || parsed.switches.has("help")) {
+    if (!parsed.ok) console.error(`${parsed.error}\n`);
+    console.error(USAGE);
+    return parsed.ok ? 0 : 2;
+  }
+  const only = parsed.lists.only;
+  const unknown = (only ?? []).filter((id) => !SCENARIOS.some((s) => s.id === id));
+  if (unknown.length) {
+    console.error(`unknown scenario id(s): ${unknown.join(", ")}\nknown: ${SCENARIOS.map((s) => s.id).join(", ")}\n\n${USAGE}`);
+    return 2;
+  }
+  const modes = ["summarise" in parsed.values, parsed.switches.has("features"), parsed.switches.has("generate")].filter(Boolean).length;
+  if (modes > 1) {
+    console.error(`--summarise, --features and --generate cannot be combined\n\n${USAGE}`);
+    return 2;
+  }
+  runs = parsed.ints.runs ?? 1;
+  const parallel = parsed.ints.parallel ?? 3;
   // Summarise a saved results file again (free): consistency across the runs it holds.
-  const saved = opt("summarise");
+  const saved = parsed.values.summarise;
   if (saved) {
-    const { results } = JSON.parse(fs.readFileSync(saved, "utf8")) as { results: ScenarioResult[] };
+    let results: ScenarioResult[];
+    try {
+      ({ results } = JSON.parse(fs.readFileSync(saved, "utf8")) as { results: ScenarioResult[] });
+      if (!Array.isArray(results)) throw new Error("no results array");
+    } catch (e) {
+      console.error(`${saved}: cannot read a results file (${(e as Error).message})`);
+      return 2;
+    }
     const lines = agreementMarkdown(summariseAgreement(results));
     console.log(lines.length ? lines.join("\n") : `${saved}: no scenario has more than one run (run the benchmark with --runs 3)`);
-    return;
+    return 0;
   }
-  if (args.includes("--features")) {
+  if (parsed.switches.has("features")) {
     const { FEATURE_CASES, featureMarkdown, runFeatureCase } = await import("./cases.js");
     const results = FEATURE_CASES.flatMap(runFeatureCase);
     console.log(featureMarkdown(results));
-    process.exitCode = results.every((r) => r.pass) ? 0 : 1;
-    return;
+    return results.every((r) => r.pass) ? 0 : 1;
   }
-  if (args.includes("--generate")) {
-    const { generationMain } = await import("./generateBench.js");
-    await generationMain({ only, runs, args });
-    return;
+  if (parsed.switches.has("generate")) {
+    const gen = deps?.generationMain ?? (await import("./generateBench.js")).generationMain;
+    await gen({ only, runs, args: argv });
+    return 0;
   }
+  const runOne = deps?.runScenario ?? runScenario;
   const selected = SCENARIOS.filter((s) => !only || only.includes(s.id));
   const jobs = selected.flatMap((s) => Array.from({ length: runs }, (_, i) => ({ s, run: i + 1 })));
   fs.mkdirSync(path.join(here, "results", "runs"), { recursive: true });
@@ -250,7 +289,7 @@ async function main() {
       while (next < jobs.length) {
         const { s, run } = jobs[next++];
         process.stderr.write(`▶ ${s.id} #${run}\n`);
-        const r = await runScenario(s, run).catch((e) => ({ id: s.id, run, planValid: false, status: "crash", error: String(e), expectedGaps: 0, foundGaps: 0, reportedGaps: 0, truePositiveGaps: 0, decisionsCorrect: 0, decisionsExpected: s.expected.length, checks: [], corrections: 0, repairRounds: 0 }) as ScenarioResult);
+        const r = await runOne(s, run).catch((e) => ({ id: s.id, run, planValid: false, status: "crash", error: String(e), expectedGaps: 0, foundGaps: 0, reportedGaps: 0, truePositiveGaps: 0, decisionsCorrect: 0, decisionsExpected: s.expected.length, checks: [], corrections: 0, repairRounds: 0 }) as ScenarioResult);
         process.stderr.write(`✔ ${s.id} #${run}: plan ${r.planValid ? "valid" : "INVALID"} · ${r.checks.filter((c) => c.pass).length}/${r.checks.length} checks · $${r.costUsd?.toFixed(2) ?? "?"}\n`);
         results.push(r);
       }
@@ -264,6 +303,7 @@ async function main() {
   fs.writeFileSync(path.join(here, "results", `${stamp}.md`), md + "\n");
   fs.writeFileSync(path.join(here, "results", "latest.md"), md + "\n");
   console.log(md);
+  return 0;
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) main();
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) main(process.argv.slice(2)).then((c) => process.exit(c), (e) => (console.error(String(e?.message ?? e)), process.exit(1)));

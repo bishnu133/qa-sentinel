@@ -133,6 +133,17 @@ async function glServer(state: { draft: boolean } = { draft: false }) {
   return Object.assign(s, { notes });
 }
 
+/** Manifests of the runs that only wrote a merge request note (joined comment, waiting note). */
+function joinedManifests(root: string): any[] {
+  const runs = path.join(root, ".qa-sentinel/runs");
+  return fs
+    .readdirSync(runs)
+    .map((d) => path.join(runs, d, "manifest.json"))
+    .filter((f) => fs.existsSync(f))
+    .map((f) => JSON.parse(fs.readFileSync(f, "utf8")))
+    .filter((m) => /^gap-(joined|waiting)$/.test(m.outcome ?? ""));
+}
+
 function setup(jiraUrl: string, glUrl: string, extra: Record<string, unknown> = {}, requirements: Record<string, unknown> = {}) {
   const root = tmp("qas-fix-");
   const repo = path.join(root, "orders");
@@ -185,8 +196,14 @@ describe("a merge request that names several stories: stamp and refresh (H1)", (
     expect(gl.notes).toHaveLength(1);
     expect(parseStamp(gl.notes[0].body)).toMatchObject({ fp: expect.stringMatching(/^[0-9a-f]+$/) });
     const stamped = gl.notes[0].body;
+    // The joined comment carries the vote line, with the stamp still last and readable; the run remembers the note for `metrics --online`.
+    expect(stamped).toContain("Was this useful? 👍 / 👎");
+    expect(stamped.trimEnd().split("\n").at(-1)).toMatch(/qa-sentinel/);
+    const noted = joinedManifests(root);
+    expect(noted).toHaveLength(1);
+    expect(noted[0]).toMatchObject({ kind: "gap-report", outcome: "gap-joined", mr: { iid: "5", noteId: 1 } });
 
-    // The same push again: nothing to do.
+    // The same push again: nothing to do (the unchanged check reads the stamp through the vote line).
     const again = await run();
     expect(fake.asked).toHaveLength(2);
     expect(again).toMatchObject({ skipped: true, exitCode: 0 });
@@ -237,6 +254,9 @@ describe("a merge request that names several stories: stamp and refresh (H1)", (
     expect(fake.asked).toHaveLength(0);
     expect(jiraGets(j)).toEqual([]);
     expect(gl.notes).toHaveLength(1);
+    // The waiting note takes votes like a report, and its id is kept.
+    expect(gl.notes[0].body).toContain("Was this useful? 👍 / 👎");
+    expect(joinedManifests(root)[0]).toMatchObject({ outcome: "gap-waiting", mr: { noteId: 1 } });
   });
 });
 

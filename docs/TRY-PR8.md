@@ -20,7 +20,8 @@ It plants known bugs in the ShopLite orders service and tells you which ones you
 3. Wait about a minute. It starts and stops the local ShopLite environment 8 times.
 4. Read the table. Expect: `7 planted defects, 6 caught, 1 survived`. The row `cap-3-to-5` says caught, and the failing test is the AC-3 test ("the 4th order for the same slot is rejected"). The row `slot-equal-to-now-accepted` says **survived**; that one is on purpose, no test can hit the same millisecond.
 5. The same table is saved in `bench/results/mutations-<time>.md`.
-6. If the first line says "Nothing was scored", the tests do not pass on the correct code. Look at the failing test names it lists. Check that port 8080 and ports 3001 to 3003 are free (`node sandbox/shoplite/local.mjs env stop` stops an old ShopLite).
+6. If it says `/tmp/services/... exist(s)`, remove that folder (it is a leftover of a CI-style run) and run again; with it, the defects would not be tested at all.
+7. If the first line says "Nothing was scored", the tests do not pass on the correct code. Look at the failing test names it lists. Check that port 8080 and ports 3001 to 3003 are free (`node sandbox/shoplite/local.mjs env stop` stops an old ShopLite).
 
 ## Part 3. A feature across three services (FREE)
 
@@ -29,9 +30,9 @@ It plants known bugs in the ShopLite orders service and tells you which ones you
 
 ## Part 4. Consistency of repeated runs
 
-1. **AI, about 30 US cents** (the plan's estimate for three runs of one scenario): `npm run bench -- --only ac-conflict --runs 3`
+1. **AI, about 36 US cents** (measured: about 12 cents for each run of this scenario): `npm run bench -- --only ac-conflict --runs 3`. For reference, all 12 scenarios once cost $1.64 when measured.
 2. Expect, at the end of the table, a block "Consistency across runs". It shows, for `ac-conflict`, how many of the 3 runs agreed on each decision, on the risk, and how many tests each run proposed.
-3. **FREE:** make the table again from the saved file, any time: `npm run bench -- --summarise bench/results/<the newest .json>`.
+3. **FREE:** make the table again from the saved file, any time: `npm run bench -- --summarise bench/results/<the newest .json>`. The file name is required: without it you get the usage and exit code 2, and nothing runs.
 
 ## Part 5. The generation benchmark
 

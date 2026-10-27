@@ -44,20 +44,43 @@ export interface GenerationResult {
   error?: string;
 }
 
-/** A fixed string value for `reference:` in a test is a collision waiting to happen (the second run, or a parallel one, gets a 409). */
+/** A string literal or template without `${}`: the same value every time. */
+const FIXED_LITERAL = /^(["'`])((?:\\.|(?!\1).)*)\1$/;
+const isFixed = (expr: string): string | undefined => {
+  const m = FIXED_LITERAL.exec(expr.trim());
+  return m && !/\$\{/.test(m[2]) ? m[2] : undefined;
+};
+
+/**
+ * A fixed value for `reference` in a test is a collision waiting to happen (the second run, or a parallel one, gets a 409).
+ * Looks at `reference: "X"`, `reference: someVariable` (the variable's own `const x = ...` is read: a plain string there is
+ * fixed) and the shorthand `{ reference }`. A call or an expression (`uniqueRef()`, `` `r-${Date.now()}` ``) counts as unique.
+ */
 export function referenceChecks(files: Record<string, string>): { name: string; pass: boolean; detail?: string }[] {
-  const fixed: string[] = [];
+  const fixed = new Set<string>();
   let any = 0;
+  const resolve = (text: string, id: string) => {
+    const def = new RegExp(`\\b(?:const|let|var)\\s+${id.replace(/\$/g, "\\$")}\\s*(?::[^=]+)?=\\s*([^;\\n]+)`).exec(text);
+    const v = def ? isFixed(def[1]) : undefined;
+    if (v !== undefined) fixed.add(v);
+  };
   for (const text of Object.values(files)) {
-    for (const m of text.matchAll(/\breference\s*:\s*(["'`])((?:\\.|(?!\1).)*)\1/g)) {
+    for (const m of text.matchAll(/\breference\s*:\s*([^,}\n]+)/g)) {
+      const expr = m[1].trim();
+      if (/^(undefined|null)\b/.test(expr)) continue;
       any++;
-      if (!/\$\{|Date\.now|random|uuid|Math\./i.test(m[2])) fixed.push(m[2]);
+      const lit = isFixed(expr.replace(/\s*(as\s+\w+)?\s*$/, ""));
+      if (lit !== undefined) fixed.add(lit);
+      else if (/^[A-Za-z_$][\w$]*$/.test(expr)) resolve(text, expr);
     }
-    for (const m of text.matchAll(/\breference\s*:\s*([A-Za-z_][\w.()]*)/g)) if (!["undefined", "null"].includes(m[1])) any++;
+    for (const _ of text.matchAll(/[{,]\s*reference\s*(?=[,}])/g)) {
+      any++;
+      resolve(text, "reference");
+    }
   }
   return [
     { name: "tests use a reference value", pass: any > 0, detail: any ? undefined : "no test sends a reference" },
-    { name: "tests do not use a fixed reference value", pass: fixed.length === 0, detail: fixed.length ? `fixed: ${[...new Set(fixed)].join(", ")}` : undefined },
+    { name: "tests do not use a fixed reference value", pass: fixed.size === 0, detail: fixed.size ? `fixed: ${[...fixed].join(", ")}` : undefined },
   ];
 }
 
