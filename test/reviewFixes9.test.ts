@@ -100,17 +100,20 @@ describe("M2/M3: credentials do not reach the engine or the agent", () => {
 
 describe("M4: process waiting", () => {
   it("a background child neither delays a finished run nor makes it a timeout", async () => {
+    // The child lives 40 s and the limit is 60 s: if we waited for the child's pipe we would take about 40 s, so finishing in
+    // under half of that tells the two apart with a wide margin, whatever the load.
     const t0 = Date.now();
-    const r = await new CommandEngine({ command: `(sleep 20 &) ; echo '{"result":"done"}'` }).run(taskFor(scratchRepo(), "x", { timeoutMs: 5000 }));
-    expect(r).toMatchObject({ ok: true, result: "done" });
-    expect(Date.now() - t0).toBeLessThan(4000);
+    const r = await new CommandEngine({ command: `(sleep 40 &) ; echo '{"result":"done"}'` }).run(taskFor(scratchRepo(), "x", { timeoutMs: 60_000 }));
+    expect(r).toMatchObject({ ok: true, status: "ok", result: "done" });
+    expect(Date.now() - t0).toBeLessThan(20_000);
   });
   it("a child in its own session that holds the pipes does not keep us waiting after the timeout", async () => {
     const repo = scratchRepo();
     const t0 = Date.now();
-    const r = await runProcess(`setsid sh -c 'sleep 6; touch ${repo}/escaped' & sleep 20`, [], { cwd: repo, env: process.env, timeoutMs: 800, shell: true });
+    const r = await runProcess(`setsid sh -c 'sleep 40; touch ${repo}/escaped' & sleep 60`, [], { cwd: repo, env: process.env, timeoutMs: 1500, shell: true });
     expect(r.timedOut).toBe(true);
-    expect(Date.now() - t0).toBeLessThan(4000);
+    // Waiting for the escaped child's pipe would take 40 s; a wide margin below that.
+    expect(Date.now() - t0).toBeLessThan(20_000);
   });
   it("keeps only the last part of a huge output", async () => {
     const r = await runProcess(`node -e "for (let i=0;i<40;i++) process.stdout.write('x'.repeat(100000)); console.log('END')"`, [], { cwd: tmp(), env: process.env, timeoutMs: 20_000, shell: true });
@@ -118,7 +121,8 @@ describe("M4: process waiting", () => {
     expect(r.stdout.trimEnd().endsWith("END")).toBe(true);
   });
   it("says a short timeout in seconds", async () => {
-    const r = await new CommandEngine({ command: `${cmd}` }).run(taskFor(scratchRepo(), "MODE sleep", { timeoutMs: 700 }));
+    const r = await new CommandEngine({ command: `${cmd}` }).run(taskFor(scratchRepo(), "MODE sleep", { timeoutMs: 1000 }));
+    expect(r.status).toBe("timeout");
     expect(r.result).toContain("exceeded 1 s");
     expect(r.result).not.toContain("0 min");
   });

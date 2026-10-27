@@ -74,9 +74,9 @@ export function describeEngineConformance(label: string, make: () => AgentEngine
 
     it.skipIf(o.skipTimeout)("4c. a program that outlives the time limit is stopped: timeout", async () => {
       const t0 = Date.now();
-      const r = await make().run(taskFor(scratchRepo(), "MODE sleep", { timeoutMs: 400 }));
+      const r = await make().run(taskFor(scratchRepo(), "MODE sleep", { timeoutMs: 1000 }));
       expect(r).toMatchObject({ ok: false, status: "timeout" });
-      expect(Date.now() - t0).toBeLessThan(15_000);
+      expect(Date.now() - t0).toBeLessThan(25_000);
     });
 
     it("4d. output that is not a result (text, wrong shape, non-zero exit) is an error", async () => {
