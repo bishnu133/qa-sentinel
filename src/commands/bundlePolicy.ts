@@ -54,6 +54,11 @@ export function ownChanges(cwd: string, base: string, tip: string, targetRef: st
     const differs = others.map((p) => new Set(changesBetween(cwd, p, sha).flatMap((ch) => [ch.path, ...(ch.from ? [ch.from] : [])])));
     for (const ch of diffFirst) if (differs.every((d) => d.has(ch.path))) add(ch);
   }
+  // Whatever the per-commit walk thought was taken from the target branch is checked once more against the target itself: a path of
+  // the net change (base to tip) is the branch's own unless the tip's file is exactly the file on the freshly fetched target.
+  // This also covers a merge of an OLD target commit (it can bring back an old file, drop a newer one, or add a link only it has).
+  const differsFromTarget = new Set(changesBetween(cwd, targetRef, tip).flatMap((ch) => [ch.path, ...(ch.from ? [ch.from] : [])]));
+  for (const ch of changesBetween(cwd, base, tip)) if (differsFromTarget.has(ch.path) || (ch.from && differsFromTarget.has(ch.from))) add(ch);
   return [...out.values()];
 }
 

@@ -344,9 +344,11 @@ program
   .description("the second half of the split CI jobs: publish what gap-report/generate --defer-publish left in a run folder (merge request, comments, Jira); uses write tokens, no model key")
   .option("--run <id|dir|all>", "a run id, a run folder, or all runs still waiting", "all")
   .option("--target <target>", "only one part: gitlab-mr (merge request comments), jira, or mr-create (push the branch and open the merge request)")
+  .option("--kind <kind>", "accept only this job's runs: gap-report or generate (the CI templates pass it; a run of the other kind is refused)")
   .action(wrap(async (o) => {
+    if (o.kind && !["gap-report", "generate"].includes(o.kind)) throw new Error(`--kind: gap-report or generate (got "${o.kind}")`);
     if (o.target && !["gitlab-mr", "jira", "mr-create"].includes(o.target)) throw new Error(`--target: gitlab-mr, jira or mr-create (got "${o.target}")`);
-    return publishCommand({ cwd: cwd(), run: o.run, target: o.target });
+    return publishCommand({ cwd: cwd(), run: o.run, target: o.target, kind: o.kind });
   }));
 
 program

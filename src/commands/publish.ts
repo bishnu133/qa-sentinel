@@ -10,12 +10,12 @@ import { jiraContext } from "../scm/jira.js";
 import { remoteFor, redact, storyBranchName } from "../generation/storyBranch.js";
 import { publish } from "../reporting/publish.js";
 import { generationSummary } from "../reporting/jiraSummary.js";
-import { notifyStory } from "../reporting/notify.js";
+import { notifyStoryOutcome } from "../reporting/notify.js";
 import { BUNDLE_FILE, PUBLISHED_FILE, PUBLISH_FILE, parsePublishFile, type BranchNoteStep, type MergeRequestStep, type PublishFile } from "../reporting/deferred.js";
 import { recordMrSeen } from "../stories/sweep.js";
 import { openStore } from "../stories/start.js";
 import { fileBugs, type BugCandidate } from "../bugs/bugs.js";
-import { recordAgentMr } from "./generate.js";
+import { applyRecordPatch, conflictKey, recordAgentMr, showConflict } from "./generate.js";
 import { bundleFindings } from "./bundlePolicy.js";
 import { log } from "../log.js";
 
@@ -36,6 +36,8 @@ export interface PublishOptions {
   /** A run id (folder name in .qa-sentinel/runs), a folder, or "all" (default): every run with a publish.json that is not finished. */
   run?: string;
   target?: PublishTarget;
+  /** Which job's files this publish accepts: a gap-report job's run folder may only hold gap-report steps, a generate job's only generate steps. */
+  kind?: PublishFile["kind"];
   /** The environment (tokens, CI variables). Default: the process environment. Tests pass their own. */
   env?: NodeJS.ProcessEnv;
 }
@@ -80,13 +82,16 @@ function runDirs(cwd: string, run: string | undefined): { dirs: string[]; explic
   return { dirs: names.map((n) => path.join(root, n)).filter((d) => fs.existsSync(path.join(d, PUBLISH_FILE)) && !readState(d).complete), explicit: false };
 }
 
-/** Claim a run for this process (the lock file is created exclusively, so two publishes of one folder cannot both start). */
+/**
+ * Claim a run for this process (the lock file is created exclusively, so two publishes of one folder cannot both start).
+ * A lock older than two hours is taken over by renaming it to a name only this process uses: of two processes that find the
+ * same stale lock, only one rename succeeds, and the other starts over and finds the winner's fresh lock.
+ */
 function claim(dir: string): (() => void) | undefined {
   const file = path.join(dir, LOCK_FILE);
-  for (let attempt = 0; attempt < 2; attempt++) {
+  for (let attempt = 0; attempt < 3; attempt++) {
     try {
-      fs.closeSync(fs.openSync(file, "wx"));
-      fs.writeFileSync(file, `${process.pid} ${new Date().toISOString()}\n`);
+      fs.writeFileSync(file, `${process.pid} ${new Date().toISOString()}\n`, { flag: "wx" });
       return () => fs.rmSync(file, { force: true });
     } catch (e) {
       if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e;
@@ -94,11 +99,16 @@ function claim(dir: string): (() => void) | undefined {
       try {
         old = Date.now() - fs.statSync(file).mtimeMs > LOCK_STALE_MS;
       } catch {
-        /* gone meanwhile: try again */
-        old = true;
+        continue; // gone meanwhile: try again
       }
       if (!old) return undefined;
-      fs.rmSync(file, { force: true });
+      const mine = `${file}.stale-${process.pid}-${Date.now()}`;
+      try {
+        fs.renameSync(file, mine);
+        fs.rmSync(mine, { force: true });
+      } catch {
+        /* another process took it over first */
+      }
     }
   }
   return undefined;
@@ -152,10 +162,19 @@ export async function publishCommand(o: PublishOptions): Promise<number> {
   return exit;
 }
 
+/** What each job may ask publish to do. A run folder of one kind holding the other kind's steps is refused (it is untrusted data). */
+const STEPS_OF: Record<PublishFile["kind"], readonly string[]> = {
+  "gap-report": ["report", "mr-seen", "bugs", "notify"],
+  generate: ["merge-request", "bugs", "notify", "branch-note", "record"],
+};
+
 const validKey = (k: string | undefined) => (k ? /^[A-Za-z][A-Za-z0-9]*-\d+$/.test(k) : false);
 
 async function publishRun(cwd: string, c: Config, dir: string, env: NodeJS.ProcessEnv, o: PublishOptions): Promise<number> {
   const doc: PublishFile = parsePublishFile(fs.readFileSync(path.join(dir, PUBLISH_FILE), "utf8"));
+  if (o.kind && doc.kind !== o.kind) throw new Error(`this run is a ${doc.kind} run, but this publish job takes only ${o.kind} runs; refused`);
+  const odd = doc.steps.find((s) => !STEPS_OF[doc.kind].includes(s.type));
+  if (odd) throw new Error(`a ${doc.kind} run may not hold a "${odd.type}" step; refused`);
   const state = readState(dir);
   const name = path.basename(dir);
   log.step(`publishing ${name} (${doc.kind}, ${doc.steps.length} step(s))`);
@@ -217,8 +236,21 @@ async function publishRun(cwd: string, c: Config, dir: string, env: NodeJS.Proce
         mark(`${i}`, label, `${r.created.length} bug(s) raised, ${r.suggested} proposed`);
       } else if (step.type === "notify") {
         if (!wanted(`${i}`, "jira")) continue;
-        const sent = await notifyStory(cwd, c, step.story, step.event, step.text, step.key, env);
-        mark(`${i}`, label, sent ? "sent" : "not sent (notifications off for this event, or no Jira login)");
+        const sent = await notifyStoryOutcome(cwd, c, step.story, step.event, step.text, step.key, env);
+        if (sent === "failed") throw new Error("the Jira notice could not be sent; it stays pending for the next publish");
+        mark(`${i}`, label, sent === "sent" ? "sent" : `not sent (${sent})`);
+      } else if (step.type === "record") {
+        if (!wanted(`${i}`, "jira")) continue;
+        // "written" and "held" describe what is on the branch: only once the push of this run's branch(es) has happened.
+        const unpushed = doc.steps.findIndex((x, j) => j < i && x.type === "merge-request" && !state.done[`${j}:mr`]);
+        if (unpushed >= 0 && !step.conflict) throw new Error("the branch was not pushed, so the story record is left as it was");
+        const store = openStore(cwd, c, env);
+        await applyRecordPatch(store, step.story, step);
+        if (step.conflict) {
+          if (step.conflict.branch !== storyBranchName(c, step.story)) throw new Error("the conflict is not for this story's branch; refused");
+          await showConflict(c, step.story, step.conflict.branch, step.conflict.message, step.conflict.key, env, store);
+        }
+        mark(`${i}`, label, "story record updated");
       } else if (step.type === "branch-note") {
         if (!wanted(`${i}`, "gitlab-mr")) continue;
         mark(`${i}`, label, await branchNote(c, step, env));
@@ -259,8 +291,12 @@ const tryGit = (cwd: string, args: string[]) => {
 
 const BRANCH_RE = /^qa-sentinel\/[A-Za-z0-9._-]+(?:\/[A-Za-z0-9._-]+)*$/;
 
-/** Which branch may be pushed: only `qa-sentinel/...`; a story branch only as the config names it for the story. */
-export function allowedBranch(c: Config, s: Pick<MergeRequestStep, "branch" | "storyKey">): { story: boolean } {
+/**
+ * Which branch may be pushed: only `qa-sentinel/...`. A story branch only as the config names it for the story. Any other
+ * branch only as THIS job's per-merge branch, rebuilt from its own QA_SERVICE_NAME and QA_SERVICE_SHA (`qa-sentinel/<service>-<sha8>`):
+ * the run folder cannot pick another qa-sentinel branch (another service's, or a shared one such as qa-sentinel/review-lessons).
+ */
+export function allowedBranch(c: Config, s: Pick<MergeRequestStep, "branch" | "storyKey">, env: NodeJS.ProcessEnv = process.env): { story: boolean } {
   const b = s.branch;
   if (!BRANCH_RE.test(b) || b.includes("..") || b.endsWith(".lock") || b.endsWith(".") || b.split("/").some((p) => p.startsWith(".") || p.endsWith(".lock"))) throw new Error(`branch "${b.slice(0, 80)}" is not a qa-sentinel/... branch; refused`);
   if (s.storyKey) {
@@ -272,6 +308,11 @@ export function allowedBranch(c: Config, s: Pick<MergeRequestStep, "branch" | "s
   }
   // Another name may not look like a story branch: that one belongs to its story.
   if (b.startsWith(c.generation.branchPrefix)) throw new Error(`${b} is named like a story branch but is not the one for ${s.storyKey ?? "any story in this run"}; refused`);
+  const service = env.QA_SERVICE_NAME;
+  const sha = env.QA_SERVICE_SHA;
+  if (!service || !sha || !/^[0-9a-f]{8,64}$/i.test(sha)) throw new Error(`${b} is not this job's branch: QA_SERVICE_NAME and QA_SERVICE_SHA are needed to name it; refused`);
+  const expected = `qa-sentinel/${service}-${sha.slice(0, 8)}`;
+  if (b !== expected) throw new Error(`${b} is not this job's branch (${expected}); refused`);
   return { story: false };
 }
 
@@ -279,7 +320,7 @@ const LABEL_OK = /^(?:qa-agent|story::[A-Za-z][A-Za-z0-9]*-\d+|service::[A-Za-z0
 const cleanLabels = (labels: string[], storyKey: string | undefined) => [...new Set(["qa-agent", ...labels.filter((l) => LABEL_OK.test(l) && (!l.startsWith("story::") || l.toUpperCase() === `STORY::${storyKey ?? ""}`.toUpperCase()))])];
 
 async function pushAndOpen(cwd: string, c: Config, runDir: string, runId: string, s: MergeRequestStep, env: NodeJS.ProcessEnv): Promise<{ note: string; mr: { url: string; iid: number } }> {
-  const { story } = allowedBranch(c, s);
+  const { story } = allowedBranch(c, s, env);
   const bundle = path.join(runDir, BUNDLE_FILE);
   if (!fs.existsSync(bundle)) throw new Error(`${BUNDLE_FILE} is missing in ${path.basename(runDir)} (the analysis job's artifacts must include the run folder)`);
   const project = c.ci.testRepoProject ?? env.CI_PROJECT_ID;
@@ -332,8 +373,9 @@ async function announce(cwd: string, c: Config, runDir: string, s: MergeRequestS
   const url = mr?.url ?? "";
   if (s.notify) {
     if (s.notify.story.toUpperCase() !== (s.storyKey ?? "").toUpperCase()) throw new Error("the notification is for another story than the branch's; refused");
-    await notifyStory(cwd, c, s.notify.story, s.notify.event, s.notify.text.replace("{mr}", url), s.notify.key.replace("{iid}", String(mr?.iid ?? "")), env);
-    notes.push("story notified");
+    const sent = await notifyStoryOutcome(cwd, c, s.notify.story, s.notify.event, s.notify.text.replace("{mr}", url), s.notify.key.replace("{iid}", String(mr?.iid ?? "")), env);
+    if (sent === "failed") throw new Error("the Jira notice could not be sent; it stays pending for the next publish");
+    notes.push(sent === "sent" ? "story notified" : `story not notified (${sent})`);
   }
   if (s.jira && c.reporting.targets.includes("jira")) {
     const j = s.jira;

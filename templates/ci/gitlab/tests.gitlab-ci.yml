@@ -64,10 +64,13 @@ variables:
     - npx playwright install chromium
 {{/if}}
   # Test data a failed or killed test left behind (testData.cleanup: ledger): deleted even when the job fails.
-  # after_script is a new shell: the environment's URL comes back from .qa-env.sh (written after QA_ENV_START).
+  # after_script is a new shell: the environment's URL comes back from .qa-env.sh (written after QA_ENV_START), read as text and checked, never run.
   after_script:
     - cd "$CI_PROJECT_DIR/{{testsPrefix}}."
-    - if [ -f "$CI_PROJECT_DIR/.qa-env.sh" ]; then . "$CI_PROJECT_DIR/.qa-env.sh"; fi
+    - |
+      qa_url="$(sed -n "s/^export {{baseUrlEnv}}='\(.*\)'$/\1/p" "$CI_PROJECT_DIR/.qa-env.sh" 2>/dev/null | head -n 1)"
+      case "$qa_url" in https://*|http://*) case "$qa_url" in *[!A-Za-z0-9._:/@%?=\&~+-]*) qa_url="" ;; esac ;; *) qa_url="" ;; esac
+      if [ -n "$qa_url" ]; then export {{baseUrlEnv}}="$qa_url"; fi
     - if ls "{{ledgerDir}}"/*.jsonl >/dev/null 2>&1; then export QA_INSTALL_SKIP=0; else export QA_INSTALL_SKIP=1; fi
     - !reference [.qa-sentinel-install, script]
     - if [ "$QA_INSTALL_SKIP" = "0" ]; then qa-sentinel data sweep --older-than 0 --out qa-data-sweep.md || echo "WARNING qa-sentinel – test data was left behind on the test environment (see above and qa-data-sweep.md)"; fi
@@ -99,19 +102,17 @@ qa-generate:
     name: qa-analysis
     action: prepare
   # Its OWN after_script, not .qa-node's: that one runs in a new shell (an `unset` in the script does not reach it) and runs
-  # a file from the work tree, which code the agent wrote could have replaced. Here nothing from the work tree is run:
-  # in split mode the secrets of the publish job are dropped, and the environment URL is read as text, not sourced.
+  # a file from the work tree, which code the agent wrote could have replaced. Here nothing from the work tree is run
+  # (in either mode): the environment URL is read as text, and in split mode the secrets of the publish job are dropped.
   after_script:
     - cd "$CI_PROJECT_DIR/{{testsPrefix}}."
     - |
       if [ "$QA_SPLIT_JOBS" = "true" ]; then
         unset QA_SENTINEL_GITLAB_WRITE_TOKEN QA_JIRA_PUBLISH_PAT QA_JIRA_PUBLISH_EMAIL QA_JIRA_PUBLISH_API_TOKEN
-        qa_url="$(sed -n "s/^export {{baseUrlEnv}}='\(.*\)'$/\1/p" "$CI_PROJECT_DIR/.qa-env.sh" 2>/dev/null | head -n 1)"
-        case "$qa_url" in https://*|http://*) case "$qa_url" in *[!A-Za-z0-9._:/@%?=\&~+-]*) qa_url="" ;; esac ;; *) qa_url="" ;; esac
-        if [ -n "$qa_url" ]; then export {{baseUrlEnv}}="$qa_url"; fi
-      elif [ -f "$CI_PROJECT_DIR/.qa-env.sh" ]; then
-        . "$CI_PROJECT_DIR/.qa-env.sh"
       fi
+      qa_url="$(sed -n "s/^export {{baseUrlEnv}}='\(.*\)'$/\1/p" "$CI_PROJECT_DIR/.qa-env.sh" 2>/dev/null | head -n 1)"
+      case "$qa_url" in https://*|http://*) case "$qa_url" in *[!A-Za-z0-9._:/@%?=\&~+-]*) qa_url="" ;; esac ;; *) qa_url="" ;; esac
+      if [ -n "$qa_url" ]; then export {{baseUrlEnv}}="$qa_url"; fi
     - if ls "{{ledgerDir}}"/*.jsonl >/dev/null 2>&1; then export QA_INSTALL_SKIP=0; else export QA_INSTALL_SKIP=1; fi
     - !reference [.qa-sentinel-install, script]
     - if [ "$QA_INSTALL_SKIP" = "0" ]; then qa-sentinel data sweep --older-than 0 --out qa-data-sweep.md || echo "WARNING qa-sentinel – test data was left behind on the test environment (see above and qa-data-sweep.md)"; fi
@@ -185,7 +186,7 @@ qa-generate-publish:
     # The Jira publishing login (QA_JIRA_PUBLISH_*) is picked by `qa-sentinel publish` itself; the read login (JIRA_*) is not used for writing.
     - git remote set-url origin "${CI_SERVER_URL}/${CI_PROJECT_PATH}.git"   # strip the job token GitLab put in .git/config
     # The policy check runs inside publish: the bundle is checked against the agent write policy before anything is pushed.
-    - qa-sentinel publish --run all
+    - qa-sentinel publish --kind generate --run all
 
 {{/if}}
 # Story review before development: start a pipeline with QA_STORY_REVIEW_KEY=SHOP-12 (e.g. from a Jira Automation

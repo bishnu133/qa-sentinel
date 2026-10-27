@@ -94,7 +94,26 @@ const mergeRequestStep = z
   })
   .strict();
 
-const publishStep = z.discriminatedUnion("type", [reportStep, mrSeenStep, bugsStep, notifyStep, branchNoteStep, mergeRequestStep]);
+/**
+ * What a story-scoped run leaves in the story record (ACs written or held, what the plan said about each AC, a merge conflict,
+ * a fresh start of the branch). In split mode the analysis job only keeps a local copy; the publish job writes the real record
+ * (Jira, with automation.record: jira) from this step, after the push.
+ */
+const recordStep = z
+  .object({
+    type: z.literal("record"),
+    story: key,
+    /** The story branch starts again: what the record says was written on the old one no longer holds. */
+    reset: z.boolean().optional(),
+    entries: z.array(z.object({ ac: z.string().max(100), kind: z.enum(["cross", "single"]), state: z.enum(["written", "held"]), heads: z.string().max(4000), acHash: z.string().max(100), reason: z.string().max(500).optional() }).strict()).max(200).default([]),
+    evidence: z.array(z.object({ id: z.string().max(100), status: z.string().max(40), runId: z.string().max(200) }).strict()).max(200).default([]),
+    /** The branch took the main branch: any earlier conflict is over. */
+    clearConflict: z.boolean().optional(),
+    conflict: z.object({ branch: oneLine, message: z.string().max(300), key: oneLine }).strict().optional(),
+  })
+  .strict();
+
+const publishStep = z.discriminatedUnion("type", [reportStep, mrSeenStep, bugsStep, notifyStep, branchNoteStep, mergeRequestStep, recordStep]);
 
 export const publishFileSchema = z
   .object({ version: z.literal(1), kind: z.enum(["gap-report", "generate"]), runId: z.string().max(200).regex(/^[A-Za-z0-9._-]+$/), createdAt: z.string().max(40), steps: z.array(publishStep).max(50) })
@@ -105,6 +124,7 @@ export type MrSeenStep = z.infer<typeof mrSeenStep>;
 export type BugsStep = z.infer<typeof bugsStep>;
 export type NotifyStep = z.infer<typeof notifyStep>;
 export type BranchNoteStep = z.infer<typeof branchNoteStep>;
+export type RecordStep = z.infer<typeof recordStep>;
 export type MergeRequestStep = z.infer<typeof mergeRequestStep>;
 export type PublishStep = z.infer<typeof publishStep>;
 export type PublishFile = z.infer<typeof publishFileSchema>;
@@ -131,8 +151,8 @@ export function deferSteps(runDir: string, kind: PublishFile["kind"], runId: str
   let doc: PublishFile = { version: 1, kind, runId, createdAt: new Date().toISOString(), steps: [] };
   try {
     doc = parsePublishFile(fs.readFileSync(file, "utf8"));
-  } catch {
-    /* new file */
+  } catch (e) {
+    if (fs.existsSync(file)) throw e; // a file that is there but unreadable is an error, never silently started again
   }
   doc.steps.push(...steps);
   fs.mkdirSync(runDir, { recursive: true });

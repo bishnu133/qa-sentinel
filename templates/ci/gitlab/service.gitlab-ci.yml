@@ -127,7 +127,7 @@ qa-gap-report-publish:
     - export QA_SENTINEL_GITLAB_TOKEN="${QA_SENTINEL_GITLAB_WRITE_TOKEN:?qa-gap-report-publish needs QA_SENTINEL_GITLAB_WRITE_TOKEN (api)}"
     - unset ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN ANTHROPIC_BASE_URL CLAUDE_CODE_USE_BEDROCK CLAUDE_CODE_USE_VERTEX AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN
     # The Jira publishing login (QA_JIRA_PUBLISH_*) is picked by `qa-sentinel publish` itself; the read login (JIRA_*) is not used for writing.
-    - qa-sentinel -C "$QA_TESTS_DIR" publish --run all
+    - qa-sentinel -C "$QA_TESTS_DIR" publish --kind gap-report --run all
 
 {{#if isMaintenance}}
 # Phase 2: ask the test repo to generate/update tests for the merged change.
