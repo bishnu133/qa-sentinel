@@ -126,6 +126,48 @@ export function runCommandsFor(c: Config, files: string[]): string[] {
   return out;
 }
 
+/** The pattern that matches the title of a test of a held-back story (`@story:A` but not `@story:A-1`). */
+export const heldBackPattern = (stories: string[]): string => `@story:(?:[^\\s,]+,)*(?:${stories.map((s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|")})(?![\\w-])`;
+
+export interface SuiteRunCommand {
+  command: string;
+  /** What the person should know: the layer ran whole files because its runner cannot select by title. */
+  note?: string;
+}
+
+/**
+ * `suite --run`: commands that run the selected tests of each layer. Playwright and other runners that take
+ * `file:line` get exact tests. Mocha, Jest and Vitest run the files that hold a selected test and leave the tests of held-back
+ * stories out by title (`--grep <re> --invert`, `-t '<negative regexp>'`), so a file that mixes both is not run whole.
+ * WebdriverIO can only take files: those run whole (the note says so).
+ */
+export function suiteRunCommands(c: Config, tests: { file: string; line: number }[], heldStories: string[], scripts: Record<string, string> = {}): SuiteRunCommand[] {
+  const out: SuiteRunCommand[] = [];
+  const groups = layers(c)
+    .map((l) => ({ l, tests: tests.filter((t) => (layerOfFile(c, t.file) ?? "api") === l.layer) }))
+    .filter((g) => g.tests.length);
+  for (const g of groups) {
+    const runner = runnerOf(g.l.runCommand, scripts);
+    const files = [...new Set(g.tests.map((t) => t.file))];
+    const re = heldStories.length ? heldBackPattern(heldStories) : undefined;
+    if (runner === "mocha" || runner === "jest" || runner === "vitest") {
+      const filter = !re ? "" : runner === "mocha" ? ` --grep ${shellWord(re)} --invert` : ` -t ${shellWord(`^(?!.*${re}).*$`)}`;
+      // npm needs `--` before the runner's own options; pnpm and yarn pass them on (a `--` would reach the runner and end its options).
+      const sep = /\bnpm\s/.test(g.l.runCommand) && !/\s--(\s|$)/.test(g.l.runCommand) ? " --" : "";
+      // Jest takes its file arguments as regular expressions; --runTestsByPath makes them plain paths.
+      const byPath = runner === "jest" ? " --runTestsByPath" : "";
+      out.push({ command: `${g.l.runCommand}${sep}${byPath}${filter} ${files.map(shellWord).join(" ")}` });
+    } else if (runner === "wdio" || g.l.specArg) {
+      out.push({ command: `${g.l.runCommand} ${specArgs(g.l, files)}`, note: `${g.l.layer}: ${runner ?? "this runner"} takes whole files, so every test in ${files.length} file(s) runs, including any of a held-back story in the same file` });
+    }
+  }
+  // Playwright (and unknown runners): exact file:line, merged across projects as before.
+  const handled = new Set(groups.filter((g) => { const r = runnerOf(g.l.runCommand, scripts); return r === "mocha" || r === "jest" || r === "vitest" || r === "wdio" || g.l.specArg; }).map((g) => g.l.layer));
+  const rest = tests.filter((t) => !handled.has(layerOfFile(c, t.file) ?? "api"));
+  if (rest.length) out.unshift(...runCommandsFor(c, rest.map((t) => `${t.file}:${t.line}`)).map((command) => ({ command })));
+  return out;
+}
+
 /**
  * The whole suite in one command (CI's scheduled run): one Playwright invocation across projects when possible.
  * Mobile runs in its own job (it needs a device), so it is left out.

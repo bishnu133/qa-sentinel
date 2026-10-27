@@ -1,5 +1,20 @@
 # Changelog
 
+## Unreleased — small items and docs fixes (PR 6 of the finishing plan)
+
+- **`suite` asks once.** Each service's version endpoint is asked once per run and each repository's revert list is read once, however many stories there are (before: once per story and service).
+- **`suite --run` leaves held-back tests out by title** where the runner cannot take `file:line`: Mocha (`--grep <pattern> --invert`), Jest and Vitest (`-t '<negative pattern>'`) run only the files that hold a selected test and skip the tests of held-back stories (`@story:KEY` in the test title, also `@story:A,B` lists and tags on a `describe`; `SHOP-1` never matches `SHOP-10`). Jest gets `--runTestsByPath` so its file arguments are plain paths; npm gets ` --` before the options, pnpm and yarn do not. Not verified against a real Jest or pnpm here; `cmd.exe` quoting on Windows is not supported. Playwright keeps exact `file:line`. WebdriverIO still runs whole files, and a warning says so. Cucumber scenarios are now listed in their own section of `qa-suite.md` and in `--json` (`cucumber`), and are left out of `qa-suite.txt`.
+- **`hotfix --fail-if-waiting`** exits 75 (the same "still waiting" code as `post-deploy`) while a hotfix commit is not on the main branch. **`hotfix --strict`** does that and also exits 1 when a commit is on the main branch but no test was written from it after `--grace-days` (default 2). The days count from when the commit reached the main branch (a cherry-pick's date, or the first merge commit that brought it), not from its commit date. If one commit is still waiting and another is late, 75 wins; `--json` lists `waiting` and `late`. `--grace-days` needs `--strict` and a number of 0 or more. Without the flags the exit code is 0 as before.
+- **`init` then `doctor` is quiet.** `init` lists the tests that are already tagged (`@endpoint`, `@page`) in `test-map.yaml` (no AI), under the service named by `@service`; a page or screen test with no (known) service goes under the first web or mobile service, an endpoint test under the first service that is not web or mobile, and when there is none the file stays in `unmapped`. `doctor` shows one line when the map is empty ("run `qa-sentinel learn`") instead of one mismatch per test, shows the number of tagged tests, gives an example with other mismatches, and warns about services that are in the config but not in the map, and the other way round.
+- **Tags on a `describe`:** `@story:` on an enclosing `describe` now counts for the tests inside (the runner's name filter already saw it; the index did not).
+- `suite --json` has `asked` (how many version calls and revert scans the run made), and `suite` prints that on one dim line; a version-endpoint answer that failed is kept for the run. `suite --run` prints each command it starts.
+- Test timeout is 30 s (was 5 s) so loaded runners do not fail the git-heavy tests.
+- **Cosmetic:** the label of a story's change no longer repeats the branch ("feature/SHOP-106-shipping-notice merged (3 changes)").
+- **Docs:** README no longer says Bubblegum healing was never run with the real engine (CI job `bubblegum-healing` does; the mobile scaffold still has no hook) and no longer says known-defect marker removal is Playwright only. `docs/TRY-PR2.md` says which folder each command runs from and that the step-3 test file must be pasted. `docs/AUTOMATION.md` limits updated.
+- **Test fixture:** `test/fixtures/jest-fails/results.xml` had an unclosed `<failure>` tag; it is well-formed now. The Vitest report fixture is real Vitest 2.1.9 JUnit output (paths and times aside); the Jest one is a hand-written sample in jest-junit's format, not a recorded run, and was not checked against a real jest-junit here.
+- `generate --story` skipping reverted parts was already built in an earlier PR; no change.
+- Try it: [docs/TRY-PR6.md](docs/TRY-PR6.md).
+
 ## Unreleased — Jira Data Center and self-hosted GitLab hardening, budget suggestions, split CI jobs, a wrapper for test runs (PR 5 of the finishing plan)
 
 - **Fix: Jira login.** `JIRA_PAT` used to win even when `JIRA_EMAIL` and `JIRA_API_TOKEN` were also set, and Jira Cloud then answered 401 to the Bearer token. New `requirements.jira.auth: auto | cloud | pat` (default `auto`): `auto` uses Cloud when `JIRA_EMAIL` is set, the Data Center token otherwise. `doctor` warns when both are set.
@@ -74,7 +89,7 @@
 - **`qa-sentinel release-features --tag v3.4 [--from v3.3]`** (no AI): the stories a release contains, from commit messages per service.
 - **`qa-sentinel suite --env uat | --tag v3.4 [--run]`** (no AI): the tests that fit what an environment has deployed or a release contains. Tests of features that are not there yet are left out with the reason; tests without a `@story` tag always run. Nothing is deleted.
 - **Reverted changes** are noticed: a feature whose change was reverted on the main branch has status `reverted`; its ACs are `reverted` and its tests are held back by `suite`.
-- **Known-defect markers for Jest and Vitest**: `known-defects` also handles Jest `test.failing` and Vitest `test.fails` (with `// QA-BUG:`), recognising the real "now passes" reports of both.
+- **Known-defect markers for Jest and Vitest**: `known-defects` also handles Jest `test.failing` and Vitest `test.fails` (with `// QA-BUG:`), recognising the "now passes" reports of both (the fixtures are hand-written samples in the reporters' format).
 
 ## Unreleased — one QA status comment per story (phase 4)
 

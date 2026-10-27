@@ -6,6 +6,7 @@ import { findService } from "../run.js";
 import { postToStory } from "../reporting/statusComment.js";
 import { jiraContext, markdownToJiraWiki } from "../scm/jira.js";
 import { log } from "../log.js";
+import { EXIT_STILL_WAITING } from "./postDeploy.js";
 
 export interface HotfixOptions {
   cwd: string;
@@ -18,6 +19,13 @@ export interface HotfixOptions {
   story?: string;
   post?: boolean;
   json?: boolean;
+  /** Exit 75 (the same "still waiting" code as post-deploy) while a hotfix commit is not on the main branch yet. */
+  failIfWaiting?: boolean;
+  /** Also exit 1 when a commit is on the main branch but no tests were written from it `graceDays` after it landed. Includes failIfWaiting. */
+  strict?: boolean;
+  graceDays?: number;
+  /** For tests: the clock. */
+  now?: Date;
 }
 
 export type HotfixState = "waiting-for-cherry-pick" | "cherry-picked" | "on-target";
@@ -41,6 +49,10 @@ const keyOf = (pattern: string, text: string) => new RegExp(`(?<![A-Za-z0-9])(${
  */
 export async function hotfixCommand(o: HotfixOptions): Promise<number> {
   const cwd = path.resolve(o.cwd);
+  if (o.graceDays !== undefined) {
+    if (!o.strict) throw new Error("--grace-days only works with --strict");
+    if (!Number.isFinite(o.graceDays) || o.graceDays < 0) throw new Error(`--grace-days must be a number of days, 0 or more (got ${o.graceDays})`);
+  }
   const c = loadConfig(cwd);
   const service = findService(c, o.service, cwd, o.servicePath);
   const repo = path.resolve(cwd, service.path);
@@ -109,8 +121,7 @@ export async function hotfixCommand(o: HotfixOptions): Promise<number> {
     "Until the change is on the main branch, the regression selection in the hotfix MR's gap report is what runs against the hotfix environment.",
   ].join("\n");
 
-  if (o.json) process.stdout.write(JSON.stringify({ service: service.name, story, target, rows }, null, 2) + "\n");
-  else log.info(md);
+  if (!o.json) log.info(md);
   if (o.post) {
     const jira = jiraContext(c.requirements.jira);
     if (!jira || !story) log.warn("--post: needs Jira configured and a story key (--story, or one in the commit message)");
@@ -119,5 +130,33 @@ export async function hotfixCommand(o: HotfixOptions): Promise<number> {
       log.ok(`Jira ${story}: hotfix status ${r.action}`);
     }
   }
+  const waiting = rows.filter((r) => r.state === "waiting-for-cherry-pick");
+  // When did a commit reach the main branch? A cherry-pick: its own date. A commit that is on the branch: the first merge commit
+  // that brought it (a hotfix branch merged today keeps its old commit date); with no merge (fast-forward), its own date is all there is.
+  const landedAt = (r: HotfixRow): number => {
+    const ct = (x: string) => Number(git(repo, ["log", "-1", "--format=%ct", x])) * 1000;
+    const times = r.picks.map((p) => ct(p.commit));
+    if (r.state === "on-target") {
+      let first = "";
+      try {
+        first = git(repo, ["log", "--ancestry-path", "--merges", "--reverse", "--format=%ct", `${r.commit}..${target}`]).split("\n").find(Boolean) ?? "";
+      } catch {
+        /* no path: use the commit's own date */
+      }
+      times.push(first ? Number(first) * 1000 : ct(r.commit));
+    }
+    return Math.max(...times);
+  };
+  const grace = (o.graceDays ?? 2) * 86_400_000;
+  const now = (o.now ?? new Date()).getTime();
+  const late = o.strict ? rows.filter((r) => r.state !== "waiting-for-cherry-pick" && !r.testCommits.length && now - landedAt(r) > grace) : [];
+  if (o.failIfWaiting || o.strict) {
+    // 75 (still waiting) wins over 1 (late): while anything waits, run again later.
+    if (waiting.length) log.warn(`${waiting.length} hotfix commit(s) are not on ${c.ci.targetBranch} yet: exit ${EXIT_STILL_WAITING}`);
+    else if (late.length) log.warn(`${late.length} hotfix commit(s) are on ${c.ci.targetBranch} but have no tests after ${o.graceDays ?? 2} day(s): exit 1`);
+  }
+  if (o.json) process.stdout.write(JSON.stringify({ service: service.name, story, target, rows, waiting: waiting.map((r) => r.commit), late: late.map((r) => r.commit) }, null, 2) + "\n");
+  if ((o.failIfWaiting || o.strict) && waiting.length) return EXIT_STILL_WAITING;
+  if (late.length) return 1;
   return 0;
 }
