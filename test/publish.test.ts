@@ -49,7 +49,7 @@ import { ConfigSchema, writeConfig } from "../src/config.js";
 import { generateCommand } from "../src/commands/generate.js";
 import { gapReportCommand } from "../src/commands/gapReport.js";
 import { publishCommand } from "../src/commands/publish.js";
-import { deferSteps, bundleBranch, PUBLISH_FILE } from "../src/reporting/deferred.js";
+import { deferSteps, deferInNewRun, bundleBranch, PUBLISH_FILE } from "../src/reporting/deferred.js";
 import { fileStore } from "../src/stories/record.js";
 import { GIT_ENV, cleanTmp, commit, g, serve, tmp } from "./helpers/mocks.js";
 import { mockJira } from "./helpers/mockJira.js";
@@ -500,6 +500,9 @@ describe("split CI jobs: gap-report --defer-publish, then publish", () => {
     expect(writes.map((x) => `${x.method} ${x.path}`)).toEqual(["POST /gitlab/api/v4/projects/7/merge_requests/7/notes"]);
     expect(writes[0].token).toBe(WRITE);
     expect(writes[0].body).toContain("analysis incomplete");
+    // The deferred path also adds the vote line, and the run's manifest gets the note's id (M4).
+    expect(writes[0].body).toContain("Was this useful? 👍 / 👎");
+    expect(JSON.parse(fs.readFileSync(path.join(runs, runId, "manifest.json"), "utf8")).mr).toEqual({ project: "7", iid: "7", noteId: 11 });
     expect((jira.comments["SHOP-12"] ?? []).length).toBeGreaterThan(0);
     expect((await fileStore(root).load("SHOP-12"))?.parts[0]).toMatchObject({ service: "orders", iid: 7, branch: "feature/SHOP-12-slots" });
     // --target filters: nothing left for the merge request note once it was published.
@@ -525,6 +528,22 @@ describe("split CI jobs: gap-report --defer-publish, then publish", () => {
     expect(await publishCommand({ cwd: root, run: "r1", target: "jira", env })).toBe(0);
     expect((jira.comments["SHOP-12"] ?? []).length).toBeGreaterThan(0);
     expect(gl.writes()).toHaveLength(1);
+  }, 30_000);
+});
+
+describe("deferred notes of runs without an analysis (joined comment, waiting note)", () => {
+  it("get a manifest of their own, and publish writes the note id into it", async () => {
+    const gl = await gitlabMock({ project: "7" });
+    closers.push(gl.close);
+    const root = tmp("qas-pubjoined-");
+    g(root, "init", "-q", "-b", "main");
+    commit(root, "README.md", "x\n", "init");
+    writeConfig(root, ConfigSchema.parse({ version: 1, mode: "existing", project: { name: "t" }, tests: { api: { framework: "playwright", runCommand: "x" } }, ci: { platform: "gitlab", gitlabUrl: gl.url } }));
+    const dir = deferInNewRun(root, "gap-report", "gap-joined", [{ type: "report", report: "### QA impact · 2 stories in this merge request", service: "orders", targets: ["gitlab-mr"] }]);
+    expect(JSON.parse(fs.readFileSync(path.join(dir, "manifest.json"), "utf8"))).toMatchObject({ kind: "gap-report", outcome: "gap-joined" });
+    expect(await publishCommand({ cwd: root, env: { QA_SENTINEL_GITLAB_TOKEN: WRITE, CI_PROJECT_ID: "7", CI_MERGE_REQUEST_IID: "7" } })).toBe(0);
+    expect(JSON.parse(fs.readFileSync(path.join(dir, "manifest.json"), "utf8")).mr).toEqual({ project: "7", iid: "7", noteId: 11 });
+    expect(gl.writes()[0].body).toContain("Was this useful?");
   }, 30_000);
 });
 

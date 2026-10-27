@@ -9,11 +9,11 @@ import { loadConfig } from "../config.js";
 import { changeSet, commitMessages, ensureAtCommit, git, isGitRepo } from "../git.js";
 import { matchesAny } from "../fsutil.js";
 import { formatUsage } from "../claude.js";
-import { ARTIFACT_GLOBS, createRunDir, findService, startManifest, writeManifest } from "../run.js";
+import { ARTIFACT_GLOBS, createRunDir, findService, patchManifest, startManifest, writeManifest } from "../run.js";
 import { checkServiceUntouched, diffSnapshots, findingsMarkdown, snapshotTree, type Finding } from "../guardrails.js";
 import { extractStoryKeys, jiraKeyPattern, requirementsLine, resolveRequirements, skippedBranch, storyMarkdown } from "../requirements.js";
 import { type IssueCache, type KeyResolution, resolveKeysCached } from "../stories/resolve.js";
-import { getMrNoteBody, gitlabContext, gitlabMrFromEnv, mrIsDraft, upsertMrNote } from "../scm/gitlab.js";
+import { getMrNoteBody, gitlabContext, gitlabMrFromEnv, mrIsDraft } from "../scm/gitlab.js";
 import { gapFingerprint, parseStamp, relevantDiffDigest, stampOf, updatedLine } from "../plan/fingerprint.js";
 import { assembleFeature, type MrScanCache } from "../feature/manifest.js";
 import { publish } from "../reporting/publish.js";
@@ -33,7 +33,7 @@ import { contractCheckMarkdown, deviationsIn } from "../contracts.js";
 import { log } from "../log.js";
 import { bugsFromPlan, fileBugs } from "../bugs/bugs.js";
 import { jiraContext } from "../scm/jira.js";
-import { deferInNewRun, deferSteps } from "../reporting/deferred.js";
+import { deferInNewRun, deferSteps, noteRun } from "../reporting/deferred.js";
 import type { Config, ServiceConfig } from "../config.js";
 import type { ChangeSet } from "../git.js";
 import { type StoryPart, combinedChange, storyParts } from "../story.js";
@@ -175,8 +175,11 @@ async function draftGate(o: GapReportOptions, c: ReturnType<typeof loadConfig>, 
     log.ok("merge request is a draft; the waiting note is left for `qa-sentinel publish`");
     return { report, skipped: true, exitCode: 0 };
   }
-  const gl = o.post && c.reporting.targets.includes("gitlab-mr") ? gitlabContext(c.ci.gitlabUrl) : undefined;
-  if (gl && mr.project) await upsertMrNote(gl, mr.project, mr.mrIid, report).catch((e) => log.warn(`could not post the waiting note: ${(e as Error).message}`));
+  // Through publish(): the waiting note gets the vote line like the report that replaces it, and its id is remembered.
+  if (o.post && c.reporting.targets.includes("gitlab-mr") && mr.project) {
+    const nr = noteRun(cwd, "gap-report", "gap-waiting");
+    await publish(c, { onMrNote: (n) => patchManifest(nr.dir, { mr: n }), report, service: o.service, mr, targets: ["gitlab-mr"] });
+  }
   log.ok("merge request is a draft; the gap report waits until it is ready for review");
   return { report, skipped: true, exitCode: 0 };
 }
@@ -295,7 +298,10 @@ async function gapReportEach(o: GapReportOptions, c: ReturnType<typeof loadConfi
   if (o.post && !o.dryRun && c.reporting.targets.includes("gitlab-mr")) {
     const stamp = allOk && combined && head ? stampOf(combined, head) : undefined;
     if (o.deferPublish) deferInNewRun(cwd, "gap-report", "gap-joined", [{ type: "report", report, service: o.service, targets: ["gitlab-mr"], ...(stamp ? { stamp } : {}) }]);
-    else await publish(c, { report, service: o.service, mr, targets: ["gitlab-mr"], ...(stamp ? { stamp } : {}) });
+    else {
+      const nr = noteRun(cwd, "gap-report", "gap-joined");
+      await publish(c, { onMrNote: (n) => patchManifest(nr.dir, { mr: n }), report, service: o.service, mr, targets: ["gitlab-mr"], ...(stamp ? { stamp } : {}) });
+    }
   }
   return { report, skipped, exitCode };
 }
@@ -546,7 +552,7 @@ async function gapReportBody(o: GapReportOptions, wrap: (e: AgentEngine) => Agen
   }
   if (seen) await recordMrSeen(openStore(cwd, c), seen).catch((e) => log.warn(`story record: merge request not recorded (${(e as Error).message.split("\n")[0]})`));
   // A merge request that names several stories gets one joined comment (written by gapReportEach); each story still gets its own Jira section here.
-  if (o.post) await publish(c, { report, jiraSummary, cwd, service: service.name, storyKey: req.storyKey, mr, ...(postTargets ? { targets: postTargets } : {}), ...(stampNow ? { stamp: stampNow } : {}) });
+  if (o.post) await publish(c, { onMrNote: (n) => { manifest.mr = n; writeManifest(run, manifest); }, report, jiraSummary, cwd, service: service.name, storyKey: req.storyKey, mr, ...(postTargets ? { targets: postTargets } : {}), ...(stampNow ? { stamp: stampNow } : {}) });
   if (bugCandidates && req.storyKey) {
     const jira = jiraContext(c.requirements.jira);
     if (jira) {

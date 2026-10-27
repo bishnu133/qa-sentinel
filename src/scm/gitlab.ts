@@ -188,6 +188,11 @@ export async function mergeRequestsForCommit(ctx: GitLabContext, project: string
   return Array.isArray(data) ? data : [];
 }
 
+/** Emoji reactions on one merge request note (GET .../notes/:id/award_emoji): who reacted with which emoji. */
+export async function noteAwards(ctx: GitLabContext, project: string | number, mrIid: string | number, noteId: number): Promise<{ name: string; user?: { id?: number; username?: string } }[]> {
+  return getAll(ctx, `/projects/${enc(project)}/merge_requests/${enc(mrIid)}/notes/${enc(noteId)}/award_emoji`);
+}
+
 export async function getProject(ctx: GitLabContext, project: string | number): Promise<any> {
   return (await call(ctx, "GET", `/projects/${enc(project)}`, undefined, 1)).data;
 }

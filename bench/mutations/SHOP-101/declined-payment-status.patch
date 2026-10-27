@@ -1,0 +1,17 @@
+# mutation: declined-payment-status
+# service: orders-service
+# describes: a declined payment answers 400 instead of 402
+# expect-killed-by: declined, 402, payment
+diff --git a/src/server.js b/src/server.js
+index 4521380..4401e36 100644
+--- a/src/server.js
++++ b/src/server.js
+@@ -33,7 +33,7 @@ app.post("/orders", async (req, res) => {
+   const id = `ord_${orders.size + 1}`;
+   const total = Math.round(qty * unitPrice * 100) / 100;
+   const payment = await post(`${PAYMENTS_URL}/payments/authorize`, { orderId: id, amount: total, currency });
+-  if (payment.status !== 201) return res.status(402).json({ error: "payment declined", reason: payment.body.error });
++  if (payment.status !== 201) return res.status(400).json({ error: "payment declined", reason: payment.body.error });
+ 
+   const order = { id, item, qty, unitPrice, total, currency, status: "confirmed", paymentId: payment.body.id, deliverySlot };
+   orders.set(id, order);

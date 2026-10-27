@@ -1,0 +1,204 @@
+{
+  "summary": {
+    "scenarios": 3,
+    "runs": 7
+  },
+  "results": [
+    {
+      "id": "new-validation",
+      "run": 1,
+      "planValid": true,
+      "status": "valid",
+      "expectedGaps": 1,
+      "foundGaps": 1,
+      "reportedGaps": 1,
+      "truePositiveGaps": 1,
+      "decisionsCorrect": 1,
+      "decisionsExpected": 1,
+      "corrections": 0,
+      "repairRounds": 0,
+      "checks": [
+        {
+          "name": "risk \u2265 medium",
+          "pass": true
+        }
+      ],
+      "risk": "high",
+      "scenarioCount": 3,
+      "perExpected": [
+        {
+          "label": "qty max 10",
+          "decision": "update"
+        }
+      ]
+    },
+    {
+      "id": "new-validation",
+      "run": 2,
+      "planValid": true,
+      "status": "valid",
+      "expectedGaps": 1,
+      "foundGaps": 1,
+      "reportedGaps": 1,
+      "truePositiveGaps": 1,
+      "decisionsCorrect": 1,
+      "decisionsExpected": 1,
+      "corrections": 0,
+      "repairRounds": 0,
+      "checks": [
+        {
+          "name": "risk \u2265 medium",
+          "pass": true
+        }
+      ],
+      "risk": "high",
+      "scenarioCount": 3,
+      "perExpected": [
+        {
+          "label": "qty max 10",
+          "decision": "update"
+        }
+      ]
+    },
+    {
+      "id": "new-validation",
+      "run": 3,
+      "planValid": true,
+      "status": "valid",
+      "expectedGaps": 1,
+      "foundGaps": 1,
+      "reportedGaps": 1,
+      "truePositiveGaps": 1,
+      "decisionsCorrect": 1,
+      "decisionsExpected": 1,
+      "corrections": 0,
+      "repairRounds": 0,
+      "checks": [
+        {
+          "name": "risk \u2265 medium",
+          "pass": true
+        }
+      ],
+      "risk": "high",
+      "scenarioCount": 3,
+      "perExpected": [
+        {
+          "label": "qty max 10",
+          "decision": "update"
+        }
+      ]
+    },
+    {
+      "id": "ac-conflict",
+      "run": 1,
+      "planValid": true,
+      "status": "valid",
+      "expectedGaps": 1,
+      "foundGaps": 1,
+      "reportedGaps": 1,
+      "truePositiveGaps": 1,
+      "decisionsCorrect": 1,
+      "decisionsExpected": 1,
+      "corrections": 0,
+      "repairRounds": 0,
+      "checks": [
+        {
+          "name": "risk \u2265 medium",
+          "pass": true
+        }
+      ],
+      "risk": "critical",
+      "scenarioCount": 4,
+      "perExpected": [
+        {
+          "label": "WELCOME discount 15 vs 10",
+          "decision": "review"
+        },
+        {
+          "label": "no code",
+          "decision": "create"
+        }
+      ]
+    },
+    {
+      "id": "ac-conflict",
+      "run": 2,
+      "planValid": true,
+      "status": "valid",
+      "expectedGaps": 1,
+      "foundGaps": 1,
+      "reportedGaps": 1,
+      "truePositiveGaps": 1,
+      "decisionsCorrect": 1,
+      "decisionsExpected": 1,
+      "corrections": 0,
+      "repairRounds": 0,
+      "checks": [
+        {
+          "name": "risk \u2265 medium",
+          "pass": false
+        }
+      ],
+      "risk": "critical",
+      "scenarioCount": 5,
+      "perExpected": [
+        {
+          "label": "WELCOME discount 15 vs 10",
+          "decision": "review"
+        },
+        {
+          "label": "no code",
+          "decision": "update"
+        }
+      ]
+    },
+    {
+      "id": "ac-conflict",
+      "run": 3,
+      "planValid": false,
+      "status": "invalid",
+      "expectedGaps": 1,
+      "foundGaps": 1,
+      "reportedGaps": 1,
+      "truePositiveGaps": 1,
+      "decisionsCorrect": 1,
+      "decisionsExpected": 1,
+      "corrections": 0,
+      "repairRounds": 0,
+      "checks": [
+        {
+          "name": "risk \u2265 medium",
+          "pass": true
+        }
+      ]
+    },
+    {
+      "id": "single",
+      "run": 1,
+      "planValid": true,
+      "status": "valid",
+      "expectedGaps": 1,
+      "foundGaps": 1,
+      "reportedGaps": 1,
+      "truePositiveGaps": 1,
+      "decisionsCorrect": 1,
+      "decisionsExpected": 1,
+      "corrections": 0,
+      "repairRounds": 0,
+      "checks": [
+        {
+          "name": "risk \u2265 medium",
+          "pass": true
+        }
+      ],
+      "risk": "high",
+      "scenarioCount": 3,
+      "perExpected": [
+        {
+          "label": "qty max 10",
+          "decision": "update"
+        }
+      ]
+    }
+  ]
+}

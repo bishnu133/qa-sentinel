@@ -4,3 +4,6 @@ dist/
 .qa-sentinel/
 bench/results/runs/
 bench/replay-results/runs/
+bench/results/mutations-*.md
+bench/results/generate-*
+bench/results/latest-generate.md

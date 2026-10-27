@@ -584,6 +584,8 @@ export const ConfigSchema = z.object({
   reporting: z
     .object({
       targets: z.array(z.enum(["gitlab-mr", "jira"])).min(1).default(["gitlab-mr"]),
+      /** Add "Was this useful? 👍 / 👎" to the gap report comment on a merge request. `qa-sentinel metrics --online` counts the votes (GitLab emoji reactions). Optional: false leaves the line out. */
+      votes: z.boolean().default(true),
       jira: z
         .object({
           /** summary: plain-language status per acceptance criterion (default); full: the whole technical report. */

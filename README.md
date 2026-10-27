@@ -152,7 +152,7 @@ Starting from nothing? `qa-sentinel init --mode scratch` scaffolds Playwright AP
 | `bugs [--story KEY] [--results f] [--env sit] [--dry-run]` | After a run: raises (or proposes, per `bugs.mode`) a bug card for each AC whose tests failed, and notes "now passes" on earlier bugs. |
 | `tag [--limit n] [--push] [--dry-run]` | One-off: an agent adds traceability tags to existing untagged tests on a branch; qa-sentinel rejects anything but added tags in test titles. |
 | `lessons [--since 90d] [--push] [--dry-run]` | Learning from review: what reviewers changed in agent MRs before merging, turned into rules in `kb/review-lessons.md` on a branch (MR with `--push`). Each MR is learned from once. |
-| `metrics [--since 30d] [--runs dir…] [--records dir…] [--json]` | How the agents are doing: verification rate, merged-without-edits rate (merge, squash and fast-forward), cost, plan repairs, guardrail stops (`qa-metrics.md`). With 10+ stories (or 10+ days) it suggests values for `automation.budgets` from the story records (`--records` reads a downloaded CI cache). |
+| `metrics [--since 30d] [--runs dir…] [--records dir…] [--json] [--online]` | How the agents are doing: verification rate, merged-without-edits rate (merge, squash and fast-forward), cost, plan repairs, guardrail stops (`qa-metrics.md`), the share of agent-written tests that were flaky, hours from a service change to the test merge request (median, p90), and with `--online` the 👍 and 👎 on gap report comments (GitLab reactions; needs a token). With 10+ stories (or 10+ days) it suggests values for `automation.budgets` from the story records (`--records` reads a downloaded CI cache). |
 | `publish [--run <id\|dir\|all>] [--target gitlab-mr\|jira\|mr-create]` | The second half of the split CI jobs: does the writing that `gap-report --defer-publish` and `generate --defer-publish` left in a run folder (checks the branch bundle against the write policy, pushes, opens the MR, comments, Jira). Uses write tokens and **no model key**; never starts an agent. |
 | `discover --gitlab-group <group> [--apply]` | Lists the group's projects and drafts `workspace.services` entries: kind (api, web, mobile), OpenAPI spec (or the generator that makes it), and `dependsOn` suggested from config files that name another service, each with its file and line (`qa-services.draft.yaml` + `.md`). `--apply` adds the ones not configured yet. No AI call. |
 | `coverage [--service s]` | Every endpoint in each service's spec (and every route of front ends) with the tests that exercise it; untested, fixme-only and status-only endpoints ranked by risk (`qa-coverage.md` + `.json`). No AI call. |
@@ -263,6 +263,7 @@ requirements:
     - { role: ignore, name: Checklist, headings: [checklist, definition of ready] }
 reporting:
   targets: [gitlab-mr]               # where `gap-report --post` publishes: gitlab-mr, jira, or both
+  votes: true                        # add "Was this useful? 👍 / 👎" to the gap report comment on a merge request; `metrics --online` counts the reactions
   jira:
     format: summary                  # summary (plain language, default) | full; optional visibility: { type: role, value: Developers }
     maxChars: 30000

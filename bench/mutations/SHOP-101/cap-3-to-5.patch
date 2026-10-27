@@ -1,0 +1,17 @@
+# mutation: cap-3-to-5
+# service: orders-service
+# describes: a delivery slot takes 5 orders instead of 3 (the AC says 3)
+# expect-killed-by: slot is full, AC-3, fourth, 4th
+diff --git a/src/server.js b/src/server.js
+index 4521380..8495644 100644
+--- a/src/server.js
++++ b/src/server.js
+@@ -5,7 +5,7 @@ app.use(express.json());
+ const PAYMENTS_URL = process.env.PAYMENTS_URL || "http://localhost:3002";
+ const NOTIFICATIONS_URL = process.env.NOTIFICATIONS_URL || "http://localhost:3003";
+ const orders = new Map();
+-const MAX_ORDERS_PER_SLOT = 3;
++const MAX_ORDERS_PER_SLOT = 5;
+ 
+ app.get("/orders/health", (_req, res) => res.json({ status: "ok", service: "orders" }));
+ // Which commit is running (qa-sentinel feature readiness reads this).
