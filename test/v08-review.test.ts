@@ -46,7 +46,7 @@ describe("v0.8 review fixes", () => {
     expect(after.join("\n")).toContain("sed -n"); // the URL is read as text from .qa-env.sh, never sourced
     expect(after.join("\n")).not.toContain(". \"$CI_PROJECT_DIR/.qa-env.sh\"");
     expect(after.join("\n")).toContain("export QA_BASE_URL=\"$qa_url\"");
-    expect(after.join("\n")).toContain("qa-sentinel data sweep --older-than 0");
+    expect(after.join("\n")).toMatch(/qa-sentinel data sweep \$qa_cfg_arg --older-than 0/);
     expect(ci).toContain(`echo "export QA_BASE_URL='$QA_BASE_URL'" > "$CI_PROJECT_DIR/.qa-env.sh"`);
     expect(doc[".qa-sentinel-install"].script[0]).toContain('if [ "${QA_INSTALL_SKIP:-}" != "1" ]');
     expect(render("x{{ledgerDir}}", { ledgerDir: ".qa-data" })).toBe("x.qa-data");
