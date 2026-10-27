@@ -68,7 +68,7 @@ export const DERIVED_RISK_FACTORS = ["db-migration", "config-change", "toggle-ch
 
 export const ChangeSchema = z
   .object({
-    id: z.string().regex(/^c\d+$/, "change ids are c1, c2, …"),
+    id: z.string().regex(/^c[1-9]\d*$/, "change ids are c1, c2, … (c0 is added by qa-sentinel)"),
     type: z.enum(CHANGE_TYPES),
     endpoint: opt(z.string()),
     /** Front-end route the change is on, e.g. /orders/new or /orders/:id. */

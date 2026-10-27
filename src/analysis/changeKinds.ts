@@ -1,5 +1,5 @@
 import type { Config } from "../config.js";
-import { matchesAny } from "../fsutil.js";
+import { globToRegExp } from "../fsutil.js";
 import { git } from "../git.js";
 
 /**
@@ -22,12 +22,44 @@ export interface ChangeKindFinding {
   detail?: string;
 }
 
-const DEP_SECTIONS = ["dependencies", "devDependencies", "peerDependencies"] as const;
+/** Runtime dependency sections. devDependencies are left out on purpose: a lint or test tool changes no behaviour of the service. */
+const DEP_SECTIONS = ["dependencies", "peerDependencies", "optionalDependencies"] as const;
+
+/** A glob list where "!glob" excludes, and every glob is case-insensitive (Application.yml, Migrations/). */
+export function matchesKind(file: string, globs: string[]): boolean {
+  const re = (g: string) => new RegExp(globToRegExp(g).source, "i");
+  const yes = globs.filter((g) => !g.startsWith("!"));
+  const no = globs.filter((g) => g.startsWith("!")).map((g) => g.slice(1));
+  return yes.some((g) => re(g).test(file)) && !no.some((g) => re(g).test(file));
+}
+
+/**
+ * What a version range says about breaking changes, or undefined when it says nothing we can compare:
+ *   "^4.21.2" gives "4", "^0.3.1" gives "0.3" (a 0.x minor bump is breaking in semver), "latest" and "*" give "*",
+ *   "workspace:^1" and "npm:alias@^2" are read as their version, "file:", "link:" and git URLs without a version are ignored.
+ */
+export function breakingKey(range: string): string | undefined {
+  let r = range.trim();
+  if (/^(latest|next|\*|x|)$/i.test(r)) return "*";
+  if (/^workspace:[\^~*]?$/.test(r)) return undefined;
+  r = r.replace(/^workspace:/, "");
+  r = r.replace(/^npm:(?:@[^/]+\/)?[^@]+@/, "");
+  if (/^(file:|link:|portal:|\.{0,2}\/)/.test(r)) return undefined;
+  // git and URL specs: only a version in the #fragment counts ("github:org/lib2#v3.0"), the name never does.
+  if (/^(git\+|git:|github:|gitlab:|bitbucket:|https?:|ssh:)|^[\w.-]+\/[\w.-]+(#|$)/i.test(r)) {
+    const frag = r.split("#")[1]?.replace(/^semver:/, "");
+    if (!frag) return undefined;
+    r = frag;
+  }
+  const m = r.match(/(\d+)(?:\.(\d+))?/);
+  if (!m) return /^[\^~<>=\s]*\*$/.test(r) ? "*" : undefined;
+  return Number(m[1]) === 0 ? `0.${m[2] ?? "0"}` : String(Number(m[1]));
+}
 
 /** First number in a version range: "^1.2.3" gives 1, ">=2 <3" gives 2, "workspace:*" gives undefined. */
 export function majorOf(range: string): number | undefined {
-  const m = range.match(/(\d+)/);
-  return m ? Number(m[1]) : undefined;
+  const k = breakingKey(range);
+  return k === undefined || k === "*" ? undefined : Number(k.split(".")[0]);
 }
 
 export interface DependencyChange {
@@ -57,12 +89,84 @@ export function packageJsonDependencyChanges(before: string | undefined, after: 
       if (x[name] === y[name]) continue;
       const from = x[name];
       const to = y[name];
-      const f = from === undefined ? undefined : majorOf(String(from));
-      const t = to === undefined ? undefined : majorOf(String(to));
-      out.push({ name, section, from, to, major: f !== undefined && t !== undefined && t > f });
+      const f = from === undefined ? undefined : breakingKey(String(from));
+      const t = to === undefined ? undefined : breakingKey(String(to));
+      // Any change of major counts, a downgrade too (^2 to ^1 breaks callers as well).
+      out.push({ name, section, from, to, major: f !== undefined && t !== undefined && f !== t });
     }
   }
   return out;
+}
+
+/**
+ * The lines of a dependency file that declare dependencies, so a release bump or a plugin change in pom.xml, a Gradle
+ * script or Cargo.toml is not read as a dependency change. Test-scoped and dev dependencies are left out.
+ * undefined: a format we do not know (a file the team added to risk.changeTypes.dependency): any change counts.
+ */
+export function dependencyLines(file: string, text: string | undefined): Set<string> | undefined {
+  const base = file.split("/").pop()!.toLowerCase();
+  const t = text ?? "";
+  const norm = (l: string) => l.trim().replace(/\s+/g, " ");
+  const lines = (re: RegExp) => new Set(t.split(/\r?\n/).map(norm).filter((l) => l && re.test(l)));
+  if (base === "pom.xml") {
+    const out = new Set<string>();
+    for (const m of t.matchAll(/<(dependency|parent)>([\s\S]*?)<\/\1>/g)) if (!/<scope>\s*test\s*<\/scope>/.test(m[2])) out.add(norm(m[2].replace(/>\s+</g, "><")));
+    for (const m of t.matchAll(/<([\w.-]*[vV]ersion)>([^<]*)<\/\1>/g)) if (m[1] !== "version" && m[1] !== "modelVersion") out.add(`${m[1]}=${m[2].trim()}`);
+    return out;
+  }
+  if (/^build\.gradle(\.kts)?$/.test(base))
+    return lines(/^(implementation|api|compile|runtimeOnly|compileOnly|annotationProcessor|kapt|classpath|developmentOnly)\b|^(id|kotlin)\s*[("']|\bversion\s*[("']|^(alias|platform)\b/);
+  if (base === "libs.versions.toml") return lines(/=/);
+  if (base === "go.mod") return lines(/^(require\s+)?[\w.-]+\.[\w.-]+\/?[\w./-]*\s+v\d/);
+  if (/^requirements.*\.txt$/.test(base) || /(^|\/)requirements\/[^/]+\.txt$/i.test(file)) {
+    if (/dev|test|lint/.test(base)) return new Set();
+    return lines(/^[^#-]/);
+  }
+  if (base.endsWith(".csproj") || base === "directory.packages.props")
+    return new Set([...t.matchAll(/<(PackageReference|ProjectReference|PackageVersion)\b[^>]*?(?:\/>|>[\s\S]*?<\/\1>)/g)].map((m) => norm(m[0])));
+  if (base === "composer.json") {
+    try {
+      const j = JSON.parse(t || "{}");
+      return new Set(Object.entries(j.require ?? {}).map(([k, v]) => `${k}@${v}`));
+    } catch {
+      return new Set();
+    }
+  }
+  if (base === "gemfile") {
+    const out = new Set<string>();
+    let skip = 0;
+    for (const l of t.split(/\r?\n/).map(norm)) {
+      if (/^group\b.*\b(development|test)\b.*\bdo$/.test(l)) skip = 1;
+      else if (skip && /\bdo$/.test(l)) skip++;
+      else if (skip && l === "end") skip--;
+      else if (!skip && /^gem\s/.test(l)) out.add(l);
+    }
+    return out;
+  }
+  if (base === "pipfile" || base === "cargo.toml" || base === "pyproject.toml") {
+    const out = new Set<string>();
+    let section = "";
+    let open = false;
+    for (const l of t.split(/\r?\n/).map(norm)) {
+      const h = l.match(/^\[([^\]]+)\]$/);
+      if (h) {
+        section = h[1].toLowerCase();
+        open = false;
+        continue;
+      }
+      if (!l || l.startsWith("#")) continue;
+      const devSection = /dev|test|lint|docs/.test(section);
+      const depSection = base === "pipfile" ? section === "packages" : /(^|\.)(build-)?dependencies$/.test(section) && !devSection;
+      if (depSection) out.add(`${section}: ${l}`);
+      else if (base === "pyproject.toml" && section === "project") {
+        if (/^dependencies\s*=\s*\[/.test(l)) open = true;
+        if (open) out.add(l);
+        if (open && l.includes("]")) open = false;
+      }
+    }
+    return out;
+  }
+  return undefined;
 }
 
 const describe = (d: DependencyChange) => (d.from === undefined ? `${d.name} added (${d.to})` : d.to === undefined ? `${d.name} removed` : `${d.name} ${d.from} to ${d.to}${d.major ? " (major)" : ""}`);
@@ -85,16 +189,34 @@ export function changeKinds(c: Pick<Config, "risk">, i: { repo: string; base: st
   const out: ChangeKindFinding[] = [];
   const tag = (f: Omit<ChangeKindFinding, "service">) => out.push(i.service ? { ...f, service: i.service } : f);
   for (const file of [...new Set(i.files)].sort()) {
-    if (matchesAny(file, t.migration)) tag({ kind: "migration", file });
-    if (matchesAny(file, t.config)) tag({ kind: "config", file });
-    if (matchesAny(file, t.toggle)) tag({ kind: "toggle", file });
-    if (matchesAny(file, t.dependency)) {
+    if (matchesKind(file, t.migration)) tag({ kind: "migration", file });
+    if (matchesKind(file, t.config)) tag({ kind: "config", file });
+    if (matchesKind(file, t.toggle)) tag({ kind: "toggle", file });
+    if (matchesKind(file, t.dependency)) {
       if (/(^|\/)package\.json$/.test(file)) {
         const changes = packageJsonDependencyChanges(showAt(i.repo, i.base, file), showAt(i.repo, i.head, file));
         // A package.json whose dependency sections did not change (a script, a version field) is not a dependency change.
         if (!changes.length) continue;
         tag({ kind: "dependency", file, major: changes.some((x) => x.major), detail: changes.slice(0, 6).map(describe).join("; ") + (changes.length > 6 ? `; and ${changes.length - 6} more` : "") });
-      } else tag({ kind: "dependency", file });
+      } else {
+        // Other build files: only the dependency declarations count (a release version, a plugin or a test dependency does not).
+        const before = showAt(i.repo, i.base, file);
+        const after = showAt(i.repo, i.head, file);
+        // Neither version can be read (no history here): we cannot tell, so the file counts.
+        if (before === undefined && after === undefined) {
+          tag({ kind: "dependency", file });
+          continue;
+        }
+        const x = dependencyLines(file, before);
+        const y = dependencyLines(file, after);
+        if (x === undefined || y === undefined) {
+          if (before !== after) tag({ kind: "dependency", file });
+          continue;
+        }
+        const changed = [...[...y].filter((l) => !x.has(l)), ...[...x].filter((l) => !y.has(l))];
+        if (!changed.length) continue;
+        tag({ kind: "dependency", file, detail: `${changed.length} dependency line(s) changed: ${changed.slice(0, 3).map((l) => l.slice(0, 70)).join("; ")}` });
+      }
     }
   }
   return out;

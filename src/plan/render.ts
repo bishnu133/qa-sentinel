@@ -142,6 +142,13 @@ export function renderGapReport(i: RenderInput): string {
     out.push("");
   }
 
+  const skipped = plan.decisions.filter((d) => d.noScenario);
+  if (skipped.length) {
+    out.push("**No access-control scenarios, with the reason given (check it is right)**");
+    for (const d of skipped) out.push(`- ${d.changeId}: ${d.noScenario}`);
+    out.push("");
+  }
+
   if (plan.acMismatches.length) {
     out.push("**Requirement conflicts – need a human decision**");
     for (const m of plan.acMismatches) {

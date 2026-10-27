@@ -36,6 +36,8 @@ export interface VerificationReport {
   status: VerificationStatus;
   /** Tests that failed once and passed on the automatic retry: not a product bug, but not stable either. */
   flaky?: string[];
+  /** The same tests as "file::name", so history can tell two tests with one title apart. */
+  flakyKeys?: string[];
   checks: Check[];
   specs: string[];
   cases: TestCase[];
@@ -190,6 +192,7 @@ export async function verifyChanges(o: VerifyOptions): Promise<VerificationRepor
   let cases: TestCase[] = [];
   const outputs: string[] = [];
   const flaky: string[] = [];
+  const flakyKeys: string[] = [];
   if (!specs.length) {
     checks.push({ name: "tests", status: "not-run", detail: codeFiles.length ? "helpers changed but no spec files changed" : "no spec files changed" });
   }
@@ -249,6 +252,7 @@ export async function verifyChanges(o: VerifyOptions): Promise<VerificationRepor
           const healed = firstFailed.filter((f) => passedAgain.has(key(f)));
           if (healed.length) {
             flaky.push(...healed.map((f) => f.name));
+            flakyKeys.push(...healed.map((f) => `${f.file ?? ""}::${f.name}`));
             const healedKeys = new Set(healed.map(key));
             mine = mine.map((x) => (x.status === "failed" && healedKeys.has(key(x)) ? { ...x, status: "passed" as const, message: "passed on retry (flaky)" } : x));
             if (mine.every((x) => x.status !== "failed")) r = { ...r2, code: 0 };
@@ -288,7 +292,7 @@ export async function verifyChanges(o: VerifyOptions): Promise<VerificationRepor
 
   const report: VerificationReport = {
     status: overallStatus(checks),
-    ...(flaky.length ? { flaky } : {}),
+    ...(flaky.length ? { flaky, flakyKeys } : {}),
     checks,
     specs,
     cases,

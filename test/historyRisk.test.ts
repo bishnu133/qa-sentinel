@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { ConfigSchema } from "../src/config.js";
-import { flakyRuns, historySignals, readHistoryFile, runTime } from "../src/analysis/history.js";
+import { flakyRuns, historyFor, historyKey, historySignals, readHistoryFile, runTime } from "../src/analysis/history.js";
 import { indexSource } from "../src/analysis/testIndex.js";
 import { applyRisk, raiseOne } from "../src/plan/risk.js";
 import { validatePlan } from "../src/plan/validate.js";
@@ -25,7 +25,7 @@ const cfg = (extra: any = {}) =>
   ConfigSchema.parse({ version: 1, mode: "scratch", project: { name: "p" }, tests: { api: { framework: "playwright", runCommand: "x" } }, ci: { platform: "gitlab" }, workspace: { services: [{ name: "orders", path: "../orders" }] }, ...extra });
 const NOW = new Date("2026-10-23T12:00:00Z");
 const day = (n: number) => new Date(NOW.getTime() - n * 86_400_000).toISOString().replace(/[:.]/g, "-");
-const verification = (root: string, daysAgo: number, flaky: string[], kind = "generate-orders") => put(root, `.qa-sentinel/runs/${day(daysAgo)}-${kind}/verification.json`, JSON.stringify({ status: "VERIFIED", flaky }));
+const verification = (root: string, daysAgo: number, flaky: string[], kind = "generate-orders") => put(root, `.qa-sentinel/runs/${day(daysAgo)}-${kind}/verification.json`, JSON.stringify({ status: "VERIFIED", flaky: flaky.map((k) => k.split("::").pop()), flakyKeys: flaky }));
 
 const specs = indexSource(
   "tests/api/orders/orders.spec.ts",
@@ -43,28 +43,31 @@ describe("A7 history signals", () => {
 
   it("collects flaky runs inside the window only, and ignores broken files", () => {
     const root = tmp();
-    verification(root, 3, ["creates an order"]);
-    verification(root, 200, ["creates an order"]);
+    verification(root, 3, [`${'tests/api/orders/orders.spec.ts'}::creates an order`]);
+    verification(root, 200, [`${'tests/api/orders/orders.spec.ts'}::creates an order`]);
     put(root, `.qa-sentinel/runs/${day(1)}-bad/verification.json`, "{not json");
     verification(root, 2, []);
     const r = flakyRuns(root, { days: 90, now: NOW });
     expect(r).toHaveLength(1);
-    expect(r[0].names).toEqual(["creates an order"]);
+    expect(r[0].tests).toEqual([{ file: "tests/api/orders/orders.spec.ts", name: "creates an order" }]);
+    // older reports only have names
+    put(root, `.qa-sentinel/runs/${day(4)}-old/verification.json`, JSON.stringify({ flaky: ["lists orders"] }));
+    expect(flakyRuns(root, { days: 90, now: NOW }).find((x) => x.run.endsWith("-old"))!.tests).toEqual([{ name: "lists orders" }]);
     expect(flakyRuns(tmp(), { days: 90, now: NOW })).toEqual([]);
   });
 
   it("combines a known-defect test, flaky runs and kb/history.yaml per endpoint", () => {
     const root = tmp();
-    verification(root, 3, ["creates an order"]);
-    verification(root, 10, ["orders › creates an order @endpoint:POST_/orders"]); // a runner name that carries the title
+    verification(root, 3, [`${'tests/api/orders/orders.spec.ts'}::creates an order`]);
+    put(root, `.qa-sentinel/runs/${day(10)}-old/verification.json`, JSON.stringify({ flaky: ["creates an order @endpoint:POST_/orders"] })); // an older report: names only, tags in the name
     put(root, "kb/history.yaml", 'endpoints:\n  "GET /orders":\n    incidents: 3\n    note: "slow listing, March"\n  "POST /refunds":\n    incidents: "two"\n');
     const { map, problems } = historySignals({ cwd: root, c: cfg(), index: specs, now: NOW });
-    const post = map.get("POST /orders")!;
-    expect(post.count).toBe(3); // 1 known-defect + 2 flaky runs
+    const post = historyFor(map, "orders", "POST /orders")!;
+    expect(post.count).toBe(3); // 1 known-defect + 2 flaky days
     expect(post.signals.map((s) => s.kind).sort()).toEqual(["flaky", "flaky", "known-defect"]);
     expect(post.signals.find((s) => s.kind === "known-defect")!.detail).toContain("tests/api/orders/orders.spec.ts:3");
-    expect(map.get("GET /orders")).toMatchObject({ count: 3 });
-    expect(map.get("GET /orders")!.signals[0].detail).toContain("slow listing, March");
+    expect(historyFor(map, "orders", "GET /orders")).toMatchObject({ count: 3 });
+    expect(historyFor(map, "orders", "GET /orders")!.signals[0].detail).toContain("slow listing, March");
     expect(problems.join()).toContain('POST /refunds: "incidents" must be a number');
   });
 
@@ -79,7 +82,7 @@ describe("A7 history signals", () => {
   it("uses the file name from the config", () => {
     const root = tmp();
     put(root, "kb/incidents.yaml", 'endpoints:\n  "POST /orders": { incidents: 2 }\n');
-    expect(historySignals({ cwd: root, c: cfg({ risk: { history: { file: "incidents.yaml" } } }), index: [], now: NOW }).map.get("POST /orders")!.count).toBe(2);
+    expect(historySignals({ cwd: root, c: cfg({ risk: { history: { file: "incidents.yaml" } } }), index: [], now: NOW }).map.get(historyKey(undefined, "POST /orders"))!.count).toBe(2);
   });
 });
 
@@ -98,7 +101,7 @@ const planWith = (factors: string[], observable = true): any => ({
   openQuestions: [],
   skipReason: null,
 });
-const history = (n: number) => new Map([["POST /orders", { endpoint: "POST /orders", count: n, signals: [{ kind: "incident" as const, count: n, detail: `${n} incident(s) in kb/history.yaml: double charge` }] }]]);
+const history = (n: number) => new Map([[historyKey(undefined, "POST /orders"), { endpoint: "POST /orders", count: n, signals: [{ kind: "incident" as const, count: n, detail: `${n} incident(s) in kb/history.yaml: double charge` }] }]]);
 const base = { acIds: [], requirementsMissing: true, testRepo: os.tmpdir(), serviceRepo: os.tmpdir() };
 const risked = (factors: string[], n: number, observable = true) => applyRisk(validatePlan(planWith(factors, observable), base).plan!, { breakingEndpoints: new Set(), crossService: false, history: history(n), historyThreshold: 2 });
 
@@ -142,7 +145,7 @@ describe("planChange: the facts are computed in code and handed to the agent", (
     put(svc, "src/server.js", "1");
     g(svc, "add", "-A");
     g(svc, "commit", "-q", "-m", "init");
-    put(svc, "src/server.js", "2");
+    put(svc, "src/server.js", "app.post('/orders', handler);");
     put(svc, "db/migrations/002.sql", "alter table orders add column slot text;");
     g(svc, "add", "-A");
     g(svc, "commit", "-q", "-m", "slot");
@@ -172,6 +175,7 @@ describe("planChange: the facts are computed in code and handed to the agent", (
     const ctx = JSON.parse(fs.readFileSync(path.join(run.dir, "context.json"), "utf8"));
     expect(ctx.changeKinds).toMatchObject([{ kind: "migration", file: "db/migrations/002.sql" }]);
     expect(ctx.endpointHistory).toMatchObject([{ endpoint: "POST /orders", signals: 2 }]);
+    expect(ctx.endpointHistory[0].why.length).toBeLessThan(400);
     expect(ctx.accessControl).toEqual({ mode: "warn", roles: [] });
     expect(seen[0].prompt).toContain("change types");
     const validated = JSON.parse(fs.readFileSync(path.join(run.dir, "test-plan.validated.json"), "utf8"));

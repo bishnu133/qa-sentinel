@@ -32,10 +32,14 @@ describe("A5 change types from the changed files", () => {
     const scriptOnly = JSON.stringify({ name: "a", version: "1.0.1", scripts: { t: "y" }, dependencies: { express: "^4.21.2", zod: "^3.0.0" }, devDependencies: { tsx: "^4.0.0" } });
     expect(packageJsonDependencyChanges(before, scriptOnly)).toEqual([]);
     const bumped = JSON.stringify({ name: "a", dependencies: { express: "^5.0.0", zod: "^3.1.0" }, devDependencies: { tsx: "^4.0.0", vitest: "^2.0.0" } });
-    const d = packageJsonDependencyChanges(before, bumped);
+    const withNew = JSON.stringify({ name: "a", dependencies: { express: "^5.0.0", zod: "^3.1.0", pino: "^9.0.0" }, devDependencies: { tsx: "^4.0.0", vitest: "^2.0.0" } });
+    const d = packageJsonDependencyChanges(before, withNew);
     expect(d.find((x) => x.name === "express")).toMatchObject({ from: "^4.21.2", to: "^5.0.0", major: true });
     expect(d.find((x) => x.name === "zod")?.major).toBe(false);
-    expect(d.find((x) => x.name === "vitest")).toMatchObject({ from: undefined, major: false });
+    expect(d.find((x) => x.name === "pino")).toMatchObject({ from: undefined, major: false });
+    // devDependencies are not dependency changes (a lint or test tool changes no behaviour)
+    expect(d.find((x) => x.name === "vitest")).toBeUndefined();
+    expect(packageJsonDependencyChanges(before, bumped).some((x) => x.name === "vitest")).toBe(false);
     expect(packageJsonDependencyChanges("not json", undefined)).toEqual([]);
   });
 

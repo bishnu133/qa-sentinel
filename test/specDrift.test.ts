@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { validatePlan } from "../src/plan/validate.js";
+import { specDriftLabels, validatePlan } from "../src/plan/validate.js";
 import { renderGapReport } from "../src/plan/render.js";
 import { applyRisk } from "../src/plan/risk.js";
 
@@ -49,9 +49,34 @@ describe("A8 spec drift as a gap", () => {
   });
 
   it("needs a change for the endpoint and a review decision", () => {
-    expect(validatePlan(plan([drift({ endpoint: "GET /health" })]), ctx).errors.join("\n")).toContain("no observable change in this plan has endpoint GET /health");
     const update = validatePlan(plan([drift()], "create"), ctx);
-    expect(update.errors.join("\n")).toContain('the decision for c1 must be "review"');
+    expect(update.errors.join("\n")).toContain('one decision for c1 must be "review"');
+  });
+
+  it("drift on an endpoint this plan does not touch is a warning, not an error", () => {
+    const v = validatePlan(plan([drift({ endpoint: "GET /orders/{id}" })]), ctx);
+    expect(v.errors).toEqual([]);
+    expect(v.ok).toBe(true);
+    expect(v.warnings.join("\n")).toContain("no observable change in this plan touches GET /orders/{id}");
+  });
+
+  it("two changes on one endpoint: one review decision is enough", () => {
+    const two = (first: string, second: string) => {
+      const p = plan([drift()], first);
+      p.changes.push({ ...p.changes[0], id: "c2", summary: "second change" });
+      p.decisions.push({ ...p.decisions[0], changeId: "c2", decision: second });
+      return p;
+    };
+    expect(validatePlan(two("create", "review"), ctx).errors).toEqual([]);
+    expect(validatePlan(two("review", "create"), ctx).errors).toEqual([]);
+    const none = validatePlan(two("create", "update"), ctx);
+    expect(none.errors.join("\n")).toContain('one decision for c1 or c2 must be "review"');
+  });
+
+  it("the label is for the structured form only", () => {
+    expect(specDriftLabels({ specDrift: [] })).toEqual([]);
+    expect(specDriftLabels({ specDrift: ["old note"] })).toEqual([]);
+    expect(specDriftLabels({ specDrift: ["old note", drift()] })).toEqual(["qa-sentinel::spec-drift"]);
   });
 
   it("warns when the review decision proposes no scenario", () => {
@@ -73,7 +98,7 @@ describe("A8 spec drift as a gap", () => {
     expect(md).toContain("not raised as a product bug");
   });
 
-  it("the label is added to the merge request by generate", () => {
-    expect(fs.readFileSync(path.resolve(__dirname, "../src/commands/generate.ts"), "utf8")).toContain('"qa-sentinel::spec-drift"');
+  it("generate takes the label from specDriftLabels", () => {
+    expect(fs.readFileSync(path.resolve(__dirname, "../src/commands/generate.ts"), "utf8")).toContain("specDriftLabels(planned.plan)");
   });
 });

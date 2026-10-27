@@ -1,6 +1,6 @@
 import type { Change, RiskFactor, RiskLevel, TestPlan } from "./schema.js";
 import { type ChangeKindFinding, factorsOfKinds } from "../analysis/changeKinds.js";
-import type { EndpointHistory, HistoryMap } from "../analysis/history.js";
+import { type EndpointHistory, type HistoryMap, historyFor } from "../analysis/history.js";
 
 /**
  * Transparent, rule-based risk. The model only names factors (with evidence); the level is computed here,
@@ -64,8 +64,10 @@ export interface RiskContext {
   crossService: boolean;
   /** Change types found in the changed files (no AI). They become the synthetic change c0. */
   changeKinds?: ChangeKindFinding[];
-  /** Signals per endpoint from past defects, flaky runs and incidents (no AI). */
+  /** Signals per service and endpoint from past defects, flaky runs and incidents (no AI). */
   history?: HistoryMap;
+  /** The service being planned; a change's own `service` (story mode) wins. */
+  service?: string;
   /** Signals needed before history raises a change (risk.history.threshold). */
   historyThreshold?: number;
 }
@@ -90,7 +92,7 @@ export function applyRisk(plan: TestPlan, ctx: RiskContext): RiskResult {
   const changes: RiskedChange[] = plan.changes.map((c) => {
     const factors = deriveFactors(c, ctx);
     let risk = riskOfChange(c, factors);
-    const h = c.endpoint && c.observable ? ctx.history?.get(normaliseEndpoint(c.endpoint)) : undefined;
+    const h = c.endpoint && c.observable ? historyFor(ctx.history, c.service ?? ctx.service, c.endpoint) : undefined;
     if (h && h.count >= threshold) {
       factors.push("history");
       const to = raiseOne(risk);

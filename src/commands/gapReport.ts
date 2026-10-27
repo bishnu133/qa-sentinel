@@ -34,7 +34,7 @@ import { log } from "../log.js";
 import { bugsFromPlan, fileBugs } from "../bugs/bugs.js";
 import { jiraContext } from "../scm/jira.js";
 import { deferInNewRun, deferSteps } from "../reporting/deferred.js";
-import type { ServiceConfig } from "../config.js";
+import type { Config, ServiceConfig } from "../config.js";
 import type { ChangeSet } from "../git.js";
 import { type StoryPart, combinedChange, storyParts } from "../story.js";
 import { atLeast } from "../git.js";
@@ -188,8 +188,19 @@ async function lastStamp(c: ReturnType<typeof loadConfig>, o: GapReportOptions, 
   return gl ? parseStamp(await getMrNoteBody(gl, mr.project, mr.mrIid).catch(() => undefined)) : undefined;
 }
 
+/** The risk settings and the team's history file: a change in either can change the report, so it counts for "unchanged". (Flaky runs do not: they are not kept in CI.) */
+export const riskInputs = (c: Config, cwd: string): string => {
+  let hist = "";
+  try {
+    hist = fs.readFileSync(path.join(cwd, c.knowledge.dir, c.risk.history.file), "utf8");
+  } catch {
+    // no history file
+  }
+  return JSON.stringify(c.risk) + "\u0003" + hist;
+};
+
 const unchangedReport = (head: string) =>
-  `### QA impact · unchanged\n**Verdict:** nothing the gap report depends on changed since the report for ${head.slice(0, 8)} (the diff of the relevant files, the acceptance criteria, the expected behaviour and the scope are the same). The comment on the merge request still stands; --refresh makes a new one.\n`;
+  `### QA impact · unchanged\n**Verdict:** nothing the gap report depends on changed since the report for ${head.slice(0, 8)} (the diff of the relevant files, the acceptance criteria, the expected behaviour, the scope, the risk settings and the history file are the same). The comment on the merge request still stands; --refresh makes a new one.\n`;
 
 /**
  * One gap report per story the merge request names, joined in one MR comment. Each report is posted to its own story
@@ -346,7 +357,7 @@ async function gapReportPrepare(o: GapReportOptions, c: ReturnType<typeof loadCo
     const digest = relevantDiffDigest((f) => { try { return git(repo, ["-c", "core.quotePath=false", "diff", "--relative", "--binary", "--full-index", range, "--", f]); } catch { return ""; } }, relevant);
     let expectedText = "";
     if (req.storyKey) try { expectedText = fs.readFileSync(path.join(cwd, expectedPath(expectedDirOf(c.tests.expectedDir), req.storyKey.toUpperCase())), "utf8"); } catch { /* none yet */ }
-    fp = gapFingerprint(digest, req.acceptanceCriteria.map((a) => `${a.id}:${acHash(a.text)}`), [expectedText, JSON.stringify(req.scopeItems ?? []), JSON.stringify(req.outOfScope ?? [])]);
+    fp = gapFingerprint(digest, req.acceptanceCriteria.map((a) => `${a.id}:${acHash(a.text)}`), [expectedText, JSON.stringify(req.scopeItems ?? []), JSON.stringify(req.outOfScope ?? []), riskInputs(c, cwd)]);
   }
   if (fp) {
     const last = await lastStamp(c, o, mr);

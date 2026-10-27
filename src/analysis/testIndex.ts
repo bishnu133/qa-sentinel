@@ -158,6 +158,8 @@ export function indexSource(file: string, src: string): IndexedTest[] {
       assertions: (body.match(ASSERT) ?? []).length,
       statusOnly: asserts.length > 0 && asserts.every((l) => /\.status\(\)\)?\s*\)?\s*\.(toBe|toEqual)\(\s*\d{3}\s*\)/.test(l) || /expect\([^)]*status\(\)\)/.test(l)),
       ...parsed,
+      // A @role tag on an enclosing describe applies to its tests (it is part of the full test name).
+      roles: [...new Set([...parsed.roles, ...parseTags(String((f as any).describe ?? "")).roles])],
     } satisfies IndexedTest;
   });
 }
