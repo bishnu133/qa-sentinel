@@ -20,9 +20,11 @@ import { log } from "../log.js";
  */
 
 export const STATUS_MARKER = "qa-sentinel:status";
-const SECTION_RE = /^(.*?)(?:\{color:#97a0af\})?Updated ([^{]*?) · qa-sentinel:section=([A-Za-z0-9:._-]+)(?: · basis=([0-9a-f]+))?(?: · acs=([0-9a-f]+))?(?:\{color\})?\s*$/;
+const SECTION_RE = /^(.*?)(?:\{color:#97a0af\})?Updated ([^{]*?) · qa-sentinel:section=([A-Za-z0-9:._-]+)(?: · basis=([0-9a-f]+))?(?: · acs=([0-9a-f]+))?(?: · (kept)=1)?(?:\{color\})?\s*$/;
 /** Jira rejects comments over 32,767 characters. */
 const HARD_LIMIT = 32_000;
+/** A legacy comment is moved into the status comment only while the whole comment stays under this: the rest is room for later writes. */
+const MOVE_ROOM = 16_000;
 /** The first line of an out-of-date result section; it is added when drawing and removed when reading. */
 const STALE_LINE = "{color:#de350b}⚠️ *Out of date:*";
 
@@ -35,6 +37,8 @@ export interface Section {
   basis?: string;
   /** Digest of the AC hashes when it was written (absent when the ACs were not known). */
   acs?: string;
+  /** Moved in whole from an older comment that was then replaced: fit() shortens every other section first, and this one only when nothing else is left to shorten. */
+  kept?: boolean;
 }
 
 /** Sections that report a result and can be out of date. The others (pending, bugs, story review, hotfix) are not marked. */
@@ -55,7 +59,7 @@ export function parseStatus(body: string): Section[] {
       if (m[1].trim()) acc.push(m[1]);
       // The out-of-date line is drawn from the basis every time; never keep it as section text.
       const text = acc.filter((l) => !l.startsWith(STALE_LINE)).join("\n").trim();
-      out.push({ name: m[3], wiki: text, updated: m[2].trim(), ...(m[4] ? { basis: m[4] } : {}), ...(m[5] ? { acs: m[5] } : {}) });
+      out.push({ name: m[3], wiki: text, updated: m[2].trim(), ...(m[4] ? { basis: m[4] } : {}), ...(m[5] ? { acs: m[5] } : {}), ...(m[6] ? { kept: true } : {}) });
       acc = [];
     } else acc.push(line);
   }
@@ -69,7 +73,8 @@ function fit(sections: Section[], header: string): Section[] {
   const size = (ss: Section[]) => header.length + ss.reduce((n, x) => n + x.wiki.length + 120, 0);
   let out = sections;
   while (size(out) > HARD_LIMIT) {
-    const big = [...out].sort((a, b) => b.wiki.length - a.wiki.length)[0];
+    const bySize = (a: Section, b: Section) => b.wiki.length - a.wiki.length;
+    const big = [...out].filter((x) => !x.kept && x.wiki.length >= 600).sort(bySize)[0] ?? [...out].sort(bySize)[0];
     if (big.wiki.length < 600) break;
     const keep = Math.floor(big.wiki.length * 0.7);
     const cut = big.wiki.slice(0, keep);
@@ -110,15 +115,23 @@ export function isStale(x: Section, o: RenderOptions): boolean {
 }
 
 export function renderStatus(story: string, sections: Section[], o: RenderOptions = {}): string {
+  return renderStatusChecked(story, sections, o).body;
+}
+
+/** The comment text, and the names of the sections that had to be shortened to fit Jira's size limit. */
+export function renderStatusChecked(story: string, sections: Section[], o: RenderOptions = {}): { body: string; shortened: string[] } {
   const header = `h2. QA status · ${story}\n_One comment, kept up to date by qa-sentinel. Each part is replaced when its check runs again._\n{color:#97a0af}${STATUS_MARKER}{color}\n`;
   const ordered = [...sections].sort((a, b) => rank(a.name) - rank(b.name) || a.name.localeCompare(b.name));
-  return [
+  const fitted = fit(ordered, header);
+  const shortened = fitted.filter((x) => ordered.find((y) => y.name === x.name)?.wiki !== x.wiki).map((x) => x.name);
+  const body = [
     header,
-    ...fit(ordered, header).map((x) => {
+    ...fitted.map((x) => {
       const mark = isStale(x, o) ? `${STALE_LINE} ${o.why?.(x) ?? GENERIC_WHY}.{color}\n` : "";
-      return `${mark}${safeText(x.wiki)}\n{color:#97a0af}Updated ${x.updated} · qa-sentinel:section=${x.name}${x.basis ? ` · basis=${x.basis}` : ""}${x.basis && x.acs ? ` · acs=${x.acs}` : ""}{color}\n`;
+      return `${mark}${safeText(x.wiki)}\n{color:#97a0af}Updated ${x.updated} · qa-sentinel:section=${x.name}${x.basis ? ` · basis=${x.basis}` : ""}${x.basis && x.acs ? ` · acs=${x.acs}` : ""}${x.kept ? " · kept=1" : ""}{color}\n`;
     }),
   ].join("\n");
+  return { body, shortened };
 }
 
 /** Replace (or add) one section. Pure. */
@@ -219,28 +232,39 @@ export async function migrateLegacy(c: Config, ctx: JiraContext, story: string, 
   const legacy = own.filter((cm) => isLegacy(cm.body));
   if (!statusCm || !legacy.length) return { changed: 0, failed: 0 };
   let failed = 0;
-  const movable = legacy.filter((cm) => {
+  // A comment that is left as it is on purpose (another visibility, too long for the status comment) is not a failure: it must not make the move run again on every write.
+  let movable = legacy.filter((cm) => {
     const ok = sameVisibility(cm.visibility, statusCm.visibility);
-    if (!ok) {
-      failed++;
-      log.warn(`${story}: comment ${cm.id} has a different visibility than the status comment; left as it is`);
-    }
+    if (!ok) log.warn(`${story}: comment ${cm.id} has a different visibility than the status comment; left as it is`);
     return ok;
   });
   // 1. The text goes into the status comment first (newest comment of a kind wins; a section already there is fresher).
   let sections = parseStatus(statusCm.body);
   const have = new Set(sections.map((x) => x.name));
   const carried: Section[] = [];
+  const ropts = { currentBasis: o.basis, currentAcs: o.acs, parts: o.parts, why: o.why };
+  // Render first. A section that would have to be shortened to fit is not moved, and its old comment stays as it is: shortening would lose text.
+  let body: string | undefined;
   for (const cm of [...movable].reverse()) {
     const name = sectionOfLegacy(cm.body);
     if (!name || have.has(name)) continue;
+    const section: Section = { name, wiki: withoutMarker(cm.body), updated: stamp(jiraTime(cm.updated ?? cm.created)), kept: true };
+    const trial = renderStatusChecked(story, [...sections, ...carried, section], ropts);
+    // Nothing may be shortened by the move (neither this section, nor one already there), and the comment keeps room for what later writes add:
+    // fit() shortens the biggest section when the comment is full, and a moved section may then be the biggest while its old comment is gone.
+    if (trial.shortened.length || trial.body.length > MOVE_ROOM) {
+      log.warn(`${story}: comment ${cm.id} is too long to move into the status comment with room to spare; left as it is`);
+      movable = movable.filter((x) => x !== cm);
+      continue;
+    }
     have.add(name);
-    carried.push({ name, wiki: withoutMarker(cm.body), updated: stamp(jiraTime(cm.updated ?? cm.created)) });
+    carried.push(section);
+    body = trial.body;
   }
   if (carried.length) {
     sections = [...sections, ...carried];
     try {
-      await writeIssueComment(ctx, story, statusCm.id, renderStatus(story, sections, { currentBasis: o.basis, currentAcs: o.acs, parts: o.parts, why: o.why }), statusCm.visibility as Visibility | undefined);
+      await writeIssueComment(ctx, story, statusCm.id, body ?? renderStatus(story, sections, ropts), statusCm.visibility as Visibility | undefined);
     } catch (e) {
       log.warn(`${story}: could not move the older comments into the status comment (${(e as Error).message.split("\n")[0]}); they are left as they are`);
       return { changed: 0, failed: movable.length + failed };

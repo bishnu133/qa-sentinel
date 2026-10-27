@@ -5,14 +5,34 @@ import { notifyStory } from "../reporting/notify.js";
 import { ClaudeAccessError } from "../claude.js";
 import type { AgentEngine } from "../engines/AgentEngine.js";
 import { type JobHandle, beginJob, budgetedEngine, endJob, jobPolicy } from "./jobs.js";
-import { type JobKind, NO_STORY, type RecordStore, fileStore, jiraStore } from "./record.js";
+import { deferInNewRun } from "../reporting/deferred.js";
+import { type JobKind, type StoryRecord, NO_STORY, type RecordStore, fileStore, jiraStore, mergeLocalAndJira } from "./record.js";
 
 /** The configured record store. A Jira store that can't be set up (no credentials, no URL) falls back to files, with a warning. */
 export function openStore(cwd: string, c: Config, env: NodeJS.ProcessEnv = process.env, local = false): RecordStore {
-  // `local`: the analysis job of the split CI jobs. It holds no Jira write login, so it keeps its record in files only (the publish job writes the Jira side).
-  if (c.automation.record === "jira" && !local) {
+  // `local`: the analysis job of the split CI jobs. It holds no Jira write login: it WRITES the record to files only (the publish job writes
+  // the Jira side from its `record` step). With automation.record: jira it still READS the Jira record with its read login, and takes the
+  // newer of the Jira copy and its own file, so budgets, job keys and "written" notes kept in Jira are seen.
+  if (c.automation.record === "jira") {
     const ctx = jiraContext(c.requirements.jira, env);
-    if (ctx) return jiraStore(cwd, ctx);
+    if (ctx) {
+      if (!local) return jiraStore(cwd, ctx);
+      const files = fileStore(cwd);
+      const remote = jiraStore(cwd, ctx);
+      return {
+        ...files,
+        async load(key) {
+          const mine = await files.load(key);
+          let theirs: StoryRecord | undefined;
+          try {
+            theirs = await remote.load(key);
+          } catch (e) {
+            log.warn(`could not read the Jira record of ${key} (${(e as Error).message.split("\n")[0]}); using the local one`);
+          }
+          return mergeLocalAndJira(mine, theirs);
+        },
+      };
+    }
     log.warn("automation.record is jira, but there is no Jira URL or credentials here: the story record is kept in files only");
   }
   return fileStore(cwd);
@@ -61,7 +81,12 @@ export async function startJob(o: StartJobOptions): Promise<JobStart> {
     return { run: false, exitCode: 0, message: r.message };
   }
   log.fail(r.message);
-  if (r.reason === "budget" && o.story !== NO_STORY && !o.local) await notifyStory(o.cwd, o.c, o.story, "stopped-by-budget", `qa-sentinel stopped before starting AI work on this story: ${r.message}`, o.key, o.env, store);
+  if (r.reason === "budget" && o.story !== NO_STORY) {
+    const text = `qa-sentinel stopped before starting AI work on this story: ${r.message}`;
+    // Split CI jobs, analysis side: no Jira write here; the note waits for `qa-sentinel publish`.
+    if (o.local) deferInNewRun(o.cwd, o.kind === "generate" ? "generate" : "gap-report", "budget-stop", [{ type: "notify", story: o.story, event: "stopped-by-budget", text: text.slice(0, 2000), key: o.key.slice(0, 200).replace(/[\r\n]/g, " ") }]);
+    else await notifyStory(o.cwd, o.c, o.story, "stopped-by-budget", text, o.key, o.env, store);
+  }
   return { run: false, exitCode: EXIT_LIMIT, message: r.message };
 }
 

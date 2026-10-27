@@ -35,7 +35,7 @@ describe("split CI jobs (opt-in QA_SPLIT_JOBS)", () => {
     expect(pub.needs).toEqual([{ job: "qa-generate", artifacts: true }]);
     expect(pub.rules.some((r: { if: string }) => r.if.includes('$QA_SPLIT_JOBS == "true"'))).toBe(true);
     const ps = scriptOf(pub);
-    expect(ps).toContain("qa-sentinel publish --run all");
+    expect(ps).toContain("qa-sentinel publish --kind generate --run all");
     expect(ps).toContain('QA_SENTINEL_GITLAB_TOKEN="${QA_SENTINEL_GITLAB_WRITE_TOKEN:?');
     expect(ps).toMatch(/unset ANTHROPIC_API_KEY/);
     expect(ps).not.toContain("claude-code"); // no agent runtime in the publish job
@@ -51,7 +51,7 @@ describe("split CI jobs (opt-in QA_SPLIT_JOBS)", () => {
     const pub = service["qa-gap-report-publish"];
     expect(pub.needs).toEqual([{ job: "qa-gap-report", artifacts: true }]);
     const ps = scriptOf(pub);
-    expect(ps).toContain('publish --run all');
+    expect(ps).toContain('publish --kind gap-report --run all');
     expect(ps).toMatch(/unset ANTHROPIC_API_KEY/);
     expect(ps).not.toContain("claude-code");
   });
@@ -60,12 +60,25 @@ describe("split CI jobs (opt-in QA_SPLIT_JOBS)", () => {
     const gen = tests["qa-generate"];
     expect(Array.isArray(gen.after_script)).toBe(true);
     const after = gen.after_script.filter((x: unknown) => typeof x === "string") as string[];
-    const block = after.find((x) => x.includes('QA_SPLIT_JOBS'))!;
-    expect(block).toContain("unset QA_SENTINEL_GITLAB_WRITE_TOKEN");
-    // The only place the work-tree file is sourced is the non-split branch.
-    const split = block.slice(0, block.indexOf("elif"));
-    expect(split).not.toMatch(/(^|\s)\.\s+"?\$CI_PROJECT_DIR\/\.qa-env\.sh/);
-    expect(block.slice(block.indexOf("elif"))).toContain(".qa-env.sh");
+    const block = after.find((x) => x.includes('sed -n'))!;
+    expect(block).toMatch(/unset [^\n]*QA_SENTINEL_GITLAB_WRITE_TOKEN/);
+    // The work-tree file is never sourced, in either mode: it is read through the same whitelist sed.
+    expect(block).not.toMatch(/(^|\s)\.\s+"?\$CI_PROJECT_DIR\/\.qa-env\.sh/);
+    expect(block).not.toContain("elif");
+    expect(block).toContain("sed -n");
+    const nodeAfter = (tests[".qa-node"].after_script as unknown[]).filter((x) => typeof x === "string").join("\n");
+    expect(nodeAfter).toContain("sed -n");
+    expect(nodeAfter).not.toMatch(/(^|\s)\.\s+"?\$CI_PROJECT_DIR\/\.qa-env\.sh/);
+    // Both after_script blocks drop every write and model secret first, in either mode, before anything of the work tree is read or run.
+    const SECRETS = ["QA_SENTINEL_GITLAB_TOKEN", "QA_SENTINEL_GITLAB_WRITE_TOKEN", "QA_JIRA_PUBLISH_PAT", "JIRA_PAT", "JIRA_API_TOKEN", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "AWS_SECRET_ACCESS_KEY", "CLAUDE_CODE_USE_BEDROCK", "CI_JOB_TOKEN"];
+    const nodeBlock = (tests[".qa-node"].after_script as unknown[]).find((x) => typeof x === "string" && x.includes("sed -n")) as string;
+    for (const b of [block, nodeBlock]) {
+      expect(b.indexOf("unset ")).toBeGreaterThanOrEqual(0);
+      expect(b.indexOf("unset ")).toBeLessThan(b.indexOf("sed -n"));
+      const penv = Object.fromEntries(SECRETS.map((k) => [k, "secret"]));
+      const probe = spawnSync("sh", ["-c", `${b}\nenv`], { encoding: "utf8", env: { PATH: process.env.PATH, CI_PROJECT_DIR: os.tmpdir(), ...penv } });
+      for (const k of SECRETS) expect(probe.stdout, k).not.toContain(`${k}=`);
+    }
     // Run it for real: a hostile .qa-env.sh (written by generated code) is not executed, and the write token is gone.
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "qas-after-"));
     made.push(dir);
@@ -79,6 +92,11 @@ describe("split CI jobs (opt-in QA_SPLIT_JOBS)", () => {
     fs.writeFileSync(path.join(dir, ".qa-env.sh"), `export ${url}='https://qa.example/x'\n`);
     const ok = spawnSync("sh", ["-c", `${block}\necho "url=\${${url}:-none}"`], { encoding: "utf8", env: { PATH: process.env.PATH, CI_PROJECT_DIR: dir, QA_SPLIT_JOBS: "true" } });
     expect(ok.stdout.trim()).toBe("url=https://qa.example/x");
+    // The same in the ordinary (non-split) mode: still text, still not executed.
+    fs.writeFileSync(path.join(dir, ".qa-env.sh"), `touch ${marker}\nexport ${url}='https://qa.example/y'\n`);
+    const plain = spawnSync("sh", ["-c", `${block}\necho "url=\${${url}:-none}"`], { encoding: "utf8", env: { PATH: process.env.PATH, CI_PROJECT_DIR: dir } });
+    expect(plain.stdout.trim()).toBe("url=https://qa.example/y");
+    expect(fs.existsSync(marker)).toBe(false);
   });
   it("publish jobs run one at a time, in their own environment, with full history, and pick the Jira publishing login themselves", async () => {
     const { tests, service } = await rendered();

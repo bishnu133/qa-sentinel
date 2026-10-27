@@ -1,8 +1,8 @@
 import fs from "node:fs";
 import path from "node:path";
 import { netFetch } from "./net.js";
-import type { Config } from "./config.js";
-import type { Finding } from "./guardrails.js";
+import { DEFAULT_ALLOWED_HOSTS, type Config } from "./config.js";
+import { hostAllowed, type Finding } from "./guardrails.js";
 
 /**
  * The test-data ledger. Tests that create data (a program, then a company in it, an event, a session…) record each
@@ -172,12 +172,38 @@ export function sweepMarkdown(r: SweepResult, dryRun = false): string {
 }
 
 /**
+ * The sweeper deletes with a credential and a base URL that the (agent-writable) config and environment name. So it refuses, before any
+ * request: a credential variable that is not a QA_CLEANUP_* one (a name pattern, not a list of known secrets: CI has too many variables that
+ * carry a token), and a base URL whose host is not in guardrails.allowedHosts. When the config was read from the work tree in CI
+ * (`trustedConfig` false) generated code could have added hosts to it, so only the default hosts count then.
+ */
+export function sweepRefusal(c: Config, env: NodeJS.ProcessEnv, o: { trustedConfig?: boolean } = {}): string | undefined {
+  const name = c.testData.sweepAuthEnv;
+  if (!/^QA_CLEANUP_[A-Z0-9_]*$/.test(name)) return `testData.sweepAuthEnv is ${name}: the sweeper sends this variable to the test environment, so it must be named QA_CLEANUP_...; it will not send it`;
+  const url = env[c.tests.api.baseUrlEnv];
+  if (url && env[name]) {
+    let host = "";
+    try {
+      host = new URL(url).hostname;
+    } catch {
+      return `${c.tests.api.baseUrlEnv} is not a URL: the sweeper will not send a credential there`;
+    }
+    const inCi = Boolean(env.CI) && env.CI !== "false" && env.CI !== "0";
+    const allowed = o.trustedConfig === false && inCi ? DEFAULT_ALLOWED_HOSTS : c.guardrails.allowedHosts;
+    if (!hostAllowed(host, allowed)) return `the host ${host} (${c.tests.api.baseUrlEnv}) is not in guardrails.allowedHosts${allowed === DEFAULT_ALLOWED_HOSTS && c.guardrails.allowedHosts.length ? " (a config read from the work tree in CI cannot add hosts: pass --config-from with the config of the pipeline's commit)" : ""}: the sweeper will not send a credential there`;
+  }
+  return undefined;
+}
+
+/**
  * After qa-sentinel's own test runs (verify, generate): sweep the leftovers of tests started since `startedAt` (not
  * those of another run on the same machine); what can't be deleted becomes a finding.
  */
 export async function sweepAfterRun(cwd: string, c: Config, startedAt: number, env: NodeJS.ProcessEnv = process.env): Promise<Finding[]> {
   const dir = path.resolve(cwd, c.testData.ledgerDir);
   if (!pendingRecords(dir, { startedAfter: startedAt }).length) return [];
+  const refusal = sweepRefusal(c, env);
+  if (refusal) return [{ level: "warning" as const, rule: "test-data" as const, file: c.testData.ledgerDir, message: `test data was not swept: ${refusal}` }];
   const r = await sweep({ dir, baseUrl: env[c.tests.api.baseUrlEnv], authHeader: env[c.testData.sweepAuthEnv], startedAfter: startedAt });
   return [...r.failed, ...r.manual].map((p) => ({
     level: "warning" as const,

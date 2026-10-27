@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { loadConfig } from "../config.js";
-import { pendingRecords, sweep, sweepMarkdown } from "../testData.js";
+import { pendingRecords, sweep, sweepMarkdown, sweepRefusal } from "../testData.js";
 import { log } from "../log.js";
 
 export interface DataOptions {
@@ -10,6 +10,8 @@ export interface DataOptions {
   olderThan?: number;
   out?: string;
   env?: NodeJS.ProcessEnv;
+  /** Read the config from this file (the pipeline's own commit) instead of the work tree, which generated code may have changed. */
+  configFrom?: string;
 }
 
 /** `qa-sentinel data status`: test data runs created and haven't deleted yet. */
@@ -34,11 +36,16 @@ export async function dataSweepCommand(o: DataOptions): Promise<number> {
   // By default, leave runs active in the last half hour alone: another run on this machine may still use that data.
   o = { ...o, olderThan: o.olderThan ?? DEFAULT_SWEEP_AGE_MINUTES };
   const cwd = path.resolve(o.cwd);
-  const c = loadConfig(cwd);
+  const c = loadConfig(cwd, o.configFrom ? path.resolve(o.configFrom) : undefined);
   const env = o.env ?? process.env;
   const dir = path.resolve(cwd, c.testData.ledgerDir);
   const baseUrl = env[c.tests.api.baseUrlEnv];
   const authHeader = env[c.testData.sweepAuthEnv];
+  const refusal = sweepRefusal(c, env, { trustedConfig: Boolean(o.configFrom) });
+  if (refusal) {
+    log.fail(refusal);
+    return 2;
+  }
   if (!baseUrl && !o.dryRun && pendingRecords(dir, { olderThanMinutes: o.olderThan }).length) {
     log.fail(`${c.tests.api.baseUrlEnv} is not set: the sweeper only deletes on the test environment`);
     return 2;

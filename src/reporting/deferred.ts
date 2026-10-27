@@ -69,6 +69,8 @@ const mergeRequestStep = z
     /** What the server had for the story branch when the analysis started; a different tip now means "stale, not pushed". */
     expectSha: sha.optional(),
     storyKey: key.optional(),
+    /** The story branch started again: after the push, publish clears what the record says was written on the old one. */
+    resetRecord: z.boolean().optional(),
     title: oneLine,
     description: text(60_000),
     /** Only labels of the shapes qa-sentinel makes are kept (qa-agent, story::, service::, qa-sentinel::, risk::). */
@@ -94,7 +96,26 @@ const mergeRequestStep = z
   })
   .strict();
 
-const publishStep = z.discriminatedUnion("type", [reportStep, mrSeenStep, bugsStep, notifyStep, branchNoteStep, mergeRequestStep]);
+/**
+ * What a story-scoped run leaves in the story record (ACs written or held, what the plan said about each AC, a merge conflict,
+ * a fresh start of the branch). In split mode the analysis job only keeps a local copy; the publish job writes the real record
+ * (Jira, with automation.record: jira) from this step, after the push.
+ */
+const recordStep = z
+  .object({
+    type: z.literal("record"),
+    story: key,
+    /** The story branch starts again: what the record says was written on the old one no longer holds. */
+    reset: z.boolean().optional(),
+    entries: z.array(z.object({ ac: z.string().max(100), kind: z.enum(["cross", "single"]), state: z.enum(["written", "held"]), heads: z.string().max(4000), acHash: z.string().max(100), reason: z.string().max(500).optional() }).strict()).max(200).default([]),
+    evidence: z.array(z.object({ id: z.string().max(100), status: z.string().max(40), runId: z.string().max(200) }).strict()).max(200).default([]),
+    /** The branch took the main branch: any earlier conflict is over. */
+    clearConflict: z.boolean().optional(),
+    conflict: z.object({ branch: oneLine, message: z.string().max(300), key: oneLine }).strict().optional(),
+  })
+  .strict();
+
+const publishStep = z.discriminatedUnion("type", [reportStep, mrSeenStep, bugsStep, notifyStep, branchNoteStep, mergeRequestStep, recordStep]);
 
 export const publishFileSchema = z
   .object({ version: z.literal(1), kind: z.enum(["gap-report", "generate"]), runId: z.string().max(200).regex(/^[A-Za-z0-9._-]+$/), createdAt: z.string().max(40), steps: z.array(publishStep).max(50) })
@@ -105,6 +126,7 @@ export type MrSeenStep = z.infer<typeof mrSeenStep>;
 export type BugsStep = z.infer<typeof bugsStep>;
 export type NotifyStep = z.infer<typeof notifyStep>;
 export type BranchNoteStep = z.infer<typeof branchNoteStep>;
+export type RecordStep = z.infer<typeof recordStep>;
 export type MergeRequestStep = z.infer<typeof mergeRequestStep>;
 export type PublishStep = z.infer<typeof publishStep>;
 export type PublishFile = z.infer<typeof publishFileSchema>;
@@ -125,16 +147,36 @@ export function parsePublishFile(raw: string): PublishFile {
   return r.data;
 }
 
+/**
+ * Cut what is too long for the strict schema (a string or a list over its limit) instead of failing after the paid work is done.
+ * Only "too big" is repaired; any other problem still throws when the file is read back.
+ */
+function clampToSchema(step: PublishStep): PublishStep {
+  let cur: unknown = JSON.parse(JSON.stringify(step));
+  for (let n = 0; n < 200; n++) {
+    const r = publishStep.safeParse(cur);
+    if (r.success) return r.data;
+    const bad = r.error.issues.find((i) => i.code === "too_big" && (i.type === "string" || i.type === "array"));
+    if (!bad) throw new Error(`publish step "${(step as { type: string }).type}" is not valid: ${r.error.issues[0].path.join(".") || "(top)"}: ${r.error.issues[0].message}`);
+    let node = cur as Record<string, unknown>;
+    for (const k of bad.path.slice(0, -1)) node = node[k as string] as Record<string, unknown>;
+    const last = bad.path[bad.path.length - 1] as string;
+    const v = node[last] as string | unknown[];
+    node[last] = v.slice(0, Number((bad as unknown as { maximum: number | bigint }).maximum));
+  }
+  throw new Error("publish step is too large");
+}
+
 /** Add steps to a run directory's publish.json (created on the first call). */
 export function deferSteps(runDir: string, kind: PublishFile["kind"], runId: string, steps: PublishStep[]): PublishFile {
   const file = path.join(runDir, PUBLISH_FILE);
   let doc: PublishFile = { version: 1, kind, runId, createdAt: new Date().toISOString(), steps: [] };
   try {
     doc = parsePublishFile(fs.readFileSync(file, "utf8"));
-  } catch {
-    /* new file */
+  } catch (e) {
+    if (fs.existsSync(file)) throw e; // a file that is there but unreadable is an error, never silently started again
   }
-  doc.steps.push(...steps);
+  doc.steps.push(...steps.map(clampToSchema));
   fs.mkdirSync(runDir, { recursive: true });
   fs.writeFileSync(file, JSON.stringify(doc, null, 2) + "\n");
   return doc;

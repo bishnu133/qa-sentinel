@@ -22,7 +22,7 @@ import { publish } from "../reporting/publish.js";
 import { reviewMarkdown, reviewTests, type ReviewOutcome } from "../review/reviewer.js";
 import { TEST_FILE, addedLines } from "../guardrails.js";
 import { indexTests, changedTests, checkNewTests, checkTestMap, readTestMap, traceMarkdown, traceStory } from "../analysis/testIndex.js";
-import { bundleBranch, deferInNewRun, deferSteps, type PublishStep } from "../reporting/deferred.js";
+import { bundleBranch, deferInNewRun, deferSteps, type PublishStep, type RecordStep } from "../reporting/deferred.js";
 import { createOrUpdateMergeRequest, gitlabContext, latestMrForBranch, pushUrl, upsertMarkedNote } from "../scm/gitlab.js";
 import { engineFor } from "../engines/ClaudeCodeEngine.js";
 import { ClaudeAccessError } from "../claude.js";
@@ -346,6 +346,7 @@ async function generateRun(o: GenerateOptions, ctl: JobControl): Promise<number>
   const storyMode = Boolean(parts && storyKey);
   // The story's test branch: continue from the server's copy, merge the main branch into it. Never rebuilt, never force-pushed.
   let sb: Extract<PrepareResult, { ok: true }> | undefined;
+  let recordReset = false;
   if (storyMode && !o.dryRun) {
     const prep = await prepareStoryBranch(cwd, c, storyKey!, { gitlab: ctx, env: o.processEnv, project: testProject });
     if (!prep.ok) {
@@ -355,7 +356,11 @@ async function generateRun(o: GenerateOptions, ctl: JobControl): Promise<number>
         // Split CI jobs: this job writes nothing to Jira or GitLab; the note waits for `qa-sentinel publish`.
         if (storyKey) {
           const steps: PublishStep[] = [];
-          if (prep.reason === "conflict") steps.push({ type: "notify", story: storyKey, event: "merge-conflict", text: `the test branch ${prep.branch} cannot take ${c.ci.targetBranch}: ${prep.message}`.slice(0, 2000), key: prep.branch });
+          const key = conflictKey(cwd, c, prep.branch);
+          if (prep.reason === "conflict") {
+            steps.push({ type: "record", story: storyKey, entries: [], evidence: [], conflict: { branch: prep.branch, message: prep.message.slice(0, 300), key } });
+            steps.push({ type: "notify", story: storyKey, event: "merge-conflict", text: `the test branch ${prep.branch} cannot take ${c.ci.targetBranch}: ${prep.message}`.slice(0, 2000), key });
+          }
           steps.push({ type: "branch-note", story: storyKey, marker: "<!-- qa-sentinel:story-branch-blocked -->", text: `**QA agent: blocked.** ${prep.message}`.slice(0, 4000) });
           const dir = deferInNewRun(cwd, "generate", "gen-blocked", steps);
           log.ok(`blocked note left for \`qa-sentinel publish\`: ${path.relative(cwd, dir)}/publish.json`);
@@ -375,7 +380,10 @@ async function generateRun(o: GenerateOptions, ctl: JobControl): Promise<number>
     }
     prep.notes.forEach((n) => log.warn(n));
     // A new branch (the earlier merge request was closed or merged, or the branch was gone) starts with no record of tests written: they are written again.
-    if ((!prep.existing || prep.previousMr) && ctl.store) await resetWrittenRecords(ctl.store, storyKey!);
+    if ((!prep.existing || prep.previousMr) && ctl.store) {
+      await resetWrittenRecords(ctl.store, storyKey!);
+      recordReset = true;
+    }
     if (prep.mergedMain) log.info(`merged ${c.ci.targetBranch} into ${prep.branch}`);
     log.step(`${prep.branch}: ${prep.existing ? "building on the existing branch" : `new branch from ${c.ci.targetBranch}`}`);
     sb = prep;
@@ -559,7 +567,10 @@ async function generateRun(o: GenerateOptions, ctl: JobControl): Promise<number>
     fs.writeFileSync(path.join(cwd, "qa-sentinel-summary.md"), summary);
     log.ok("every decision is reuse or skip: existing tests are enough");
     // The ACs were planned and need nothing new: written, as far as the story is concerned (so `stories` stops listing them as ready).
-    if (storyMode && storyKey && scope && ctl.store) await recordStoryRun(ctl.store, storyKey, { scope, parts: manifestParts, acs: req.acceptanceCriteria, plan, runId: run.id, branch });
+    if (storyMode && storyKey && scope && ctl.store) {
+      await recordStoryRun(ctl.store, storyKey, { scope, parts: manifestParts, acs: req.acceptanceCriteria, plan, runId: run.id, branch });
+      if (o.deferPublish) deferSteps(run.dir, "generate", run.id, [{ type: "record", story: storyKey, ...storyRecordPatch({ scope, parts: manifestParts, acs: req.acceptanceCriteria, plan, runId: run.id }) }]);
+    }
     return finish("no-changes-needed", 0);
   }
 
@@ -793,6 +804,7 @@ async function generateRun(o: GenerateOptions, ctl: JobControl): Promise<number>
     bundleBranch(cwd, run.dir, branch);
     const crossAcs = storyMode && storyKey && scope?.crossInScope.length ? scope.crossInScope : [];
     const acText = new Map(requirementItems(req).map((a) => [a.id, a.text]));
+    // The branch starts again (see resetWrittenRecords): the old record is cleared BEFORE the merge request is recorded, not after.
     deferSteps(run.dir, "generate", run.id, [
       {
         type: "merge-request",
@@ -800,13 +812,16 @@ async function generateRun(o: GenerateOptions, ctl: JobControl): Promise<number>
         headSha: git(cwd, ["rev-parse", "HEAD"]),
         ...(sb?.remoteSha ? { expectSha: sb.remoteSha } : {}),
         ...(storyMode && storyKey ? { storyKey } : {}),
+        ...(recordReset && storyMode && storyKey ? { resetRecord: true } : {}),
         title: mrTitle,
         description,
         labels: mrLabels,
         ...(crossAcs.length && storyKey ? { notify: { story: storyKey, event: "cross-service-tests-ready", text: `end-to-end tests for ${crossAcs.join(", ")} are ready for review: {mr}`, key: `${crossAcs.join("+")}@{iid}` } } : {}),
-        ...(c.reporting.targets.includes("jira") ? { jira: { storyKey: req.storyKey, service: service.name, risk: planned.risked.overall, verification: verification.status, environment, trace: trace.acs, acText: [...acText], discrepancies, weakTests: review.review?.tests.filter((t) => t.verdict === "weak" || t.verdict === "wrong-oracle").length, report: description } } : {}),
+        ...(c.reporting.targets.includes("jira") ? { jira: { storyKey: req.storyKey, service: service.name, risk: planned.risked.overall, verification: verification.status, environment, trace: trace.acs, acText: [...acText], discrepancies: discrepancies.map((d) => ({ test: String(d.test).slice(0, 500), ...(d.note ? { note: String(d.note).slice(0, 2000) } : {}) })).slice(0, 500), weakTests: review.review?.tests.filter((t) => t.verdict === "weak" || t.verdict === "wrong-oracle").length, report: description } } : {}),
       },
     ]);
+    // The story record: written only once the push is done, so it is a step of its own, after the merge request.
+    if (storyMode && storyKey && scope) deferSteps(run.dir, "generate", run.id, [{ type: "record", story: storyKey, ...storyRecordPatch({ scope, parts: manifestParts, acs: req.acceptanceCriteria, plan, runId: run.id }) }]);
     log.ok(`publishing deferred: ${run.rel}/publish.json and ${run.rel}/branch.bundle (run \`qa-sentinel publish --run ${run.id}\`)`);
   } else if (o.push) {
     // Push with a one-off URL so the token never sits in .git/config where an agent could read it.
@@ -880,25 +895,48 @@ const backfillHash = (targets: BackfillTarget[]) => {
 };
 
 /** What a story-scoped run leaves in the story record: the cross-service ACs it wrote (or still holds), and what the plan said about each AC. A cache; losing it only repeats work the job key would have skipped. */
-async function recordStoryRun(store: RecordStore, story: string, i: { scope: StoryScope; parts: ServicePart[]; acs: { id: string; text: string }[]; plan: { requirementStatus: { id: string; status: string }[] }; runId: string; branch: string }): Promise<void> {
+export type RecordPatch = Omit<RecordStep, "type" | "story">;
+
+export function storyRecordPatch(i: { scope: StoryScope; parts: ServicePart[]; acs: { id: string; text: string }[]; plan: { requirementStatus: { id: string; status: string }[] }; runId: string }): RecordPatch {
+  const text = new Map(i.acs.map((a) => [a.id, a.text]));
+  const entries: RecordPatch["entries"] = [];
+  for (const r of i.scope.readiness) {
+    const heads = headsDigest(i.parts, r.services);
+    const hash = acHash(text.get(r.ac) ?? "");
+    if (i.scope.acScope.includes(r.ac)) entries.push({ ac: r.ac, kind: r.kind, state: "written", heads, acHash: hash });
+    // Only the cross-service ACs keep a "held" note (what they wait for); a single-service AC that waits has nothing written to remember.
+    else if (r.kind === "cross") entries.push({ ac: r.ac, kind: r.kind, state: "held", heads, acHash: hash, reason: (i.scope.heldAcs.get(r.ac) ?? r.reason ?? "").slice(0, 500) || undefined });
+  }
+  const evidence = i.plan.requirementStatus.filter((st) => i.scope.acScope.includes(st.id)).map((st) => ({ id: st.id, status: st.status.slice(0, 40), runId: i.runId }));
+  return { entries, evidence, clearConflict: true };
+}
+
+/** Apply a patch to the record. Used by the run itself and, in split mode, by `qa-sentinel publish` (the record step). */
+export async function applyRecordPatch(store: RecordStore, story: string, patch: RecordPatch & { reset?: boolean }): Promise<void> {
   const at = new Date().toISOString();
+  await store.locked(story, async () => {
+    const rec = (await store.load(story)) ?? emptyRecord(story);
+    if (patch.reset) {
+      rec.crossService = {};
+      rec.singleService = {};
+      delete rec.agentMr;
+    }
+    for (const e of patch.entries ?? []) {
+      const map = e.kind === "cross" ? rec.crossService : rec.singleService;
+      if (e.state === "written") map[e.ac] = { state: "written", heads: e.heads, acHash: e.acHash, at };
+      else if (map[e.ac]?.state !== "written" || map[e.ac].acHash !== e.acHash) map[e.ac] = { state: "held", heads: e.heads, acHash: e.acHash, at, ...(e.reason ? { reason: e.reason } : {}) };
+    }
+    for (const ev of patch.evidence ?? []) rec.acEvidence[ev.id] = { status: ev.status, at, runId: ev.runId };
+    if (patch.clearConflict) delete rec.conflict; // the branch took the main branch: any earlier conflict is over
+    if (patch.conflict) rec.conflict = { ...patch.conflict, at };
+    rec.updatedAt = at;
+    await store.save(rec);
+  });
+}
+
+async function recordStoryRun(store: RecordStore, story: string, i: Parameters<typeof storyRecordPatch>[0] & { branch: string }): Promise<void> {
   try {
-    await store.locked(story, async () => {
-      const rec = (await store.load(story)) ?? emptyRecord(story);
-      const text = new Map(i.acs.map((a) => [a.id, a.text]));
-      for (const r of i.scope.readiness) {
-        const map = r.kind === "cross" ? rec.crossService : rec.singleService;
-        const heads = headsDigest(i.parts, r.services);
-        const hash = acHash(text.get(r.ac) ?? "");
-        if (i.scope.acScope.includes(r.ac)) map[r.ac] = { state: "written", heads, acHash: hash, at };
-        // Only the cross-service ACs keep a "held" note (what they wait for); a single-service AC that waits has nothing written to remember.
-        else if (r.kind === "cross" && (map[r.ac]?.state !== "written" || map[r.ac].acHash !== hash)) map[r.ac] = { state: "held", heads, acHash: hash, at, reason: i.scope.heldAcs.get(r.ac) ?? r.reason };
-      }
-      for (const st of i.plan.requirementStatus) if (i.scope.acScope.includes(st.id)) rec.acEvidence[st.id] = { status: st.status, at, runId: i.runId };
-      delete rec.conflict; // the branch took the main branch: any earlier conflict is over
-      rec.updatedAt = at;
-      await store.save(rec);
-    });
+    await applyRecordPatch(store, story, storyRecordPatch(i));
   } catch (e) {
     log.warn(`could not update the story record for ${story}: ${(e as Error).message}`);
   }
@@ -926,7 +964,8 @@ async function resetWrittenRecords(store: RecordStore, story: string): Promise<v
  * section shows it until a run goes through) and the people who asked to know are told, again when the branch or main has
  * moved on since (the notification key holds both tips). Best effort; the run itself is already blocked.
  */
-async function reportConflict(cwd: string, c: Config, story: string, branch: string, message: string, env: NodeJS.ProcessEnv, store: RecordStore | undefined): Promise<void> {
+/** The notification key of a conflict: the branch and both tips, so a branch or main that moved on is told again. */
+export function conflictKey(cwd: string, c: Config, branch: string): string {
   const tip = (ref: string) => {
     try {
       return git(cwd, ["rev-parse", "-q", "--verify", ref]).slice(0, 10);
@@ -934,20 +973,25 @@ async function reportConflict(cwd: string, c: Config, story: string, branch: str
       return "?";
     }
   };
-  const key = `${branch}@${tip(`origin/${branch}`)}+${tip(`origin/${c.ci.targetBranch}`)}`;
-  const st = store ?? openStore(cwd, c, env);
+  return `${branch}@${tip(`origin/${branch}`)}+${tip(`origin/${c.ci.targetBranch}`)}`;
+}
+
+/** Remember the conflict in the story record and show it in the status comment's pending section. Best effort. */
+export async function showConflict(c: Config, story: string, branch: string, message: string, key: string, env: NodeJS.ProcessEnv, st: RecordStore): Promise<void> {
   try {
-    await st.locked(story, async () => {
-      const rec = (await st.load(story)) ?? emptyRecord(story);
-      const at = new Date().toISOString();
-      await st.save({ ...rec, conflict: { branch, message: message.slice(0, 300), at, key }, updatedAt: at });
-    });
+    await applyRecordPatch(st, story, { entries: [], evidence: [], conflict: { branch, message: message.slice(0, 300), key } });
     const ctx = jiraContext(c.requirements.jira, env);
     const rec = await st.load(story);
     if (ctx && rec && jiraMode(c) !== "legacy") await refreshStaleness(ctx, story, { pending: pendingWiki(rec, {}), visibility: c.reporting.jira.visibility, basis: rec.basis, rec });
   } catch (e) {
     log.warn(`could not show the merge conflict on ${story}: ${(e as Error).message.split("\n")[0]}`);
   }
+}
+
+async function reportConflict(cwd: string, c: Config, story: string, branch: string, message: string, env: NodeJS.ProcessEnv, store: RecordStore | undefined): Promise<void> {
+  const key = conflictKey(cwd, c, branch);
+  const st = store ?? openStore(cwd, c, env);
+  await showConflict(c, story, branch, message, key, env, st);
   await notifyStory(cwd, c, story, "merge-conflict", `the test branch ${branch} cannot take ${c.ci.targetBranch}: ${message}`, key, env, st);
 }
 
