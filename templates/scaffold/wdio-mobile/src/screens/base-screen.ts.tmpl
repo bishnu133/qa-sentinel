@@ -18,12 +18,15 @@ export abstract class BaseScreen {
     return this;
   }
 
-  /** Open a deep link (myapp://orders/new) when the app supports them: faster and steadier than tapping there. */
+  /** Open a deep link (myapp://orders/new) when the app supports them (Android only for now): faster and steadier than tapping there. */
   async openDeepLink(url: string): Promise<this> {
     // The app's package: from the session (an installed APK reports it) or QA_APP_PACKAGE.
     const pkg = (driver.capabilities as Record<string, unknown>).appPackage ?? process.env.QA_APP_PACKAGE;
     if (driver.isAndroid) await driver.execute("mobile: deepLink", { url, package: pkg });
-    else await driver.url(url);
+    else
+      // Not supported yet: the XCUITest driver's deep-link command was not confirmed against its documentation, and a plain
+      // `driver.url()` opens Safari, not the app. Open the screen by tapping, or ask the team to add iOS support after checking.
+      throw new Error(`openDeepLink is not supported on iOS yet (${url}). Reach the screen through the UI instead.`);
     return this.waitForOpen();
   }
 }

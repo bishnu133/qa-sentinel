@@ -50,6 +50,24 @@ export function agentEnv(c: Config, env: NodeJS.ProcessEnv = process.env) {
   const out = scrubbedEnv({ baseUrlEnv: c.tests.api.baseUrlEnv, passEnv: [...c.guardrails.passEnv, ...layerEnvNames(c), ...shared], forAgent: true }, env);
   // The agent's own test runs must not heal either (and an explicit value beats a .env file's QA_HEALING).
   if (c.tests.web.enabled) out.QA_HEALING = "off";
+  // A device farm's key may sit in the Appium URL (https://user:key@host): like QA_APPIUM_CAPS, it is for qa-sentinel's own
+  // runs. Without tests.auth.shareWithAgent the agent gets the URL without the login (its own farm runs then cannot sign in).
+  if (c.tests.mobile.enabled && !c.tests.auth.shareWithAgent) {
+    const k = c.tests.mobile.appiumUrlEnv;
+    const v = out[k];
+    if (v) {
+      try {
+        const u = new URL(v);
+        if (u.username || u.password) {
+          u.username = "";
+          u.password = "";
+          out[k] = u.toString();
+        }
+      } catch {
+        delete out[k]; // not a URL we can clean: do not pass it on
+      }
+    }
+  }
   return out;
 }
 /**

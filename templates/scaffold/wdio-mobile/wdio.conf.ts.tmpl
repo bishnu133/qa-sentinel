@@ -6,7 +6,9 @@
  *   QA_DEVICE_NAME, QA_PLATFORM_VERSION, QA_UDID
  *   QA_APP               path or URL of the .apk/.aab/.app/.ipa to install, or
  *   QA_APP_PACKAGE + QA_APP_ACTIVITY (Android) / QA_BUNDLE_ID (iOS) for an installed app
- *   QA_VIDEO=off         no screen recording; QA_JUNIT_DIR / QA_RESULTS_DIR: where reports and evidence go
+ *   QA_APPIUM_CAPS      a JSON object merged over the capabilities below, for a device farm's own block (copy it from the
+ *                       farm's docs), e.g. '{"bstack:options":{"userName":"..."}}'. Its keys win over the ones set here.
+ *   QA_VIDEO=off         no screen recording (also for farms that record themselves); QA_JUNIT_DIR / QA_RESULTS_DIR: where reports and evidence go
  * qa-sentinel runs specs with `{{mobileRunCommand}} --spec <file>`.
  */
 import { afterMobileTest, beforeMobileTest } from "./src/mobile/evidence";
@@ -28,6 +30,17 @@ const capabilities: Record<string, unknown> = {
   "appium:newCommandTimeout": 240,
   "appium:autoGrantPermissions": ios ? undefined : true,
 };
+// Farm-specific blocks. The content is never printed: it may hold an access key.
+if (process.env.QA_APPIUM_CAPS?.trim()) {
+  let extra: unknown;
+  try {
+    extra = JSON.parse(process.env.QA_APPIUM_CAPS);
+  } catch {
+    throw new Error("QA_APPIUM_CAPS is not valid JSON (its content is not shown here, it may hold a key)");
+  }
+  if (!extra || typeof extra !== "object" || Array.isArray(extra)) throw new Error("QA_APPIUM_CAPS must be one JSON object");
+  Object.assign(capabilities, extra);
+}
 for (const k of Object.keys(capabilities)) if (capabilities[k] === undefined) delete capabilities[k];
 
 export const config = {

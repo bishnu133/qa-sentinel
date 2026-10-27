@@ -9,6 +9,8 @@ import path from "node:path";
 import YAML from "yaml";
 import { indexTests, checkTestMap, readTestMap } from "../analysis/testIndex.js";
 import { CONFIG_FILE, type Config, configPath, loadConfig } from "../config.js";
+import { extraCaps, platformOf } from "../mobile/caps.js";
+import { CommandEngine } from "../engines/CommandEngine.js";
 import { checkClaudeAccess, claudeAvailable, staticAccessProblem } from "../claude.js";
 import { agentEnv } from "../run.js";
 import { isGitRepo } from "../git.js";
@@ -45,19 +47,33 @@ export function runChecks(cwd: string, env: NodeJS.ProcessEnv = process.env): Ch
     return checks;
   }
 
-  const claude = claudeAvailable();
-  if (claude.ok) add("ok", `Claude Code CLI (${claude.version})`);
-  else add("fail", "Claude Code CLI installed", "npm i -g @anthropic-ai/claude-code");
+  if (c.agent.engine === "command") {
+    // An external engine: qa-sentinel cannot know its credentials; it can check that the program is there and that the safety settings fit.
+    const eng = new CommandEngine({ command: c.agent.command ?? "" });
+    eng.available().ok ? add("ok", `agent.engine: command (${(c.agent.command ?? "").trim().split(/\s+/)[0]} found)`, "its output is checked by guardrails after each run; see docs/ENGINE-COMMAND.md") : add("fail", `agent.command: ${(c.agent.command ?? "").trim().split(/\s+/)[0]} not found`, "the first word must be a program the shell can find (a path or on PATH)");
+    if (!/\{taskFile\}/.test(c.agent.command ?? "")) add("ok", "agent.command reads the task on stdin", "it has no {taskFile}, so the task JSON comes only on stdin");
+    if (c.agent.sandbox.enabled && c.agent.sandbox.failIfUnavailable && !c.verification.wrapCommand) add("fail", "agent.sandbox covers only Claude Code", "with agent.engine: command, the run is refused until verification.wrapCommand isolates the program (or agent.sandbox.failIfUnavailable is false)");
+    else if (!c.verification.wrapCommand) add("warn", "the engine command runs unwrapped", "set verification.wrapCommand (a container or similar) if the program must be isolated; guardrails only check what it changed afterwards");
+    else add("ok", "the engine command runs inside verification.wrapCommand");
+    const claudeVars = Object.keys(env).filter((k) => /^(ANTHROPIC_|CLAUDE_)/.test(k) && c.guardrails.passEnv.includes(k));
+    if (claudeVars.length) add("warn", `passEnv forwards Claude variables to the engine command: ${claudeVars.join(", ")}`, "only if that program is meant to use them");
+    add("warn", "`qa-sentinel learn` still calls Claude Code", "it does not use the engine setting; every other agent command does");
+  } else {
+    const claude = claudeAvailable();
+    if (claude.ok) add("ok", `Claude Code CLI (${claude.version})`);
+    else add("fail", "Claude Code CLI installed", "npm i -g @anthropic-ai/claude-code");
 
-  // Which way the agents reach the model: billing and data residency follow it, so say it plainly.
-  const route = modelRoute(env);
-  if (route.missing.length) add("fail", `model route: ${route.label}`, `missing ${route.missing.join("; ")}`);
-  else if (route.unsure?.length) add("warn", `model route: ${route.label}`, route.unsure.join("; "))
-  else if (route.kind === "login") add("warn", `model route: ${route.label}`, "fine locally; CI needs ANTHROPIC_API_KEY, Bedrock (CLAUDE_CODE_USE_BEDROCK) or Vertex (CLAUDE_CODE_USE_VERTEX)");
-  else add("ok", `model route: ${route.label}`, route.managed ? `from ${route.managed}: runs are billed to whoever owns that setup` : undefined);
+    // Which way the agents reach the model: billing and data residency follow it, so say it plainly.
+    const route = modelRoute(env);
+    if (route.missing.length) add("fail", `model route: ${route.label}`, `missing ${route.missing.join("; ")}`);
+    else if (route.unsure?.length) add("warn", `model route: ${route.label}`, route.unsure.join("; "))
+    else if (route.kind === "login") add("warn", `model route: ${route.label}`, "fine locally; CI needs ANTHROPIC_API_KEY, Bedrock (CLAUDE_CODE_USE_BEDROCK) or Vertex (CLAUDE_CODE_USE_VERTEX)");
+    else add("ok", `model route: ${route.label}`, route.managed ? `from ${route.managed}: runs are billed to whoever owns that setup` : undefined);
 
-  const keyProblem = route.missing.length ? undefined : staticAccessProblem(env, route);
-  if (keyProblem) add("fail", "Claude credentials look right", keyProblem);
+    const keyProblem = route.missing.length ? undefined : staticAccessProblem(env, route);
+    if (keyProblem) add("fail", "Claude credentials look right", keyProblem);
+
+  }
 
   isGitRepo(cwd) ? add("ok", "test repo is a git repository") : add("fail", "test repo is a git repository", "git init");
 
@@ -198,7 +214,7 @@ export function runChecks(cwd: string, env: NodeJS.ProcessEnv = process.env): Ch
     if (r.status === 7 && (r.stdout ?? "").includes(want)) add("ok", "verification.wrapCommand runs a command", "a command with spaces and quotes ran, its output came back and its exit code (7) passed through; what the wrapper isolates is up to the wrapper (see SECURITY.md)");
     else add("fail", "verification.wrapCommand runs a command", r.error ? `failed to start: ${r.error.message}` : r.status !== 7 ? `a test command that exits 7 came back as exit ${r.status}: the wrapper must pass the exit code through (a failing test would look green)${r.stderr ? `: ${r.stderr.trim().slice(0, 160)}` : ""}` : "the command's output did not come back whole: check the quoting around {cmd} (use sh -c {cmd})");
   }
-  if (c.agent.sandbox.enabled) {
+  if (c.agent.sandbox.enabled && c.agent.engine === "claude-code") {
     // Claude Code's Bash sandbox: on Linux it needs bubblewrap and socat (macOS has Seatbelt built in). Native Windows runs commands unsandboxed.
     if (process.platform === "linux") {
       const missing = ["bwrap", "socat"].filter((b) => spawnSync("sh", ["-c", `command -v ${b}`], { encoding: "utf8" }).status !== 0);
@@ -259,6 +275,34 @@ export function mobileChecks(cwd: string, c: Config, env: NodeJS.ProcessEnv): Ch
   env.QA_APP || env.QA_APP_PACKAGE || env.QA_BUNDLE_ID
     ? add("ok", `app under test: ${env.QA_APP ?? env.QA_APP_PACKAGE ?? env.QA_BUNDLE_ID}`)
     : add("warn", "app under test (QA_APP, QA_APP_PACKAGE or QA_BUNDLE_ID)", "the .apk/.app to install, or the package/bundle id of an installed app");
+  // Farm blocks and iOS. Values of QA_APPIUM_CAPS are never printed (they can hold a key).
+  if (env.QA_APPIUM_CAPS?.trim()) {
+    try {
+      add("ok", `QA_APPIUM_CAPS: a JSON object with ${Object.keys(extraCaps(env)).length} key(s)`, "merged over the capabilities in wdio.conf.ts; it is given to qa-sentinel's own runs, not to the agent");
+    } catch (e) {
+      add("fail", "QA_APPIUM_CAPS is one JSON object", (e as Error).message);
+    }
+    if (fs.existsSync(path.join(cwd, "wdio.conf.ts")) && !fs.readFileSync(path.join(cwd, "wdio.conf.ts"), "utf8").includes("QA_APPIUM_CAPS")) add("warn", "wdio.conf.ts reads QA_APPIUM_CAPS", "this wdio.conf.ts is from an older scaffold and ignores it: add the merge shown in templates/scaffold/wdio-mobile/wdio.conf.ts.tmpl");
+  }
+  const targetsIos = Object.entries(m.targets).filter(([, t]) => (t.env.QA_MOBILE_PLATFORM ?? t.platform) === "ios");
+  if (platformOf(env, m.platform) === "ios" || targetsIos.length) {
+    add("warn", "iOS runs are not proven yet", "this code has not been run on a Mac or an iOS farm; try docs/TRY-PR9.md and report what fails");
+    if (platformOf(env, m.platform) === "ios") {
+      env.QA_BUNDLE_ID || env.QA_APP || env.QA_APPIUM_CAPS ? add("ok", "iOS app under test", `${env.QA_BUNDLE_ID ? "QA_BUNDLE_ID" : env.QA_APP ? "QA_APP" : "QA_APPIUM_CAPS"} is set`) : add("fail", "iOS app under test (QA_BUNDLE_ID or QA_APP)", "the bundle id of an installed app, or an .app/.ipa to install");
+      if (process.platform !== "darwin" && !env[m.appiumUrlEnv]) add("warn", "iOS needs a Mac or a farm", `this machine is ${process.platform} and ${m.appiumUrlEnv} is not set, so there is no Appium server that can drive iOS`);
+    }
+    // Each iOS target on its own: it needs a Mac here, or an Appium URL of its own (set in the target or passed on from the environment).
+    for (const [name, t] of targetsIos) {
+      const hasUrl = Boolean(env[m.appiumUrlEnv] || t.env[m.appiumUrlEnv] || t.passEnv.includes(m.appiumUrlEnv));
+      if (process.platform !== "darwin" && !hasUrl) add("warn", `mobile target ${name}: iOS needs a Mac or a farm`, `this machine is ${process.platform} and the target has no ${m.appiumUrlEnv} (set it in env, list it in passEnv, or run on a Mac)`);
+    }
+    if (m.explore === "snapshot" && m.deepLinkBase) add("warn", "mobile.explore on iOS", "deep links are not supported on iOS yet; only the screen the app opens on is saved");
+  }
+  for (const [name, t] of Object.entries(m.targets)) {
+    const missing = t.passEnv.filter((n) => !env[n]);
+    add(missing.length ? "warn" : "ok", `mobile target ${name}${t.platform ? ` (${t.platform})` : ""}`, missing.length ? `not set here: ${missing.join(", ")} (names only; set them before \`qa-sentinel mobile-run --target ${name}\`)` : "`qa-sentinel mobile-run --target " + name + " --dry-run` shows the command");
+  }
+  if (m.explore === "snapshot" && !(env.QA_APP || env.QA_APP_PACKAGE || env.QA_BUNDLE_ID || env.QA_APPIUM_CAPS)) add("warn", "tests.mobile.explore: snapshot needs an app", "set QA_APP, QA_APP_PACKAGE or QA_BUNDLE_ID where `generate` runs, and a device or emulator behind Appium: without them the snapshot step logs a warning and the agent works from the app's code");
   add(env[m.appiumUrlEnv] ? "ok" : "warn", `Appium: ${env[m.appiumUrlEnv] ? safeUrl(env[m.appiumUrlEnv]!) : `${m.appiumUrl} (default)`}`, env[m.appiumUrlEnv] ? undefined : `set ${m.appiumUrlEnv} for a remote Appium or device farm; qa-sentinel checks <url>/status before running mobile tests`);
   return out;
 }
@@ -314,6 +358,7 @@ export async function onlineChecks(cwd: string, env: NodeJS.ProcessEnv = process
 /** A real one-word call to Claude, the way a run would make it (costs a fraction of a cent). */
 export async function claudeLiveCheck(cwd: string): Promise<Check> {
   const c = loadConfig(cwd);
+  if (c.agent.engine === "command") return { level: "warn", label: "the engine command's credentials", hint: "agent.engine is command: qa-sentinel cannot test its access; run one cheap task (docs/ENGINE-COMMAND.md) to check" };
   const seconds = c.agent.accessCheckSeconds || 60;
   const r = await checkClaudeAccess({ cwd, env: agentEnv(c), model: c.agent.model, seconds });
   if (r.ok) return { level: r.warning ? "warn" : "ok", label: "Claude answers a test call", hint: r.warning ?? (r.durationMs !== undefined ? `${Math.round(r.durationMs / 100) / 10}s` : r.skipped) };

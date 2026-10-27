@@ -17,7 +17,8 @@ The device and app come from the environment (`QA_APPIUM_URL`, `QA_MOBILE_PLATFO
 - Selectors as getters, in this order of preference: accessibility id `$("~place-order")`, then platform ids (`$("id=com.shop:id/total")` on Android, `-ios predicate string:name == "total"` on iOS), then text for static copy. Never XPath by position or index.
 - Actions go through the ui helper with the name a person would use: `await this.ui.tap(this.placeOrder, "Place order button")`, `this.ui.type(this.quantity, "2", "Quantity")`, `this.ui.scrollTo(…, "Delivery options")`, `this.ui.back()`.
 - Methods name user actions (`placeOrder(item, qty)`), not taps. No assertions in screen objects; return elements or values.
-- Prefer `openDeepLink("myapp://orders/123")` to tapping through several screens to reach the one under test, when the app has deep links.
+- Prefer `openDeepLink("myapp://orders/123")` to tapping through several screens to reach the one under test, when the app has deep links (Android only for now: on iOS `openDeepLink` throws "not supported yet", so reach the screen through the UI there).
+- If `run/screen-snapshots/README.md` is mentioned in your task, read it first: it lists the accessibility ids actually on the affected screens (`<name>.summary.txt`). It shows one moment of each screen; elements behind a tap are not in it.
 
 ## Specs
 - One `describe` per screen or flow; call `const t = useMobile()` inside it (from `src/fixtures/mobile`: `t.ui`, and `t.api` / `t.data` for setup).
