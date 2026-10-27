@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased — GitHub Actions and pull requests (PR 10 of the finishing plan)
+
+- **CI provider layer.** New `ci.provider: gitlab | github` (default gitlab; the older `ci.scm: github` is read as github when `provider` is unset). New `src/scm/provider.ts` (`scmFor(config, env)`): a thin interface over `src/scm/gitlab.ts` (adapter, no behaviour change) and the new `src/scm/github.ts` (REST: issue comments, pulls, labels, reactions, PR files and diff refs, draft flag; retries on 429/5xx and the secondary rate limit; Link-header paging). `ci.platform` accepts `github`; new `ci.githubApiUrl` (and `GITHUB_API_URL`) for GitHub Enterprise Server.
+- **Moved onto the provider:** the gap report comment (single marker comment, stamp, draft check), `publish` (comment, push, open the test PR with labels, story-branch note), `generate --push`, `metrics --online` reactions, the push URL (`x-access-token`), `init --ci github`, `doctor` and `doctor --online`. `QA_*` mapping from `GITHUB_REPOSITORY`, `GITHUB_EVENT_PATH`, `GITHUB_REF`, `GITHUB_BASE_REF`, `GITHUB_HEAD_REF`. `QA_SENTINEL_GITHUB_TOKEN` is removed from agent and test environments.
+- **Workflow template** `templates/ci/github/qa-gap-report.yml` with a README: a read-only `analysis` job and a `publish` job with `pull-requests: write` and no model key, `permissions: {}` at the top, checkouts without stored credentials, untrusted event text kept out of shell lines, fork PRs skipped.
+- `tag`, `known-defects`, `lessons`, `post-deploy` and `discover` stop with a clear "GitLab only for now" error on a GitHub config.
+- **Deviations from the plan:** only the gap-report workflow is templated (no generation, gate, stories or post-deploy workflows); the target name `gitlab-mr` is kept for the PR comment; actions are pinned by tag, not SHA; the analysis job needs the model key (the "no secrets" rule is read as: no write token and no publishing login). `stories` and `feature` were not moved.
+- Not done: nothing was run against real GitHub; all tests use a fake server. Try it: [docs/TRY-PR10.md](docs/TRY-PR10.md).
+
 ## Unreleased — re-review fixes: publish trust, Jira carry-over, split record (PR 11)
 
 - **Merge from an old main (High).** The per-commit check of a bundle now also compares the final tree with the freshly fetched target branch: a path whose content differs from the target counts as the agent's, whichever commit brought it (a merge that takes back an old file, deletes a file main added later, or brings an old symlink). Tests in `test/bundleAttack.test.ts`.

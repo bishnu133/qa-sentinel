@@ -65,7 +65,7 @@ program
   .command("init")
   .description("set up qa-sentinel in this test repo (existing project or from scratch)")
   .addOption(new Option("--mode <mode>", "existing | scratch").choices(["existing", "scratch"]))
-  .addOption(new Option("--ci <platform>", "gitlab | jenkins").choices(["gitlab", "jenkins"]))
+  .addOption(new Option("--ci <platform>", "gitlab | jenkins | github").choices(["gitlab", "jenkins", "github"]))
   .addOption(new Option("--level <level>", "intelligence (read-only, default) | maintenance (also generate tests)").choices(["intelligence", "maintenance"]))
   .addOption(new Option("--api-framework <name>").choices([...API_FRAMEWORKS]))
   .option("--workspace <dir>", "folder containing the service repos", "..")

@@ -1,6 +1,7 @@
 import type { Config } from "../config.js";
 import { execFileSync } from "node:child_process";
-import { latestMrForBranch, pushUrl, type GitLabContext } from "../scm/gitlab.js";
+import { latestMrForBranch, type GitLabContext } from "../scm/gitlab.js";
+import { scmFor } from "../scm/provider.js";
 import { log } from "../log.js";
 
 /**
@@ -39,11 +40,12 @@ const isAncestor = (cwd: string, a: string, b: string, env?: NodeJS.ProcessEnv) 
 
 /** Where to fetch from and push to: the test repo's project with the token in a one-off URL (never in .git/config), else `origin`. */
 export function remoteFor(c: Config, env: NodeJS.ProcessEnv = process.env): string {
-  const projectPath = c.ci.testRepoProject && !/^\d+$/.test(c.ci.testRepoProject) ? c.ci.testRepoProject : env.CI_PROJECT_PATH;
-  const url = pushUrl(c.ci.gitlabUrl, projectPath, env);
+  const scm = scmFor(c, env);
+  const projectPath = c.ci.testRepoProject && !/^\d+$/.test(c.ci.testRepoProject) ? c.ci.testRepoProject : scm.envProjectPath(env);
+  const url = scm.pushUrl(projectPath, env);
   if (url?.startsWith("http://") && !warnedHttp) {
     warnedHttp = true;
-    log.warn("the push URL is plain http://: the GitLab token travels unencrypted. Use https:// in ci.gitlabUrl.");
+    log.warn(scm.kind === "github" ? "the push URL is plain http://: the GitHub token travels unencrypted. Use https:// (GITHUB_SERVER_URL or ci.githubApiUrl)." : "the push URL is plain http://: the GitLab token travels unencrypted. Use https:// in ci.gitlabUrl.");
   }
   return url ?? "origin";
 }

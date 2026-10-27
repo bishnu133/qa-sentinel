@@ -15,6 +15,7 @@ import { agentCommits, parseSince, targetRef } from "./metrics.js";
 import { LESSONS_FILE, applyLessons, learnLessons, lessonHeadings, processedCommits, reviewerEdits } from "../review/lessons.js";
 import { ensureAgentFiles } from "./init.js";
 import { log } from "../log.js";
+import { requireGitlab } from "../scm/provider.js";
 
 export interface LessonsOptions {
   cwd: string;
@@ -38,6 +39,7 @@ export async function lessonsCommand(o: LessonsOptions): Promise<number> {
 async function lessonsRun(o: LessonsOptions, wrap: (e: AgentEngine) => AgentEngine): Promise<number> {
   const cwd = path.resolve(o.cwd);
   const c = loadConfig(cwd);
+  requireGitlab(c, "lessons");
   const target = targetRef(cwd, c.ci.targetBranch);
   if (!target) throw new Error(`target branch ${c.ci.targetBranch} not found; fetch it first`);
   const lessonsPath = path.join(c.knowledge.dir, LESSONS_FILE).split(path.sep).join("/");

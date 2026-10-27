@@ -23,7 +23,8 @@ import { reviewMarkdown, reviewTests, type ReviewOutcome } from "../review/revie
 import { TEST_FILE, addedLines } from "../guardrails.js";
 import { indexTests, changedTests, checkNewTests, checkTestMap, readTestMap, traceMarkdown, traceStory } from "../analysis/testIndex.js";
 import { bundleBranch, deferInNewRun, deferSteps, type PublishStep, type RecordStep } from "../reporting/deferred.js";
-import { createOrUpdateMergeRequest, gitlabContext, latestMrForBranch, pushUrl, upsertMarkedNote } from "../scm/gitlab.js";
+import { createOrUpdateMergeRequest, gitlabContext, latestMrForBranch, upsertMarkedNote } from "../scm/gitlab.js";
+import { scmFor } from "../scm/provider.js";
 import { engineFor } from "../engines/ClaudeCodeEngine.js";
 import { ClaudeAccessError } from "../claude.js";
 import { budgetedEngine, crossServiceJobKey, endStateOf, generateJobKey } from "../stories/jobs.js";
@@ -236,7 +237,8 @@ async function generateRun(o: GenerateOptions, ctl: JobControl): Promise<number>
   let triggerService: string | undefined;
   let scope: StoryScope | undefined;
   const genv = o.processEnv ? { ...process.env, ...o.processEnv } : undefined;
-  const testProject = c.ci.testRepoProject ?? penv.CI_PROJECT_ID;
+  const scm = scmFor(c, penv);
+  const testProject = scm.testProject(penv);
   if (!o.backfill && !parts && gated && req.storyKey && SAFE_KEY.test(req.storyKey) && isFeature(c, req)) {
     storyKey = req.storyKey.toUpperCase();
     triggerService = service.name;
@@ -841,17 +843,17 @@ async function generateRun(o: GenerateOptions, ctl: JobControl): Promise<number>
       const pushed = pushStoryBranch(cwd, { branch, remote: remoteFor(c, penv), expect: sb.remoteSha, env: o.processEnv });
       if (pushed.retried) log.info(`${branch}: a reviewer pushed meanwhile; their commits were merged in`);
     } else {
-      const projectPath = c.ci.testRepoProject && !/^\d+$/.test(c.ci.testRepoProject) ? c.ci.testRepoProject : penv.CI_PROJECT_PATH;
-      const url = pushUrl(c.ci.gitlabUrl, projectPath, penv);
+      const projectPath = c.ci.testRepoProject && !/^\d+$/.test(c.ci.testRepoProject) ? c.ci.testRepoProject : scm.envProjectPath(penv);
+      const url = scm.pushUrl(projectPath, penv);
       // A per-merge branch is owned by qa-sentinel and named after the source SHA, so a rerun may overwrite it.
       git(cwd, ["push", "--force", url ?? "origin", `HEAD:refs/heads/${branch}`]);
     }
     await recordWritten();
     const project = testProject;
-    if (!ctx || !project) {
-      log.warn("pushed; set QA_SENTINEL_GITLAB_TOKEN and ci.testRepoProject to open the MR automatically");
+    if (!scm.hasToken || !project) {
+      log.warn(scm.kind === "github" ? "pushed; set QA_SENTINEL_GITHUB_TOKEN and ci.testRepoProject to open the pull request automatically" : "pushed; set QA_SENTINEL_GITLAB_TOKEN and ci.testRepoProject to open the MR automatically");
     } else {
-      const mr = await createOrUpdateMergeRequest(ctx, project, {
+      const mr = await scm.createOrUpdateChangeRequest(project, {
         source: branch,
         target: c.ci.targetBranch,
         title: mrTitle,

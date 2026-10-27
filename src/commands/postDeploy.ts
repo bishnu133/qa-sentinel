@@ -16,6 +16,7 @@ import { type StoryRecord, SAFE_KEY, emptyRecord } from "../stories/record.js";
 import { openStore } from "../stories/start.js";
 import { postToStory } from "../reporting/statusComment.js";
 import { log } from "../log.js";
+import { requireGitlab } from "../scm/provider.js";
 
 export interface PostDeployOptions {
   cwd: string;
@@ -152,6 +153,7 @@ export interface StoryOutcome {
 export async function postDeployCommand(o: PostDeployOptions): Promise<number> {
   const cwd = path.resolve(o.cwd);
   const c = loadConfig(cwd);
+  requireGitlab(c, "post-deploy");
   const environment = useEnvironment(c, o.env);
   if (!environment) throw new Error("post-deploy needs --env (an environment from `environments:`)");
   const baseUrl = process.env[c.tests.api.baseUrlEnv]!;

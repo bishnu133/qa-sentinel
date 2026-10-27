@@ -14,6 +14,7 @@ import { runProcess } from "../proc.js";
 import { createOrUpdateMergeRequest, gitlabContext, pushUrl } from "../scm/gitlab.js";
 import { formatUsage } from "../claude.js";
 import { log } from "../log.js";
+import { requireGitlab } from "../scm/provider.js";
 
 /** Tags as qa-sentinel writes them: `@key` or `@key:value`, value limited to route/id characters (no `${`, quotes or code). */
 const TAGS = /\s+@[\w-]+(?::[\w./:{},=-]+)?(?=[\s"'`]|$)/g;
@@ -62,6 +63,7 @@ export async function tagCommand(o: TagOptions): Promise<number> {
 async function tagRun(o: TagOptions, wrap: (e: AgentEngine) => AgentEngine): Promise<number> {
   const cwd = path.resolve(o.cwd);
   const c = loadConfig(cwd);
+  requireGitlab(c, "tag");
   const index = indexTests(cwd, c);
   const missing = index.filter((t) => !t.endpoints.length && !t.pages.length).slice(0, o.limit ?? 200);
   log.step(`tag backfill: ${index.length} tests, ${missing.length} without @endpoint or @page`);
