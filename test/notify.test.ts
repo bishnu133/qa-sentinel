@@ -114,7 +114,7 @@ describe("notifications", () => {
       const { publishCommand } = await import("../src/commands/publish.js");
       const { writeConfig } = await import("../src/config.js");
       writeConfig(cwd, c);
-      expect(await publishCommand({ cwd, kind: "generate", env: { JIRA_PAT: "x" } })).toBe(0);
+      expect(await publishCommand({ cwd, kind: "generate", env: { JIRA_PAT: "x", QA_STORY_KEY: "SHOP-1" } })).toBe(0);
       expect(j.comments["SHOP-1"]).toHaveLength(1);
       expect(j.comments["SHOP-1"][0].body).toContain("qa-sentinel stopped before starting AI work");
     } finally {

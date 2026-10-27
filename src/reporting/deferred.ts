@@ -69,6 +69,8 @@ const mergeRequestStep = z
     /** What the server had for the story branch when the analysis started; a different tip now means "stale, not pushed". */
     expectSha: sha.optional(),
     storyKey: key.optional(),
+    /** The story branch started again: after the push, publish clears what the record says was written on the old one. */
+    resetRecord: z.boolean().optional(),
     title: oneLine,
     description: text(60_000),
     /** Only labels of the shapes qa-sentinel makes are kept (qa-agent, story::, service::, qa-sentinel::, risk::). */

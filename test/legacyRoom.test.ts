@@ -24,3 +24,15 @@ it("a section already in the status comment is not shortened by a move", async (
   expect(all.includes("Shortened to fit")).toBe(false);
   expect(Object.values(j.comments).flat().some((x: any) => x.body.includes("zzzzzz") && !x.body.includes("QA status"))).toBe(true); // the small old comment stays as it was
 });
+it("a moved old comment is not shortened by later ordinary writes (13k moved, then three 7k sections): other sections are shortened first", async () => {
+  const j = await mockJira({}); closers.push(j.close);
+  j.add("SHOP-1", renderStatus("SHOP-1", withSection([], "story-review", "h3. R\nx", new Date("2026-10-21T10:00:00Z"))), BOT);
+  j.add("SHOP-1", big("feature", 330) + "\n{color:#97a0af}qa-sentinel:feature{color}", BOT);
+  await postToStory(cfg, j.ctx, "SHOP-1", { name: "bugs", wiki: "h3. Bugs\nnone", legacyKind: "bugs", legacyMarker: "qa-sentinel:bugs" });
+  expect(JSON.stringify(j.comments)).toContain("qa-sentinel:replaced"); // it was moved
+  for (const n of ["post-deploy", "showcase", "gap-report:orders"]) await postToStory(cfg, j.ctx, "SHOP-1", { name: n, wiki: `h3. ${n}\n` + "y".repeat(7000), legacyKind: n, legacyMarker: `qa-sentinel:${n}` });
+  const status = Object.values(j.comments).flat().find((x: any) => x.body.includes("QA status")) as { body: string };
+  expect(status.body).toContain("TAIL-feature");
+  expect(status.body).toContain("kept=1");
+  expect(status.body.length).toBeLessThan(32_767);
+});

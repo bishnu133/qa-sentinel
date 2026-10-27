@@ -20,7 +20,7 @@ import { log } from "../log.js";
  */
 
 export const STATUS_MARKER = "qa-sentinel:status";
-const SECTION_RE = /^(.*?)(?:\{color:#97a0af\})?Updated ([^{]*?) · qa-sentinel:section=([A-Za-z0-9:._-]+)(?: · basis=([0-9a-f]+))?(?: · acs=([0-9a-f]+))?(?:\{color\})?\s*$/;
+const SECTION_RE = /^(.*?)(?:\{color:#97a0af\})?Updated ([^{]*?) · qa-sentinel:section=([A-Za-z0-9:._-]+)(?: · basis=([0-9a-f]+))?(?: · acs=([0-9a-f]+))?(?: · (kept)=1)?(?:\{color\})?\s*$/;
 /** Jira rejects comments over 32,767 characters. */
 const HARD_LIMIT = 32_000;
 /** A legacy comment is moved into the status comment only while the whole comment stays under this: the rest is room for later writes. */
@@ -37,6 +37,8 @@ export interface Section {
   basis?: string;
   /** Digest of the AC hashes when it was written (absent when the ACs were not known). */
   acs?: string;
+  /** Moved in whole from an older comment that was then replaced: fit() shortens every other section first, and this one only when nothing else is left to shorten. */
+  kept?: boolean;
 }
 
 /** Sections that report a result and can be out of date. The others (pending, bugs, story review, hotfix) are not marked. */
@@ -57,7 +59,7 @@ export function parseStatus(body: string): Section[] {
       if (m[1].trim()) acc.push(m[1]);
       // The out-of-date line is drawn from the basis every time; never keep it as section text.
       const text = acc.filter((l) => !l.startsWith(STALE_LINE)).join("\n").trim();
-      out.push({ name: m[3], wiki: text, updated: m[2].trim(), ...(m[4] ? { basis: m[4] } : {}), ...(m[5] ? { acs: m[5] } : {}) });
+      out.push({ name: m[3], wiki: text, updated: m[2].trim(), ...(m[4] ? { basis: m[4] } : {}), ...(m[5] ? { acs: m[5] } : {}), ...(m[6] ? { kept: true } : {}) });
       acc = [];
     } else acc.push(line);
   }
@@ -71,7 +73,8 @@ function fit(sections: Section[], header: string): Section[] {
   const size = (ss: Section[]) => header.length + ss.reduce((n, x) => n + x.wiki.length + 120, 0);
   let out = sections;
   while (size(out) > HARD_LIMIT) {
-    const big = [...out].sort((a, b) => b.wiki.length - a.wiki.length)[0];
+    const bySize = (a: Section, b: Section) => b.wiki.length - a.wiki.length;
+    const big = [...out].filter((x) => !x.kept && x.wiki.length >= 600).sort(bySize)[0] ?? [...out].sort(bySize)[0];
     if (big.wiki.length < 600) break;
     const keep = Math.floor(big.wiki.length * 0.7);
     const cut = big.wiki.slice(0, keep);
@@ -125,7 +128,7 @@ export function renderStatusChecked(story: string, sections: Section[], o: Rende
     header,
     ...fitted.map((x) => {
       const mark = isStale(x, o) ? `${STALE_LINE} ${o.why?.(x) ?? GENERIC_WHY}.{color}\n` : "";
-      return `${mark}${safeText(x.wiki)}\n{color:#97a0af}Updated ${x.updated} · qa-sentinel:section=${x.name}${x.basis ? ` · basis=${x.basis}` : ""}${x.basis && x.acs ? ` · acs=${x.acs}` : ""}{color}\n`;
+      return `${mark}${safeText(x.wiki)}\n{color:#97a0af}Updated ${x.updated} · qa-sentinel:section=${x.name}${x.basis ? ` · basis=${x.basis}` : ""}${x.basis && x.acs ? ` · acs=${x.acs}` : ""}${x.kept ? " · kept=1" : ""}{color}\n`;
     }),
   ].join("\n");
   return { body, shortened };
@@ -245,7 +248,7 @@ export async function migrateLegacy(c: Config, ctx: JiraContext, story: string, 
   for (const cm of [...movable].reverse()) {
     const name = sectionOfLegacy(cm.body);
     if (!name || have.has(name)) continue;
-    const section: Section = { name, wiki: withoutMarker(cm.body), updated: stamp(jiraTime(cm.updated ?? cm.created)) };
+    const section: Section = { name, wiki: withoutMarker(cm.body), updated: stamp(jiraTime(cm.updated ?? cm.created)), kept: true };
     const trial = renderStatusChecked(story, [...sections, ...carried, section], ropts);
     // Nothing may be shortened by the move (neither this section, nor one already there), and the comment keeps room for what later writes add:
     // fit() shortens the biggest section when the comment is full, and a moved section may then be the biggest while its old comment is gone.

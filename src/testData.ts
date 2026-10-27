@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { netFetch } from "./net.js";
-import type { Config } from "./config.js";
+import { DEFAULT_ALLOWED_HOSTS, type Config } from "./config.js";
 import { hostAllowed, type Finding } from "./guardrails.js";
 
 /**
@@ -171,17 +171,15 @@ export function sweepMarkdown(r: SweepResult, dryRun = false): string {
   ].join("\n");
 }
 
-/** Names of variables that hold qa-sentinel's, GitLab's, Jira's or a model's credentials: never what the sweeper sends to the test environment. */
-const SECRET_ENV = /^(QA_SENTINEL_.*|QA_JIRA_.*|JIRA_.*|GITLAB_.*|GL_.*|CI_JOB_TOKEN|CI_REGISTRY_PASSWORD|CI_DEPLOY_PASSWORD|ANTHROPIC_.*|CLAUDE_.*|OPENAI_.*|AWS_.*|AZURE_.*|GOOGLE_.*|GITHUB_.*|GH_.*|NPM_TOKEN|NODE_AUTH_TOKEN)$/;
-
 /**
  * The sweeper deletes with a credential and a base URL that the (agent-writable) config and environment name. So it refuses, before any
- * request: a credential variable that is one of the known secrets, and a base URL whose host is not in guardrails.allowedHosts (or the
- * environment's own host, which the pipeline put there). Returns the reason, or undefined when the sweep may go ahead.
+ * request: a credential variable that is not a QA_CLEANUP_* one (a name pattern, not a list of known secrets: CI has too many variables that
+ * carry a token), and a base URL whose host is not in guardrails.allowedHosts. When the config was read from the work tree in CI
+ * (`trustedConfig` false) generated code could have added hosts to it, so only the default hosts count then.
  */
-export function sweepRefusal(c: Config, env: NodeJS.ProcessEnv): string | undefined {
+export function sweepRefusal(c: Config, env: NodeJS.ProcessEnv, o: { trustedConfig?: boolean } = {}): string | undefined {
   const name = c.testData.sweepAuthEnv;
-  if (SECRET_ENV.test(name)) return `testData.sweepAuthEnv names ${name}, which is a credential of qa-sentinel, GitLab, Jira or a model: the sweeper will not send it to the test environment`;
+  if (!/^QA_CLEANUP_[A-Z0-9_]*$/.test(name)) return `testData.sweepAuthEnv is ${name}: the sweeper sends this variable to the test environment, so it must be named QA_CLEANUP_...; it will not send it`;
   const url = env[c.tests.api.baseUrlEnv];
   if (url && env[name]) {
     let host = "";
@@ -190,7 +188,9 @@ export function sweepRefusal(c: Config, env: NodeJS.ProcessEnv): string | undefi
     } catch {
       return `${c.tests.api.baseUrlEnv} is not a URL: the sweeper will not send a credential there`;
     }
-    if (!hostAllowed(host, c.guardrails.allowedHosts)) return `the host ${host} (${c.tests.api.baseUrlEnv}) is not in guardrails.allowedHosts: the sweeper will not send a credential there`;
+    const inCi = Boolean(env.CI) && env.CI !== "false" && env.CI !== "0";
+    const allowed = o.trustedConfig === false && inCi ? DEFAULT_ALLOWED_HOSTS : c.guardrails.allowedHosts;
+    if (!hostAllowed(host, allowed)) return `the host ${host} (${c.tests.api.baseUrlEnv}) is not in guardrails.allowedHosts${allowed === DEFAULT_ALLOWED_HOSTS && c.guardrails.allowedHosts.length ? " (a config read from the work tree in CI cannot add hosts: pass --config-from with the config of the pipeline's commit)" : ""}: the sweeper will not send a credential there`;
   }
   return undefined;
 }

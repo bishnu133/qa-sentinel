@@ -69,7 +69,11 @@ export function ownChanges(cwd: string, base: string, tip: string, targetRef: st
     const before = new Set(mbBase ? changesBetween(cwd, mbBase, base).flatMap((ch) => [ch.path, ...(ch.from ? [ch.from] : [])]) : []);
     const vsTarget = changesBetween(cwd, targetRef, tip);
     const shown = new Set(changesBetween(cwd, mbTip, tip).flatMap((ch) => [ch.path, ...(ch.from ? [ch.from] : [])]));
-    for (const ch of vsTarget) if ((shown.has(ch.path) || (ch.from && shown.has(ch.from))) && !before.has(ch.path) && !(ch.from && before.has(ch.from))) add(ch);
+    // A path that was already in the merge request is skipped only if the target did not change it since: otherwise taking the old file back
+    // would newly undo the target's change (between the two merge-bases is exactly what the target changed meanwhile).
+    const targetMoved = new Set(mbBase && mbBase !== mbTip ? changesBetween(cwd, mbBase, mbTip).flatMap((ch) => [ch.path, ...(ch.from ? [ch.from] : [])]) : []);
+    const wasShown = (p: string) => before.has(p) && !targetMoved.has(p);
+    for (const ch of vsTarget) if ((shown.has(ch.path) || (ch.from && shown.has(ch.from))) && !wasShown(ch.path) && !(ch.from && wasShown(ch.from))) add(ch);
   }
   return [...out.values()];
 }

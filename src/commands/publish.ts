@@ -5,7 +5,7 @@ import { execFileSync } from "node:child_process";
 import { loadConfig, type Config } from "../config.js";
 import { findingsMarkdown, violations } from "../guardrails.js";
 import { markMrOpened, patchManifest } from "../run.js";
-import { createOrUpdateMergeRequest, gitlabContext, gitlabMrFromEnv, latestMrForBranch, upsertMarkedNote } from "../scm/gitlab.js";
+import { createOrUpdateMergeRequest, gitlabContext, gitlabMrFromEnv, latestMrForBranch, mergeRequestsForCommit, upsertMarkedNote } from "../scm/gitlab.js";
 import { jiraContext } from "../scm/jira.js";
 import { remoteFor, redact, storyBranchName } from "../generation/storyBranch.js";
 import { publish } from "../reporting/publish.js";
@@ -181,6 +181,35 @@ const STEPS_OF: Record<PublishFile["kind"], readonly string[]> = {
   generate: ["merge-request", "bugs", "notify", "branch-note", "record"],
 };
 
+const KEY_IN_TEXT = /\b[A-Za-z][A-Za-z0-9]*-\d+\b/g;
+const keysIn = (t: string | undefined) => (t ?? "").match(KEY_IN_TEXT)?.map((k) => k.toUpperCase()) ?? [];
+
+/**
+ * The stories this publish job is for. The run folder is untrusted, so it cannot say which story a step belongs to: that comes from what the
+ * pipeline itself carries: QA_STORY_KEY / QA_STORY_KEYS (set by whoever starts the pipeline), the Jira keys in the title, message and branch of
+ * the service commit that triggered it (QA_SERVICE_COMMIT_TITLE, QA_SERVICE_COMMIT_MESSAGE, QA_SERVICE_BRANCH), and in the title, description and
+ * branch of the service merge request of that commit (asked from GitLab with this job's token). Only keys of requirements.jira.projectKeys count when
+ * that is set.
+ */
+export async function trustedStories(c: Config, env: NodeJS.ProcessEnv): Promise<Set<string>> {
+  const keys = new Set<string>();
+  for (const v of [env.QA_STORY_KEY, env.QA_STORY_KEYS, env.QA_SERVICE_COMMIT_TITLE, env.QA_SERVICE_COMMIT_MESSAGE, env.QA_SERVICE_BRANCH]) keysIn(v).forEach((k) => keys.add(k));
+  const ctx = gitlabContext(c.ci.gitlabUrl, env);
+  if (ctx && env.QA_SERVICE_PROJECT && env.QA_SERVICE_SHA) {
+    try {
+      for (const mr of await mergeRequestsForCommit(ctx, env.QA_SERVICE_PROJECT, env.QA_SERVICE_SHA)) for (const v of [mr.title, mr.description, mr.source_branch]) keysIn(v).forEach((k) => keys.add(k));
+    } catch (e) {
+      log.warn(`could not ask GitLab which merge request made ${env.QA_SERVICE_SHA.slice(0, 8)} (${(e as Error).message.split("\n")[0]}); only the pipeline's own variables name the stories`);
+    }
+  }
+  const only = c.requirements.jira?.projectKeys?.map((k) => k.toUpperCase()) ?? [];
+  return new Set([...keys].filter((k) => !only.length || only.includes(k.split("-")[0])));
+}
+
+/** The stories a step would write to (Jira, the record, a story branch). */
+const storiesOf = (s: PublishFile["steps"][number]): string[] =>
+  s.type === "merge-request" ? [s.storyKey, s.jira?.storyKey, s.notify?.story].filter((k): k is string => Boolean(k)) : s.type === "record" || s.type === "notify" || s.type === "bugs" || s.type === "branch-note" ? [s.story] : [];
+
 const validKey = (k: string | undefined) => (k ? /^[A-Za-z][A-Za-z0-9]*-\d+$/.test(k) : false);
 
 async function publishRun(cwd: string, c: Config, dir: string, env: NodeJS.ProcessEnv, o: PublishOptions): Promise<number> {
@@ -204,9 +233,17 @@ async function publishRun(cwd: string, c: Config, dir: string, env: NodeJS.Proce
     results.push({ step: label, ok: false, note: msg });
   };
   const mrEnv = gitlabMrFromEnv(env);
+  let trusted: Set<string> | undefined;
   for (const [i, step] of doc.steps.entries()) {
     const label = `${i + 1}. ${step.type}`;
     try {
+      // Generate runs write to stories (Jira, the record, a story branch): only to the ones this job is for, never to one the run folder names.
+      const asked = doc.kind === "generate" ? storiesOf(step) : [];
+      if (asked.length) {
+        trusted ??= await trustedStories(c, env);
+        const stranger = asked.find((k) => !trusted!.has(k.toUpperCase()));
+        if (stranger) throw new Error(`${stranger} is not a story this job is for (QA_STORY_KEY, or the service commit / merge request names it); the ${step.type} step is refused`);
+      }
       if (step.type === "merge-request") {
         const needMr = wanted(`${i}:mr`, "mr-create") && (!o.target || o.target === "mr-create");
         const needPost = wanted(`${i}:post`, "jira") && (!o.target || o.target === "jira");
@@ -277,6 +314,7 @@ async function publishRun(cwd: string, c: Config, dir: string, env: NodeJS.Proce
           mark(`${i}`, label, "story record updated (conflict)");
           continue;
         }
+        if (step.reset) throw new Error("a record step may not reset the record: that is done with the merge request step, after the push; refused");
         // Which story this run is about is what its merge-request step says (the run folder cannot name another story's record).
         const mrs = doc.steps.flatMap((x, j) => (x.type === "merge-request" ? [{ x, j }] : []));
         const mine = mrs.find(({ x }) => same(x.storyKey));
@@ -287,11 +325,12 @@ async function publishRun(cwd: string, c: Config, dir: string, env: NodeJS.Proce
           const wroteAny = step.entries.some((e) => e.state === "written");
           if (wroteAny && (mine.j > i || !state.done[`${mine.j}:mr`])) throw new Error("the branch was not pushed, so the story record is left as it was");
         } else {
-          // No merge request in the run (nothing needed to be written): nothing says the story is this one, so nothing is claimed "written" and no branch is reset.
-          patch = { ...step, reset: undefined, entries: step.entries.filter((e) => e.state === "held") };
+          // No merge request in the run (the existing tests were enough): the story is a trusted one (checked above), so its ACs may be recorded
+          // as written or held; no branch started again, so no reset.
+          patch = { ...step, reset: undefined };
         }
         await applyRecordPatch(store, step.story, patch);
-        mark(`${i}`, label, mine ? "story record updated" : "story record updated (held and evidence only: no merge request in this run)");
+        mark(`${i}`, label, "story record updated");
       } else if (step.type === "branch-note") {
         if (!wanted(`${i}`, "gitlab-mr")) continue;
         mark(`${i}`, label, await branchNote(c, step, env));
@@ -405,6 +444,7 @@ async function pushAndOpen(cwd: string, c: Config, runDir: string, runId: string
   }
   const mr = await createOrUpdateMergeRequest(ctx, project, { source: s.branch, target, title: s.title.slice(0, 150), description: s.description, labels: cleanLabels(s.labels, story ? s.storyKey : undefined) });
   markMrOpened(runDir);
+  if (story && s.storyKey && s.resetRecord) await applyRecordPatch(openStore(cwd, c, env), s.storyKey, { entries: [], evidence: [], reset: true } as Parameters<typeof applyRecordPatch>[2]);
   if (story && s.storyKey) await recordAgentMr(openStore(cwd, c, env), s.storyKey, { branch: s.branch, iid: mr.iid, url: mr.web_url, headSha: s.headSha });
   return { note: `pushed ${s.branch}; merge request ${mr.action}: ${mr.web_url}`, mr: { url: mr.web_url, iid: mr.iid } };
 }

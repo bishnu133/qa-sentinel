@@ -6,6 +6,8 @@ import { DEFAULT_TEMPLATE, SECTION_ROLES } from "./storyTemplate.js";
 import { ContractSourceSchema } from "./contractSource.js";
 
 export const CONFIG_FILE = "qa-sentinel.config.yaml";
+/** The hosts a fresh config allows. `data sweep` in CI uses only these when the config comes from the work tree (generated code can edit that file). */
+export const DEFAULT_ALLOWED_HOSTS = ["localhost", "127.0.0.1", "example.com", "example.test", "example.org"];
 
 const validRegex = (r: string) => {
   try {
@@ -463,7 +465,7 @@ export const ConfigSchema = z.object({
       cleanup: z.enum(["ledger", "project", "none"]).default("project"),
       ledgerDir: z.string().default(".qa-data"),
       /** Environment variable with the Authorization header value the sweeper sends (e.g. "Bearer …"). */
-      sweepAuthEnv: z.string().regex(/^[A-Z_][A-Z0-9_]*$/).default("QA_CLEANUP_AUTH"),
+      sweepAuthEnv: z.string().regex(/^QA_CLEANUP_[A-Z0-9_]*$/, "must start with QA_CLEANUP_ (the sweeper sends this variable to the test environment, so it may not name any other credential)").default("QA_CLEANUP_AUTH"),
       /** How this project creates and removes test data (project mode): helpers, naming conventions, its own sweeper. */
       notes: z.string().optional(),
     })
@@ -725,7 +727,7 @@ export const ConfigSchema = z.object({
           "tsconfig*.json",
         ]),
       /** Hosts that may appear in URLs added to test code. The host of the base URL env var is always allowed. */
-      allowedHosts: z.array(z.string()).default(["localhost", "127.0.0.1", "example.com", "example.test", "example.org"]),
+      allowedHosts: z.array(z.string()).default(DEFAULT_ALLOWED_HOSTS),
       /** What to do when a changed test file has fewer assertions than before: warn (flag in MR) or fail the run. */
       assertionRemoval: z.enum(["warn", "fail"]).default("warn"),
       /** Environment variables passed to the agent and to test runs. Token-like variables are never passed unless listed here. */
@@ -794,10 +796,10 @@ export function configPath(cwd: string): string {
   return path.join(cwd, CONFIG_FILE);
 }
 
-export function loadConfig(cwd: string): Config {
-  const file = configPath(cwd);
+export function loadConfig(cwd: string, fromFile?: string): Config {
+  const file = fromFile ?? configPath(cwd);
   if (!fs.existsSync(file)) {
-    throw new Error(`No ${CONFIG_FILE} in ${cwd}. Run \`qa-sentinel init\` first.`);
+    throw new Error(fromFile ? `No config file at ${fromFile}.` : `No ${CONFIG_FILE} in ${cwd}. Run \`qa-sentinel init\` first.`);
   }
   const raw = YAML.parse(fs.readFileSync(file, "utf8"));
   const parsed = ConfigSchema.safeParse(raw);

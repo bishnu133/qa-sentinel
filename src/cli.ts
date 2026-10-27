@@ -238,7 +238,8 @@ data
   .option("--dry-run", "list what would be deleted")
   .option("--older-than <minutes>", "skip runs active in the last N minutes, which may still use their data (default 30; 0 right after your own run)", (v) => Number(v))
   .option("-o, --out <file>", "markdown report")
-  .action(wrap(async (o) => dataSweepCommand({ cwd: cwd(), dryRun: o.dryRun, olderThan: o.olderThan, out: o.out })));
+  .option("--config-from <file>", "read the config from this file (CI: the pipeline's own commit) instead of the work tree")
+  .action(wrap(async (o) => dataSweepCommand({ cwd: cwd(), dryRun: o.dryRun, olderThan: o.olderThan, out: o.out, configFrom: o.configFrom })));
 
 program
   .command("contract-check")

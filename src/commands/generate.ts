@@ -569,7 +569,7 @@ async function generateRun(o: GenerateOptions, ctl: JobControl): Promise<number>
     // The ACs were planned and need nothing new: written, as far as the story is concerned (so `stories` stops listing them as ready).
     if (storyMode && storyKey && scope && ctl.store) {
       await recordStoryRun(ctl.store, storyKey, { scope, parts: manifestParts, acs: req.acceptanceCriteria, plan, runId: run.id, branch });
-      if (o.deferPublish) deferSteps(run.dir, "generate", run.id, [{ type: "record", story: storyKey, ...(recordReset ? { reset: true } : {}), ...storyRecordPatch({ scope, parts: manifestParts, acs: req.acceptanceCriteria, plan, runId: run.id }) }]);
+      if (o.deferPublish) deferSteps(run.dir, "generate", run.id, [{ type: "record", story: storyKey, ...storyRecordPatch({ scope, parts: manifestParts, acs: req.acceptanceCriteria, plan, runId: run.id }) }]);
     }
     return finish("no-changes-needed", 0);
   }
@@ -805,7 +805,6 @@ async function generateRun(o: GenerateOptions, ctl: JobControl): Promise<number>
     const crossAcs = storyMode && storyKey && scope?.crossInScope.length ? scope.crossInScope : [];
     const acText = new Map(requirementItems(req).map((a) => [a.id, a.text]));
     // The branch starts again (see resetWrittenRecords): the old record is cleared BEFORE the merge request is recorded, not after.
-    if (recordReset && storyMode && storyKey) deferSteps(run.dir, "generate", run.id, [{ type: "record", story: storyKey, entries: [], evidence: [], reset: true }]);
     deferSteps(run.dir, "generate", run.id, [
       {
         type: "merge-request",
@@ -813,6 +812,7 @@ async function generateRun(o: GenerateOptions, ctl: JobControl): Promise<number>
         headSha: git(cwd, ["rev-parse", "HEAD"]),
         ...(sb?.remoteSha ? { expectSha: sb.remoteSha } : {}),
         ...(storyMode && storyKey ? { storyKey } : {}),
+        ...(recordReset && storyMode && storyKey ? { resetRecord: true } : {}),
         title: mrTitle,
         description,
         labels: mrLabels,

@@ -70,13 +70,16 @@ variables:
     - |
       # The sweep needs the environment URL and its own cleanup login, nothing else: the secrets of this pipeline are dropped first
       # (the work tree's config and .qa-env.sh are written by code the agent may have changed).
-      unset QA_SENTINEL_GITLAB_TOKEN QA_SENTINEL_GITLAB_WRITE_TOKEN QA_SENTINEL_GITLAB_READ_TOKEN QA_JIRA_PUBLISH_PAT QA_JIRA_PUBLISH_EMAIL QA_JIRA_PUBLISH_API_TOKEN JIRA_PAT JIRA_EMAIL JIRA_API_TOKEN ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN ANTHROPIC_BASE_URL CLAUDE_CODE_USE_BEDROCK CLAUDE_CODE_USE_VERTEX AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN CI_JOB_TOKEN CI_REGISTRY_PASSWORD
+      unset QA_SENTINEL_GITLAB_TOKEN QA_SENTINEL_GITLAB_WRITE_TOKEN QA_SENTINEL_GITLAB_READ_TOKEN QA_JIRA_PUBLISH_PAT QA_JIRA_PUBLISH_EMAIL QA_JIRA_PUBLISH_API_TOKEN JIRA_PAT JIRA_EMAIL JIRA_API_TOKEN ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN ANTHROPIC_BASE_URL CLAUDE_CODE_USE_BEDROCK CLAUDE_CODE_USE_VERTEX AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN CI_JOB_TOKEN CI_JOB_JWT CI_JOB_JWT_V1 CI_JOB_JWT_V2 CI_REPOSITORY_URL CI_REGISTRY_PASSWORD CI_DEPENDENCY_PROXY_PASSWORD CI_DEPLOY_PASSWORD
       qa_url="$(sed -n "s/^export {{baseUrlEnv}}='\(.*\)'$/\1/p" "$CI_PROJECT_DIR/.qa-env.sh" 2>/dev/null | head -n 1)"
       case "$qa_url" in https://*|http://*) case "$qa_url" in *[!A-Za-z0-9._:/@%?=\&~+-]*) qa_url="" ;; esac ;; *) qa_url="" ;; esac
       if [ -n "$qa_url" ]; then export {{baseUrlEnv}}="$qa_url"; fi
+      # The sweep reads the config of the pipeline's own commit, not the work tree's (generated code may have changed that file).
+      qa_cfg="$(mktemp)"; qa_cfg_arg=""
+      if git show "$CI_COMMIT_SHA:{{testsPrefix}}qa-sentinel.config.yaml" > "$qa_cfg" 2>/dev/null; then qa_cfg_arg="--config-from $qa_cfg"; fi
     - if ls "{{ledgerDir}}"/*.jsonl >/dev/null 2>&1; then export QA_INSTALL_SKIP=0; else export QA_INSTALL_SKIP=1; fi
     - !reference [.qa-sentinel-install, script]
-    - if [ "$QA_INSTALL_SKIP" = "0" ]; then qa-sentinel data sweep --older-than 0 --out qa-data-sweep.md || echo "WARNING qa-sentinel – test data was left behind on the test environment (see above and qa-data-sweep.md)"; fi
+    - if [ "$QA_INSTALL_SKIP" = "0" ]; then qa-sentinel data sweep $qa_cfg_arg --older-than 0 --out qa-data-sweep.md || echo "WARNING qa-sentinel – test data was left behind on the test environment (see above and qa-data-sweep.md)"; fi
 
 {{#if isMaintenance}}
 # The story records (what was spent, which jobs ran or failed, which ACs are written) are kept in this folder. qa-generate and
@@ -110,13 +113,16 @@ qa-generate:
   after_script:
     - cd "$CI_PROJECT_DIR/{{testsPrefix}}."
     - |
-      unset QA_SENTINEL_GITLAB_TOKEN QA_SENTINEL_GITLAB_WRITE_TOKEN QA_SENTINEL_GITLAB_READ_TOKEN QA_JIRA_PUBLISH_PAT QA_JIRA_PUBLISH_EMAIL QA_JIRA_PUBLISH_API_TOKEN JIRA_PAT JIRA_EMAIL JIRA_API_TOKEN ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN ANTHROPIC_BASE_URL CLAUDE_CODE_USE_BEDROCK CLAUDE_CODE_USE_VERTEX AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN CI_JOB_TOKEN CI_REGISTRY_PASSWORD
+      unset QA_SENTINEL_GITLAB_TOKEN QA_SENTINEL_GITLAB_WRITE_TOKEN QA_SENTINEL_GITLAB_READ_TOKEN QA_JIRA_PUBLISH_PAT QA_JIRA_PUBLISH_EMAIL QA_JIRA_PUBLISH_API_TOKEN JIRA_PAT JIRA_EMAIL JIRA_API_TOKEN ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN ANTHROPIC_BASE_URL CLAUDE_CODE_USE_BEDROCK CLAUDE_CODE_USE_VERTEX AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN CI_JOB_TOKEN CI_JOB_JWT CI_JOB_JWT_V1 CI_JOB_JWT_V2 CI_REPOSITORY_URL CI_REGISTRY_PASSWORD CI_DEPENDENCY_PROXY_PASSWORD CI_DEPLOY_PASSWORD
       qa_url="$(sed -n "s/^export {{baseUrlEnv}}='\(.*\)'$/\1/p" "$CI_PROJECT_DIR/.qa-env.sh" 2>/dev/null | head -n 1)"
       case "$qa_url" in https://*|http://*) case "$qa_url" in *[!A-Za-z0-9._:/@%?=\&~+-]*) qa_url="" ;; esac ;; *) qa_url="" ;; esac
       if [ -n "$qa_url" ]; then export {{baseUrlEnv}}="$qa_url"; fi
+      # The sweep reads the config of the pipeline's own commit, not the work tree's (generated code may have changed that file).
+      qa_cfg="$(mktemp)"; qa_cfg_arg=""
+      if git show "$CI_COMMIT_SHA:{{testsPrefix}}qa-sentinel.config.yaml" > "$qa_cfg" 2>/dev/null; then qa_cfg_arg="--config-from $qa_cfg"; fi
     - if ls "{{ledgerDir}}"/*.jsonl >/dev/null 2>&1; then export QA_INSTALL_SKIP=0; else export QA_INSTALL_SKIP=1; fi
     - !reference [.qa-sentinel-install, script]
-    - if [ "$QA_INSTALL_SKIP" = "0" ]; then qa-sentinel data sweep --older-than 0 --out qa-data-sweep.md || echo "WARNING qa-sentinel – test data was left behind on the test environment (see above and qa-data-sweep.md)"; fi
+    - if [ "$QA_INSTALL_SKIP" = "0" ]; then qa-sentinel data sweep $qa_cfg_arg --older-than 0 --out qa-data-sweep.md || echo "WARNING qa-sentinel – test data was left behind on the test environment (see above and qa-data-sweep.md)"; fi
   script:
     - npm i -g --no-audit --no-fund --loglevel=error @anthropic-ai/claude-code
     - !reference [.qa-sentinel-install, script]

@@ -148,6 +148,9 @@ qa-gap-report-publish:
     QA_SERVICE_SHA: "$CI_COMMIT_SHA"
     QA_SERVICE_BRANCH: "$CI_COMMIT_BRANCH"
     QA_SERVICE_BEFORE_SHA: "$CI_COMMIT_BEFORE_SHA"
+    # The publish job takes the stories it may write to from these (and from the merge request of the commit), not from the run folder.
+    QA_SERVICE_COMMIT_TITLE: "$CI_COMMIT_TITLE"
+    QA_SERVICE_COMMIT_MESSAGE: "$CI_COMMIT_MESSAGE"
   trigger:
     project: "$QA_TESTS_PROJECT"
     branch: {{targetBranch}}

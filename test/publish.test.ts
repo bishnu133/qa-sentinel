@@ -50,7 +50,7 @@ import { generateCommand } from "../src/commands/generate.js";
 import { gapReportCommand } from "../src/commands/gapReport.js";
 import { allowedBranch, publishCommand } from "../src/commands/publish.js";
 import { deferSteps, deferInNewRun, bundleBranch, PUBLISH_FILE } from "../src/reporting/deferred.js";
-import { fileStore } from "../src/stories/record.js";
+import { emptyRecord, fileStore } from "../src/stories/record.js";
 import { GIT_ENV, cleanTmp, commit, g, serve, tmp } from "./helpers/mocks.js";
 import { mockJira } from "./helpers/mockJira.js";
 
@@ -192,7 +192,7 @@ const analysisEnv = (gl: string) => ({ CI: "true", QA_SENTINEL_GITLAB_TOKEN: REA
     expect(step.headSha).toBe(g(w.qa, "rev-parse", "HEAD"));
 
     // The publish job: the write token and a Jira login, no model credentials at all.
-    const env = { QA_SENTINEL_GITLAB_TOKEN: WRITE, JIRA_PAT: "pat", CI_API_V4_URL: `${w.gl.url}/api/v4` };
+    const env = { QA_SENTINEL_GITLAB_TOKEN: WRITE, JIRA_PAT: "pat", QA_STORY_KEY: "SHOP-101", CI_API_V4_URL: `${w.gl.url}/api/v4` };
     expect(Object.keys(env).some((k) => /ANTHROPIC|CLAUDE/.test(k))).toBe(false);
     const callsBefore = fake.calls.length;
     expect(await publishCommand({ cwd: w.qa, run: runId, env })).toBe(0);
@@ -241,7 +241,7 @@ const analysisEnv = (gl: string) => ({ CI: "true", QA_SENTINEL_GITLAB_TOKEN: REA
     bundleBranch(w.qa, run, "qa-sentinel/story-SHOP-101");
     deferSteps(run, "generate", path.basename(run), [{ type: "merge-request", branch: "qa-sentinel/story-SHOP-101", headSha: head, storyKey: "SHOP-101", title: "t", description: "d", labels: ["qa-agent"] }]);
     g(w.qa, "checkout", "-q", "main");
-    expect(await publishCommand({ cwd: w.qa, run: path.basename(run), env: { QA_SENTINEL_GITLAB_TOKEN: WRITE } })).toBe(1);
+    expect(await publishCommand({ cwd: w.qa, run: path.basename(run), env: { QA_SENTINEL_GITLAB_TOKEN: WRITE, QA_STORY_KEY: "SHOP-101" } })).toBe(1);
     expect(g(w.origin, "branch", "--list", "qa-sentinel/*")).toBe("");
     expect(w.gl.writes()).toEqual([]);
     expect(fs.existsSync(path.join(run, "published.json"))).toBe(false);
@@ -262,14 +262,14 @@ const analysisEnv = (gl: string) => ({ CI: "true", QA_SENTINEL_GITLAB_TOKEN: REA
     const theirs = commit(reviewer, "REVIEW.md", "note\n", "reviewer");
     g(reviewer, "push", "-q", "origin", "qa-sentinel/story-SHOP-101");
     deferSteps(run, "generate", path.basename(run), [{ type: "merge-request", branch: "qa-sentinel/story-SHOP-101", headSha: head, storyKey: "SHOP-101", title: "t", description: "d", labels: [] }]); // expectSha: none = "the branch must not exist"
-    expect(await publishCommand({ cwd: w.qa, run: path.basename(run), env: { QA_SENTINEL_GITLAB_TOKEN: WRITE } })).toBe(1);
+    expect(await publishCommand({ cwd: w.qa, run: path.basename(run), env: { QA_SENTINEL_GITLAB_TOKEN: WRITE, QA_STORY_KEY: "SHOP-101" } })).toBe(1);
     expect(g(w.origin, "rev-parse", "qa-sentinel/story-SHOP-101")).toBe(theirs);
     expect(w.gl.writes()).toEqual([]);
   });
 });
 
 describe("publish does not believe the run folder (the analysis job runs generated code)", () => {
-  const writeEnv = (gl: string, more: Record<string, string> = {}) => ({ QA_SENTINEL_GITLAB_TOKEN: WRITE, JIRA_PAT: "pat", CI_API_V4_URL: `${gl}/api/v4`, QA_SERVICE_NAME: "orders", QA_SERVICE_SHA: "a1b2c3d4e5f60718293a4b5c6d7e8f9012345678", ...more });
+  const writeEnv = (gl: string, more: Record<string, string> = {}) => ({ QA_SENTINEL_GITLAB_TOKEN: WRITE, JIRA_PAT: "pat", QA_STORY_KEY: "SHOP-101", CI_API_V4_URL: `${gl}/api/v4`, QA_SERVICE_NAME: "orders", QA_SERVICE_SHA: "a1b2c3d4e5f60718293a4b5c6d7e8f9012345678", ...more });
   /** A branch the "agent" made, bundled into a new run folder, with a publish.json written by hand (so it can lie). */
   function craft(w: Awaited<ReturnType<typeof world>>, o: { id: string; branch: string; files: Record<string, string | { link: string }>; message?: string; step?: (head: string) => Record<string, unknown>; raw?: string }) {
     const mainSha = g(w.qa, "rev-parse", "HEAD");
@@ -442,6 +442,22 @@ describe("publish does not believe the run folder (the analysis job runs generat
     }
   });
 
+  it("resetRecord clears the story's written marks only after the push went through (a refused push leaves them)", async () => {
+    const w = await world();
+    const store = fileStore(w.qa);
+    const seed = async () => store.save({ ...emptyRecord("SHOP-101"), singleService: { "AC-1": { state: "written", heads: "h", acHash: "a", at: "2026-10-20T00:00:00.000Z" } } });
+    await seed();
+    craft(w, { id: "x-1", branch: "qa-sentinel/story-SHOP-101", files: { ".gitlab-ci.yml": "stages: [x]\n" }, step: () => ({ storyKey: "SHOP-101", resetRecord: true }) });
+    expect(await publishCommand({ cwd: w.qa, run: "x-1", env: writeEnv(w.gl.url) })).toBe(1); // the policy refuses the push
+    expect(Object.keys((await store.load("SHOP-101"))?.singleService ?? {})).toEqual(["AC-1"]);
+    fs.rmSync(path.join(w.qa, ".qa-sentinel/runs/x-1"), { recursive: true });
+    craft(w, { id: "x-2", branch: "qa-sentinel/story-SHOP-101", files: OK, step: () => ({ storyKey: "SHOP-101", resetRecord: true }) });
+    expect(await publishCommand({ cwd: w.qa, run: "x-2", env: writeEnv(w.gl.url) })).toBe(0);
+    const rec = await store.load("SHOP-101");
+    expect(Object.keys(rec?.singleService ?? {})).toEqual([]);
+    expect(rec?.agentMr?.branch).toBe("qa-sentinel/story-SHOP-101");
+  });
+
   it("refuses generated artifacts, symbolic links and submodule links in the bundle", async () => {
     const w = await world();
     craft(w, { id: "r-art", branch: "qa-sentinel/orders-a1b2c3d4", files: { ...OK, "qa-gap-report.md": "x\n", ".qa-sentinel/runs/x/publish.json": "{}" } });
@@ -597,7 +613,7 @@ describe("split CI jobs: gap-report --defer-publish, then publish", () => {
     expect(doc.steps.map((s: { type: string }) => s.type)).toEqual(["mr-seen", "report"]);
 
     // The publish job: the write token, a Jira login, no model key.
-    const env = { QA_SENTINEL_GITLAB_TOKEN: WRITE, JIRA_PAT: "pat", CI_API_V4_URL: `${gl.url}/api/v4`, CI_PROJECT_ID: "7", CI_MERGE_REQUEST_IID: "7", CI_MERGE_REQUEST_TITLE: "SHOP-12 slots", CI_MERGE_REQUEST_SOURCE_BRANCH_NAME: "feature/SHOP-12-slots" };
+    const env = { QA_SENTINEL_GITLAB_TOKEN: WRITE, JIRA_PAT: "pat", QA_STORY_KEY: "SHOP-101", CI_API_V4_URL: `${gl.url}/api/v4`, CI_PROJECT_ID: "7", CI_MERGE_REQUEST_IID: "7", CI_MERGE_REQUEST_TITLE: "SHOP-12 slots", CI_MERGE_REQUEST_SOURCE_BRANCH_NAME: "feature/SHOP-12-slots" };
     expect(await publishCommand({ cwd: root, env })).toBe(0);
     const writes = gl.writes();
     expect(writes.map((x) => `${x.method} ${x.path}`)).toEqual(["POST /gitlab/api/v4/projects/7/merge_requests/7/notes"]);

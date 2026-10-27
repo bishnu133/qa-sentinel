@@ -68,4 +68,15 @@ describe("bundle policy: old-main merges, modes, assertions, story base (re-revi
     // Even simpler: no evil merge at all - just merge main legitimately and then a plain revert commit? (counted, per-commit walk)
     expect(f).toContain("violation:outside-allowed:src/auth.js");
   });
+  it("story branch: a file a reviewer already changed on the branch, then fixed on main, then kept as the branch has it by a hand-made merge, is flagged", async () => {
+    const r = world(); commit(r, "package.json", '{"dep":"1.0"}\n', "o"); commit(r, "src/other.js", "a\n", "o2");
+    g(r, "checkout", "-q", "-b", "qa-sentinel/story-S-1");
+    commit(r, "tests/api/s.spec.ts", "test('s',()=>{expect(1).toBe(1)});\n", "agent");
+    commit(r, "package.json", '{"dep":"1.0","x":1}\n', "reviewer edit");
+    const observed = g(r, "rev-parse", "HEAD");
+    g(r, "checkout", "-q", "main"); commit(r, "package.json", '{"dep":"1.0.1-SECURITY"}\n', "security fix"); commit(r, "src/other.js", "b\n", "o3");
+    g(r, "checkout", "-q", "qa-sentinel/story-S-1"); g(r, "checkout", "main", "--", "src/other.js"); g(r, "add", "-A");
+    const tip = g(r, "commit-tree", g(r, "write-tree"), "-p", "HEAD", "-p", "main", "-m", "Merge main");
+    expect((await all(r, observed, tip)).join()).toMatch(/violation:[a-z-]+:package\.json/);
+  });
 });
