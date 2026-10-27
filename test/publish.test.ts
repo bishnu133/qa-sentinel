@@ -539,9 +539,9 @@ describe("deferred notes of runs without an analysis (joined comment, waiting no
     g(root, "init", "-q", "-b", "main");
     commit(root, "README.md", "x\n", "init");
     writeConfig(root, ConfigSchema.parse({ version: 1, mode: "existing", project: { name: "t" }, tests: { api: { framework: "playwright", runCommand: "x" } }, ci: { platform: "gitlab", gitlabUrl: gl.url } }));
-    const dir = deferInNewRun(root, "gap-report", "gap-joined", [{ type: "report", report: "### QA impact · 2 stories in this merge request", service: "orders", mr: { project: "7", mrIid: "7" }, targets: ["gitlab-mr"] }]);
+    const dir = deferInNewRun(root, "gap-report", "gap-joined", [{ type: "report", report: "### QA impact · 2 stories in this merge request", service: "orders", targets: ["gitlab-mr"] }]);
     expect(JSON.parse(fs.readFileSync(path.join(dir, "manifest.json"), "utf8"))).toMatchObject({ kind: "gap-report", outcome: "gap-joined" });
-    expect(await publishCommand({ cwd: root, env: { QA_SENTINEL_GITLAB_TOKEN: WRITE } })).toBe(0);
+    expect(await publishCommand({ cwd: root, env: { QA_SENTINEL_GITLAB_TOKEN: WRITE, CI_PROJECT_ID: "7", CI_MERGE_REQUEST_IID: "7" } })).toBe(0);
     expect(JSON.parse(fs.readFileSync(path.join(dir, "manifest.json"), "utf8")).mr).toEqual({ project: "7", iid: "7", noteId: 11 });
     expect(gl.writes()[0].body).toContain("Was this useful?");
   }, 30_000);
