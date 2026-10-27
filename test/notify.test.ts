@@ -98,6 +98,30 @@ describe("notifications", () => {
     }
   });
 
+  it("in the split analysis job (local) a budget stop writes nothing to Jira; the note waits as a notify step for publish, which sends it once", async () => {
+    const j = await mockJira();
+    const cwd = tmp("qas-notify-");
+    try {
+      const c = ConfigSchema.parse({ version: 1, mode: "existing", project: { name: "t" }, tests: { api: { framework: "playwright", runCommand: "x" } }, ci: { platform: "gitlab" }, requirements: { jira: { baseUrl: j.baseUrl } }, automation: { budgets: { perStoryUsd: 1 } }, reporting: { jira: { notify: { "stopped-by-budget": { on: true, to: ["jsmith"] } } } } });
+      await fileStore(cwd).save({ ...emptyRecord("SHOP-1"), totalCostUsd: 5 });
+      const r = await startJob({ cwd, c, story: "SHOP-1", kind: "generate", key: "generate:SHOP-1:abc", env: { JIRA_PAT: "x" }, local: true });
+      expect(r).toMatchObject({ run: false, exitCode: 4 });
+      expect(j.calls.filter((x) => !x.startsWith("GET "))).toEqual([]);
+      const runs = path.join(cwd, ".qa-sentinel", "runs");
+      const dir = fs.readdirSync(runs).map((n) => path.join(runs, n)).find((d) => fs.existsSync(path.join(d, "publish.json")))!;
+      const doc = JSON.parse(fs.readFileSync(path.join(dir, "publish.json"), "utf8"));
+      expect(doc.steps).toMatchObject([{ type: "notify", story: "SHOP-1", event: "stopped-by-budget" }]);
+      const { publishCommand } = await import("../src/commands/publish.js");
+      const { writeConfig } = await import("../src/config.js");
+      writeConfig(cwd, c);
+      expect(await publishCommand({ cwd, kind: "generate", env: { JIRA_PAT: "x" } })).toBe(0);
+      expect(j.comments["SHOP-1"]).toHaveLength(1);
+      expect(j.comments["SHOP-1"][0].body).toContain("qa-sentinel stopped before starting AI work");
+    } finally {
+      await j.close();
+    }
+  });
+
   it("when the record cannot be saved nothing is posted (it would be repeated on every run); when the post fails the mark is taken back", async () => {
     const j = await mockJira();
     const real = fileStore(tmp("qas-notify-"));

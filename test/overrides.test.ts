@@ -90,6 +90,12 @@ describe("/qa ready AC-n", () => {
     expect(acWriteReadiness(open, undefined, ["AC-1"], { ...o, overrides: [{ ac: "AC-1" }] })[0].state).toBe("waiting-merge");
   });
 
+  it("a quote that holds a code block is quoted to its own end (open blocks are a stack)", () => {
+    const body = ["{quote}", "{code}", "/qa ready AC-1", "{code}", "/qa ready AC-2", "{quote}", "{quote}", "{code:sh}", "x", "{code}", "{noformat}", "/qa ready AC-3", "{noformat}", "/qa ready AC-4", "{quote}", "/qa ready AC-5 outside"].join("\n");
+    expect(parseOverrideLines(body, "/qa ready").map((x) => x.ac)).toEqual(["AC-5"]);
+    // A {quote} written inside {code} is text, not the end of anything.
+    expect(parseOverrideLines(["{code}", "{quote}", "{code}", "/qa ready AC-1 real"].join("\n"), "/qa ready").map((x) => x.ac)).toEqual(["AC-1"]);
+  });
   it("ignores the command inside {code}, {noformat}, {quote}, bq. lines and > quotes", () => {
     const body = ["{code}", "/qa ready AC-1", "{code}", "{noformat}", "/qa ready AC-2", "{noformat}", "{quote}", "/qa ready AC-3", "{quote}", "bq. /qa ready AC-4", "> /qa ready AC-5", "{code:sh}/qa ready AC-6{code}", "/qa ready AC-7 for real"].join("\n");
     expect(parseOverrideLines(body, "/qa ready")).toEqual([{ op: "ready", ac: "AC-7", reason: "for real" }]);

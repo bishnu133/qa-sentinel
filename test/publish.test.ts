@@ -385,6 +385,39 @@ describe("publish does not believe the run folder (the analysis job runs generat
     expect(Object.keys((await fileStore(w.qa).load("SHOP-101"))?.singleService ?? {})).toEqual([]);
   });
 
+  it("a notice that could not be sent is not marked done: the next publish sends it", async () => {
+    const w = await world({ reporting: { targets: ["gitlab-mr", "jira"], jira: { notify: { "stopped-by-budget": { on: true, to: ["jsmith"] } } } } });
+    const run = path.join(w.qa, ".qa-sentinel/runs/n-1");
+    fs.mkdirSync(run, { recursive: true });
+    fs.writeFileSync(path.join(run, PUBLISH_FILE), JSON.stringify({ version: 1, kind: "generate", runId: "n-1", createdAt: "now", steps: [{ type: "notify", story: "SHOP-101", event: "stopped-by-budget", text: "stopped", key: "k1" }] }));
+    const real = globalThis.fetch;
+    let down = true;
+    vi.stubGlobal("fetch", (url: string, init?: RequestInit) => (down && init?.method === "POST" && String(url).includes("/comment") ? Promise.resolve(new Response("no", { status: 500 })) : real(url, init)));
+    try {
+      expect(await publishCommand({ cwd: w.qa, run: "n-1", env: writeEnv(w.gl.url) })).toBe(1);
+      expect(fs.existsSync(path.join(run, "published.json")) ? JSON.parse(fs.readFileSync(path.join(run, "published.json"), "utf8")).done["0"] : undefined).toBeUndefined();
+      down = false;
+      expect(await publishCommand({ cwd: w.qa, run: "n-1", env: writeEnv(w.gl.url) })).toBe(0);
+      expect(w.jira.comments["SHOP-101"] ?? []).toHaveLength(1);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("a lock left by a crashed publish (older than two hours) is taken over once; a fresh lock is respected", async () => {
+    const w = await world();
+    const { run } = craft(w, { id: "l-1", branch: "qa-sentinel/orders-a1b2c3d4", files: OK });
+    const lock = path.join(run, "publish.lock");
+    fs.writeFileSync(lock, "999999 long ago\n");
+    expect(await publishCommand({ cwd: w.qa, run: "l-1", env: writeEnv(w.gl.url) })).toBe(1); // fresh: another publish is working
+    expect(originBranches(w)).toBe("");
+    const old = new Date(Date.now() - 3 * 60 * 60 * 1000);
+    fs.utimesSync(lock, old, old);
+    expect(await publishCommand({ cwd: w.qa, run: "l-1", env: writeEnv(w.gl.url) })).toBe(0);
+    expect(originBranches(w)).toContain("qa-sentinel/orders-a1b2c3d4");
+    expect(fs.readdirSync(run).filter((n) => n.startsWith("publish.lock"))).toEqual([]);
+  });
+
   it("refuses generated artifacts, symbolic links and submodule links in the bundle", async () => {
     const w = await world();
     craft(w, { id: "r-art", branch: "qa-sentinel/orders-a1b2c3d4", files: { ...OK, "qa-gap-report.md": "x\n", ".qa-sentinel/runs/x/publish.json": "{}" } });

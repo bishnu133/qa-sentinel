@@ -185,6 +185,41 @@ describe("older comments move into the status comment", () => {
     }
   });
 
+  it("an old comment too big to fit into the status comment is left as it is, never shortened and never turned into a pointer", async () => {
+    const j = await mockJira();
+    const cwd = tmp("qas-big-");
+    try {
+      const big = (n: string) => `h3. Gap ${n}\n${Array.from({ length: 600 }, (_, i) => `line ${i} ${"y".repeat(40)}`).join("\n")}\n\n{color:#97a0af}qa-sentinel:gap-report:${n}{color}`;
+      const a = j.add("SHOP-1", big("orders"), BOT);
+      const b = j.add("SHOP-1", big("billing"), BOT);
+      const r = await postToStory(cfg(), j.ctx, "SHOP-1", { ...feature, cwd });
+      const body = j.comments["SHOP-1"].find((x) => x.id === r.id)!.body;
+      expect(body).not.toContain("Shortened to fit");
+      expect(body.length).toBeLessThan(32_767);
+      // At least one of the two did not fit next to the other: it is exactly as it was. Whatever moved is whole in the status comment.
+      const left = [a, b].filter((o) => !j.comments["SHOP-1"].find((x) => x.id === o.id)!.body.includes("qa-sentinel:replaced"));
+      expect(left.length).toBeGreaterThan(0);
+      for (const o of left) expect(j.comments["SHOP-1"].find((x) => x.id === o.id)!.body).toBe(o.body);
+      for (const sec of statusOf(j, r.id).filter((x) => x.name.startsWith("gap-report:"))) expect(sec.wiki).toContain("line 599");
+      // Leaving a comment on purpose is not a failure: the move is not tried again on every write.
+      expect((await fileStore(cwd).load("SHOP-1"))?.legacyCleanedAt).toBeDefined();
+    } finally {
+      await j.close();
+    }
+  });
+
+  it("a comment left alone for its visibility does not make the move retry forever", async () => {
+    const j = await mockJira();
+    const cwd = tmp("qas-vis-");
+    try {
+      j.add("SHOP-1", legacyBodies[0], BOT, { visibility: { type: "role", value: "Administrators" } });
+      await postToStory(cfg(), j.ctx, "SHOP-1", { ...feature, cwd });
+      expect((await fileStore(cwd).load("SHOP-1"))?.legacyCleanedAt).toBeDefined();
+    } finally {
+      await j.close();
+    }
+  });
+
   it("a pointer keeps the visibility its comment had", async () => {
     const j = await mockJira();
     try {

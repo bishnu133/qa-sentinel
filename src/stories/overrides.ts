@@ -24,17 +24,20 @@ export function parseOverrideLines(body: string, command: string): { op: "ready"
   const unready = new RegExp(`^\\s*${esc(unreadyCommand(command))}\\s+(AC-\\d+)(?:\\s+(.*))?$`, "i");
   const out: { op: "ready" | "unready"; ac: string; reason?: string }[] = [];
   // Text in {code}, {noformat} and {quote} blocks, "bq." lines and "> " quotes is quoted, not said.
-  let block: string | undefined;
+  // Blocks nest: a {quote} may hold a {code} block, and the quote is not over when the code ends. Inside {code} and {noformat}
+  // only the same tag closes (other tags there are plain text). So the open blocks are a stack.
+  const open: string[] = [];
   for (const line of body.split(/\r?\n/)) {
     const tags = [...line.matchAll(/\{(code|noformat|quote)(?::[^}]*)?\}/g)].map((t) => t[1]);
-    if (block) {
-      if (tags.includes(block)) block = undefined;
-      continue;
+    const inBlock = open.length > 0;
+    for (const t of tags) {
+      const top = open[open.length - 1];
+      if (top === "code" || top === "noformat") {
+        if (t === top) open.pop();
+      } else if (t === "quote" && top === "quote") open.pop();
+      else open.push(t);
     }
-    if (tags.length) {
-      if (tags.length === 1) block = tags[0];
-      continue;
-    }
+    if (inBlock || tags.length) continue;
     if (/^\s*(bq\.|>)/.test(line)) continue;
     const m = unready.exec(line) ?? undefined;
     if (m) {

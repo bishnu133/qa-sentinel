@@ -110,15 +110,23 @@ export function isStale(x: Section, o: RenderOptions): boolean {
 }
 
 export function renderStatus(story: string, sections: Section[], o: RenderOptions = {}): string {
+  return renderStatusChecked(story, sections, o).body;
+}
+
+/** The comment text, and the names of the sections that had to be shortened to fit Jira's size limit. */
+export function renderStatusChecked(story: string, sections: Section[], o: RenderOptions = {}): { body: string; shortened: string[] } {
   const header = `h2. QA status · ${story}\n_One comment, kept up to date by qa-sentinel. Each part is replaced when its check runs again._\n{color:#97a0af}${STATUS_MARKER}{color}\n`;
   const ordered = [...sections].sort((a, b) => rank(a.name) - rank(b.name) || a.name.localeCompare(b.name));
-  return [
+  const fitted = fit(ordered, header);
+  const shortened = fitted.filter((x) => ordered.find((y) => y.name === x.name)?.wiki !== x.wiki).map((x) => x.name);
+  const body = [
     header,
-    ...fit(ordered, header).map((x) => {
+    ...fitted.map((x) => {
       const mark = isStale(x, o) ? `${STALE_LINE} ${o.why?.(x) ?? GENERIC_WHY}.{color}\n` : "";
       return `${mark}${safeText(x.wiki)}\n{color:#97a0af}Updated ${x.updated} · qa-sentinel:section=${x.name}${x.basis ? ` · basis=${x.basis}` : ""}${x.basis && x.acs ? ` · acs=${x.acs}` : ""}{color}\n`;
     }),
   ].join("\n");
+  return { body, shortened };
 }
 
 /** Replace (or add) one section. Pure. */
@@ -219,28 +227,37 @@ export async function migrateLegacy(c: Config, ctx: JiraContext, story: string, 
   const legacy = own.filter((cm) => isLegacy(cm.body));
   if (!statusCm || !legacy.length) return { changed: 0, failed: 0 };
   let failed = 0;
-  const movable = legacy.filter((cm) => {
+  // A comment that is left as it is on purpose (another visibility, too long for the status comment) is not a failure: it must not make the move run again on every write.
+  let movable = legacy.filter((cm) => {
     const ok = sameVisibility(cm.visibility, statusCm.visibility);
-    if (!ok) {
-      failed++;
-      log.warn(`${story}: comment ${cm.id} has a different visibility than the status comment; left as it is`);
-    }
+    if (!ok) log.warn(`${story}: comment ${cm.id} has a different visibility than the status comment; left as it is`);
     return ok;
   });
   // 1. The text goes into the status comment first (newest comment of a kind wins; a section already there is fresher).
   let sections = parseStatus(statusCm.body);
   const have = new Set(sections.map((x) => x.name));
   const carried: Section[] = [];
+  const ropts = { currentBasis: o.basis, currentAcs: o.acs, parts: o.parts, why: o.why };
+  // Render first. A section that would have to be shortened to fit is not moved, and its old comment stays as it is: shortening would lose text.
+  let body: string | undefined;
   for (const cm of [...movable].reverse()) {
     const name = sectionOfLegacy(cm.body);
     if (!name || have.has(name)) continue;
+    const section: Section = { name, wiki: withoutMarker(cm.body), updated: stamp(jiraTime(cm.updated ?? cm.created)) };
+    const trial = renderStatusChecked(story, [...sections, ...carried, section], ropts);
+    if (trial.shortened.includes(name) || carried.some((x) => trial.shortened.includes(x.name))) {
+      log.warn(`${story}: comment ${cm.id} is too long to move into the status comment without shortening it; left as it is`);
+      movable = movable.filter((x) => x !== cm);
+      continue;
+    }
     have.add(name);
-    carried.push({ name, wiki: withoutMarker(cm.body), updated: stamp(jiraTime(cm.updated ?? cm.created)) });
+    carried.push(section);
+    body = trial.body;
   }
   if (carried.length) {
     sections = [...sections, ...carried];
     try {
-      await writeIssueComment(ctx, story, statusCm.id, renderStatus(story, sections, { currentBasis: o.basis, currentAcs: o.acs, parts: o.parts, why: o.why }), statusCm.visibility as Visibility | undefined);
+      await writeIssueComment(ctx, story, statusCm.id, body ?? renderStatus(story, sections, ropts), statusCm.visibility as Visibility | undefined);
     } catch (e) {
       log.warn(`${story}: could not move the older comments into the status comment (${(e as Error).message.split("\n")[0]}); they are left as they are`);
       return { changed: 0, failed: movable.length + failed };
