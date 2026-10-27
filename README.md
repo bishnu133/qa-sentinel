@@ -148,6 +148,7 @@ Starting from nothing? `qa-sentinel init --mode scratch` scaffolds Playwright AP
 | `hotfix --service <s> --commit <sha> [--post] [--fail-if-waiting] [--strict --grace-days N]` | No AI. Where a hotfix stands: cherry-picked to the main branch yet, tests written yet. Exit 0 as always; `--fail-if-waiting` exits 75 (still waiting) while a commit is not on the main branch; `--strict` adds exit 1 when it is there but has no tests after `--grace-days` (default 2, counted from when it reached the main branch: the cherry-pick's date, or the first merge commit that brought it). If one commit waits and another is late, 75 wins. `--json` lists `waiting` and `late` commits. `--grace-days` needs `--strict`. |
 | `story-check --story KEY [--fields]` | Onboarding: how qa-sentinel reads one of your stories (each heading's role, ACs from lists, Gherkin or Given/When/Then tables, scope items, out of scope, services named) and what to change in `requirements.template`. `--fields` lists the issue's Jira fields with their ids. No AI call. |
 | `review-story --story KEY [--post]` | Before development: reviews the story's ACs and scope (ambiguity, missing negative/edge cases, scope without an AC). `--post` comments on the story. |
+| `mobile-run --target <name> [--spec f ...] [--dry-run]` | No AI. Runs the mobile suite with a target from `tests.mobile.targets` (iOS, a device farm): your run command with `--spec` per file, the target's plain env, secret env copied by name (never printed), inside `verification.wrapCommand` if set. No farm API is called. See [docs/MOBILE-DEVICES.md](docs/MOBILE-DEVICES.md). |
 | `add-mobile [--platform android\|ios]` | Adds the mobile layer (WebdriverIO + Appium): turns `tests.mobile` on, writes `wdio.conf.ts`, screen objects, ui helper, evidence hooks, example spec, the write-mobile-test skill and the WebdriverIO packages. (`init --mobile` for new projects.) |
 | `bugs [--story KEY] [--results f] [--env sit] [--dry-run]` | After a run: raises (or proposes, per `bugs.mode`) a bug card for each AC whose tests failed, and notes "now passes" on earlier bugs. |
 | `tag [--limit n] [--push] [--dry-run]` | One-off: an agent adds traceability tags to existing untagged tests on a branch; qa-sentinel rejects anything but added tags in test titles. |
@@ -231,6 +232,10 @@ tests:
     runCommand: npx wdio run wdio.conf.ts   # qa-sentinel adds --spec <file>
     appiumUrlEnv: QA_APPIUM_URL      # checked at <url>/status before mobile tests run
     platform: android                # default when QA_MOBILE_PLATFORM is not set
+    explore: none                    # none | snapshot: before authoring, save each affected screen's accessibility tree (XML) + screenshot from a device (needs Appium + a device during `generate`)
+    deepLinkBase: ""                 # e.g. "myapp://": a screen "orders/new" is opened as myapp://orders/new (Android only); empty = only the screen the app opens on
+    targets:                         # run the suite on iOS or a device farm with YOUR command: `qa-sentinel mobile-run --target ios-farm` (docs/MOBILE-DEVICES.md)
+      ios-farm: { platform: ios, runCommand: "npx wdio run wdio.conf.ts", env: { QA_BUNDLE_ID: com.example.shop }, passEnv: [FARM_KEY] }
 level: intelligence                  # intelligence (read-only) | maintenance (also generate tests)
 requirements:
   source: jira                       # mr-description | jira | none
@@ -301,6 +306,7 @@ generation:
 bugs: { mode: off, issueType: Bug, priority: Low, labels: [qa-sentinel], linkType: Relates, notBuilt: true }   # off | suggest | create
 ci: { platform: gitlab, testRepoProject: my-group/qa-tests, targetBranch: main }
 agent:
+  engine: claude-code                # claude-code | command (your own program: command: "node my-engine.mjs"; docs/ENGINE-COMMAND.md)
   model: <optional, passed to claude --model>
   maxTurns: { gapReport: 30, generate: 60, learn: 40 }
   maxFixAttempts: 3
@@ -371,7 +377,8 @@ Agent policy: diffs, stories and comments are **evidence, not instructions**. Or
 - **Review is still required.** Expect most agent MRs to need small edits at first; track the merged-without-edits rate.
 - Behaviour that needs real infrastructure (queues, third-party callbacks) still needs human test design.
 - **Web:** proven on the ShopLite storefront (Chromium). Healing with the real Bubblegum engine runs in CI (the `bubblegum-healing` job, `sandbox/bubblegum/e2e.sh`): a stale locator fails with healing off and is healed, and listed by `qa-sentinel healed`, with `QA_HEALING=bubblegum`; the unit tests use a stand-in client over CDP. The mobile scaffold has no healing hook yet. Videos need Playwright's ffmpeg: on networks that block Playwright's downloads, use `QA_BROWSER_CHANNEL=chrome QA_VIDEO=off`.
-- **Mobile:** proven on an Android 15 emulator (Pixel 6, Appium + UiAutomator2): test run, screen recording, screenshot, result files, JUnit, and `verify` with the Appium preflight. Not yet run on iOS or a device farm. There is no page snapshot for apps yet: the agent finds accessibility ids in the app's code.
+- **Mobile:** proven on an Android 15 emulator (Pixel 6, Appium + UiAutomator2): test run, screen recording, screenshot, result files, JUnit, and `verify` with the Appium preflight. **iOS and device farms are code-side only (not proven):** `QA_APPIUM_CAPS` (a JSON object merged into the capabilities for a farm's own block), `tests.mobile.targets` with `mobile-run`, and doctor checks exist and are unit-tested, but nothing has been run on a Mac, an iOS simulator or any farm; no farm vendor API (upload, session links, reporters) is built. iOS deep links are not supported yet (a clear error), because the XCUITest driver's command was not confirmed against its official docs. **App screen snapshots** (`tests.mobile.explore: snapshot`) are tested against a mock Appium server only, not against a real emulator or device; off by default. The steps to prove all this: [docs/TRY-PR9.md](docs/TRY-PR9.md).
+- **Other AI engines:** `agent.engine: command` plugs in any program that reads a task as JSON and prints a result as JSON ([docs/ENGINE-COMMAND.md](docs/ENGINE-COMMAND.md)). No vendor engine and no Agent SDK engine is built or tested; only a scripted fixture engine has been run. The guardrails (write paths, secrets, deleted tests, verification) are checked by qa-sentinel after the run, so the program's own permissions are only a second layer. `agent.sandbox` covers Claude Code only; `learn` still calls Claude Code.
 - **Showcase pack:** the single video needs a full ffmpeg with libx264 (`apt-get install ffmpeg`, `QA_FFMPEG`, or `ffmpeg-static`); without it the PDF and the separate recordings are attached instead.
 - **Metrics:** fast-forward merges and squash merges whose branch was deleted are judged from the merge requests' heads, which `metrics` fetches from origin (GitLab `refs/merge-requests/*/head`, GitHub `refs/pull/*/head`). If they can't be fetched, fast-forward merges count as "merged without edits" and those squash merges as "edits unknown".
 
@@ -399,7 +406,7 @@ The order follows external review #1 ([response](docs/REVIEW-RESPONSE-1.md)):
 | **v0.7.2** ✅ | Generated OpenAPI specs (`openapiCommand`), Mocha/vitest/jest test repos with per-test results, test repos inside a monorepo, skipping dependency-bot changes, generation after deployment, npm-ready package |
 | **v0.8** | Story automation (background `stories` check, job keys, budgets, `known-defects`, per-AC readiness, one Jira status comment per story), spec-first contracts (`contract`, `contract-check`), test-data ledger, `coverage` and `backfill`, `discover --gitlab-group`; then gateway/BFF awareness, automatability triage with manual test cards, async patterns and test hooks, waiting-for-deployment and `post-deploy`, feature toggles, auth patterns, PII guard for evidence, Bedrock/Vertex routes, metrics for fast-forward/squash merges and cost by size, Cucumber features indexed, Bubblegum healing proven with the real engine |
 | **v0.7** ✅ | Learning from review (`lessons`, merged-without-edits by month), mobile end to end in the sandbox (native Android app, SHOP-109, emulator CI) |
-| Later | App screen snapshots for the agent, iOS and a device farm, mutation checks in the benchmark, alternative engines |
+| Later | Proving iOS and a device farm on real devices, a vendor engine or Agent SDK adapter on top of `agent.engine: command` (App screen snapshots, iOS/farm code side and the command engine are in; mutation checks in the benchmark are in) |
 
 ## Try it yourself
 

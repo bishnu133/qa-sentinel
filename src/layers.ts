@@ -107,7 +107,8 @@ export function roleEnvNames(r: { name: string; env: string[] }): string[] {
  * cleanup token. qa-sentinel's own runs (verification, post-deploy, showcase) have them.
  */
 export function testOnlyEnvNames(c: Config): string[] {
-  return [...new Set([...c.tests.auth.roles.flatMap(roleEnvNames), ...(c.testData.cleanup === "ledger" ? [c.testData.sweepAuthEnv] : [])])];
+  // QA_APPIUM_CAPS may hold a device farm's access key, so only qa-sentinel's own runs get it.
+  return [...new Set([...c.tests.auth.roles.flatMap(roleEnvNames), ...(c.testData.cleanup === "ledger" ? [c.testData.sweepAuthEnv] : []), ...(c.tests.mobile.enabled ? ["QA_APPIUM_CAPS"] : [])])];
 }
 
 /**

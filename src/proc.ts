@@ -17,6 +17,8 @@ export interface ProcOptions {
   echoStderr?: boolean;
   echoStdout?: boolean;
   shell?: boolean;
+  /** Written to the command's stdin, which is then closed. Without it stdin is closed at once. */
+  input?: string;
 }
 
 /**
@@ -29,10 +31,15 @@ export function runProcess(cmd: string, args: string[], o: ProcOptions): Promise
     const child = spawn(cmd, args, {
       cwd: o.cwd,
       env: o.env,
-      stdio: ["ignore", "pipe", "pipe"],
+      stdio: [o.input === undefined ? "ignore" : "pipe", "pipe", "pipe"],
       detached: process.platform !== "win32",
       shell: o.shell ?? false,
     });
+    if (o.input !== undefined && child.stdin) {
+      // A command that exits without reading its input closes the pipe: that is not an error of ours.
+      child.stdin.on("error", () => undefined);
+      child.stdin.end(o.input);
+    }
     let stdout = "";
     let stderr = "";
     let timedOut = false;
@@ -49,11 +56,11 @@ export function runProcess(cmd: string, args: string[], o: ProcOptions): Promise
       killGroup("SIGTERM");
       killTimer = setTimeout(() => killGroup("SIGKILL"), 10_000);
     }, o.timeoutMs);
-    child.stdout.on("data", (d) => {
+    child.stdout?.on("data", (d) => {
       stdout += d;
       if (o.echoStdout) process.stdout.write(d);
     });
-    child.stderr.on("data", (d) => {
+    child.stderr?.on("data", (d) => {
       stderr += d;
       if (o.echoStderr) process.stderr.write(d);
     });

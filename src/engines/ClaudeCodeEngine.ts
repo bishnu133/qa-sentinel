@@ -1,6 +1,7 @@
 import { claudeAvailable, runClaude } from "../claude.js";
 import { claudePermissions } from "../guardrails.js";
 import type { Config } from "../config.js";
+import { CommandEngine } from "./CommandEngine.js";
 import type { AgentEngine, AgentResult, AgentTask } from "./AgentEngine.js";
 
 /** Claude Code in headless mode, with dontAsk permissions derived from the task's policy. */
@@ -43,5 +44,7 @@ export function engineFor(c: Config): AgentEngine {
   switch (c.agent.engine) {
     case "claude-code":
       return new ClaudeCodeEngine(c.agent.accessCheckSeconds, c.agent.sandbox);
+    case "command":
+      return new CommandEngine({ command: c.agent.command!, wrapCommand: c.verification.wrapCommand, sandbox: c.agent.sandbox, passEnv: c.guardrails.passEnv });
   }
 }

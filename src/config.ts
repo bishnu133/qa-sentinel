@@ -178,6 +178,35 @@ export const ConfigSchema = z.object({
         /** Default platform when QA_MOBILE_PLATFORM is not set. */
         platform: z.enum(["android", "ios"]).default("android"),
         extraWritePaths: z.array(z.string()).default([]),
+        /**
+         * Before authoring, qa-sentinel opens the affected app screens on a device itself and saves what is on them (the
+         * accessibility tree as XML and a screenshot), over plain Appium (W3C) HTTP calls. none (default): it does not,
+         * because it needs a device or emulator during generation. snapshot: it does; a failure is a warning, never a stop.
+         */
+        explore: z.enum(["snapshot", "none"]).default("none"),
+        /**
+         * How a screen name becomes a deep link when exploring: "myapp://" + "orders/new". Empty: no deep links, so only the
+         * screen the app opens on is saved (named "launch"). iOS deep links are not supported yet (see docs).
+         */
+        deepLinkBase: z.string().default(""),
+        /**
+         * Named ways to run the mobile suite on another platform or a device farm. qa-sentinel does not call any farm's API:
+         * `qa-sentinel mobile-run --target <name>` builds the command you give here and runs it (or prints it).
+         */
+        targets: z
+          .record(
+            z.string().regex(/^[\w.-]+$/, "use letters, digits, dot, dash or underscore"),
+            z.object({
+              platform: z.enum(["android", "ios"]).optional(),
+              /** Your command; qa-sentinel adds `--spec <file>` per spec. Default: tests.mobile.runCommand. */
+              runCommand: z.string().optional(),
+              /** Plain (not secret) values set for the run, e.g. QA_MOBILE_PLATFORM, QA_BUNDLE_ID. */
+              env: z.record(z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/), z.string()).default({}),
+              /** Names of variables copied from your environment (secrets such as a farm key). Must be set; their values are never printed. */
+              passEnv: z.array(z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/)).default([]),
+            }),
+          )
+          .default({}),
       })
       .default({}),
   }),
@@ -646,8 +675,14 @@ export const ConfigSchema = z.object({
   }),
   agent: z
     .object({
-      /** Agent runtime. Only Claude Code today; the engine interface keeps others possible. */
-      engine: z.enum(["claude-code"]).default("claude-code"),
+      /** Agent runtime. claude-code (built in), or command: an external program you give in agent.command. */
+      engine: z.enum(["claude-code", "command"]).default("claude-code"),
+      /**
+       * engine: command only. A shell command that reads the task as JSON on stdin and prints the result as JSON on stdout
+       * (docs/ENGINE-COMMAND.md). `{taskFile}` is replaced by the path of a file holding the same task JSON, quoted.
+       * verification.wrapCommand wraps it like the test commands.
+       */
+      command: z.string().min(1).optional(),
       model: z.string().optional().describe("Passed to `claude --model`; omit to use the CLI default"),
       maxTurns: z
         .object({
@@ -777,6 +812,7 @@ export const ConfigSchema = z.object({
     if (seen.has(s.name)) ctx.addIssue({ code: "custom", path: ["workspace", "services"], message: `two services are named "${s.name}"; names must be unique` });
     seen.add(s.name);
   }
+  if (c.agent.engine === "command" && !c.agent.command) ctx.addIssue({ code: "custom", path: ["agent", "command"], message: "agent.engine is command, so agent.command is required (e.g. \"node my-engine.mjs\")" });
   const names = new Set(c.workspace.services.map((s) => s.name));
   for (const s of c.workspace.services)
     for (const r of s.gateway ?? [])

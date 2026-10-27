@@ -8,6 +8,7 @@ import { contractCheckCommand } from "./commands/contractCheck.js";
 import { ClaudeAccessError } from "./claude.js";
 import { Command, Option } from "commander";
 import { addDataLedgerCommand, addMobileCommand, addWebCommand, initCommand, upgradeCommand } from "./commands/init.js";
+import { mobileRunCommand } from "./commands/mobileRun.js";
 import { healedCommand } from "./commands/healed.js";
 import { specCommand } from "./commands/spec.js";
 import { storiesCommand } from "./commands/stories.js";
@@ -106,6 +107,14 @@ program
   .description("add the mobile (WebdriverIO + Appium) test layer to an existing qa-sentinel project")
   .addOption(new Option("--platform <platform>", "android | ios (default when QA_MOBILE_PLATFORM is not set)").choices(["android", "ios"]))
   .action(wrap(async (o) => void addMobileCommand({ cwd: cwd(), platform: o.platform })));
+
+program
+  .command("mobile-run")
+  .description("run the mobile suite with a target from tests.mobile.targets (iOS, a device farm): your command, no vendor API; no AI")
+  .requiredOption("--target <name>", "a key of tests.mobile.targets")
+  .option("--spec <file...>", "only these spec files (default: all)")
+  .option("--dry-run", "show the command, run nothing")
+  .action(wrap(async (o) => mobileRunCommand(cwd(), { target: o.target, specs: o.spec, dryRun: o.dryRun })));
 
 program
   .command("review-story")
