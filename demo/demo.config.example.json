@@ -1,0 +1,16 @@
+{
+  "_about": "Copy to demo/demo.config.json (git-ignored) and replace every placeholder. Secrets are NOT stored here: they come from environment variables (see demo/README.md).",
+  "gitlabUrl": "https://gitlab.example.com",
+  "defaultBranch": "main",
+  "releaseBranch": "release/demo",
+  "testsProject": "<your-group>/shoplite-tests",
+  "services": [
+    { "name": "orders-service", "project": "<your-group>/shoplite-orders", "template": "service-orders" },
+    { "name": "payments-service", "project": "<your-group>/shoplite-payments", "template": "service-payments", "optional": true }
+  ],
+  "jira": {
+    "baseUrl": "https://<your-site>.atlassian.net",
+    "project": "<YOUR-TEST-PROJECT-KEY>",
+    "auth": "auto"
+  }
+}

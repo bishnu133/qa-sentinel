@@ -1,0 +1,55 @@
+{
+  "_about": "Seed data for the demo Jira cards. The project key is NOT here: it comes from demo.config.json (jira.project). Keys such as DEMO-1 are made by Jira when the cards are created. Nothing from Jira is ever written back into this file.",
+  "version": 1,
+  "labels": ["qa-sentinel-demo"],
+  "cards": [
+    {
+      "id": "delivery-slot",
+      "type": "Story",
+      "summary": "Choose a delivery slot when ordering",
+      "storyFile": "shoplite-demo/stories/delivery-slot.md",
+      "startStatus": "In Progress",
+      "changes": ["delivery-slot"],
+      "role": "Story 1 (with a planted catch: the code allows 5 orders per slot, the card says 3)"
+    },
+    {
+      "id": "qty-limit",
+      "type": "Story",
+      "summary": "Limit one order to 10 units",
+      "storyFile": "shoplite-demo/stories/qty-limit.md",
+      "startStatus": "In Progress",
+      "changes": ["qty-limit"],
+      "role": "Story 2 (a clean change that matches its card)"
+    },
+    {
+      "id": "slot-cap-bug",
+      "type": "Bug",
+      "summary": "Delivery slot accepts 5 orders, the story says 3",
+      "storyFile": "shoplite-demo/stories/slot-cap-bug.md",
+      "startStatus": null,
+      "linksTo": { "card": "delivery-slot", "linkType": "Relates" },
+      "changes": ["slot-cap-bug"],
+      "role": "Bug linked to story 1. Its fix is merged after story 1."
+    },
+    {
+      "id": "cancel-refund",
+      "type": "Story",
+      "summary": "Cancel an order and refund the payment",
+      "storyFile": "shoplite-demo/stories/cancel-refund.md",
+      "startStatus": "In Progress",
+      "changes": ["cancel-refund-payments", "cancel-refund-orders"],
+      "needsServices": ["payments-service", "orders-service"],
+      "role": "Cross-service story (needs the optional payments project)"
+    },
+    {
+      "id": "blank-item-hotfix",
+      "type": "Bug",
+      "summary": "PROD: an item name of only spaces is accepted",
+      "storyFile": "shoplite-demo/stories/blank-item-hotfix.md",
+      "startStatus": null,
+      "hotfix": true,
+      "changes": ["blank-item-hotfix"],
+      "role": "Hotfix bug (fixed on the release branch, then copied to main)"
+    }
+  ]
+}

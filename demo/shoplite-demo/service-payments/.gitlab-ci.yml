@@ -1,0 +1,9 @@
+# Demo service repo pipeline: qa-sentinel gap report on merge requests, test generation after a merge.
+# __TESTS_PROJECT__ is filled in by demo/scripts/setup-gitlab.mjs (the test repo's project path).
+include:
+  - project: "__TESTS_PROJECT__"
+    ref: main
+    file: "ci/qa-sentinel/service.gitlab-ci.yml"
+
+variables:
+  QA_TESTS_PROJECT: "__TESTS_PROJECT__"
