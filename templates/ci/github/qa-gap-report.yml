@@ -10,7 +10,7 @@
 #   variable QA_TESTS_REPOSITORY   owner/repo of the test repo (it holds qa-sentinel.config.yaml with ci.provider: github)
 #   variable QA_SERVICE_NAME       optional; default is the repository name, which must equal the service name in the config
 #   variable QA_CLAUDE_CODE_VERSION optional; pins @anthropic-ai/claude-code (default: latest)
-#   variable QA_SENTINEL_PACKAGE   optional; default qa-sentinel@0.8.0-beta.2 (a "github:owner/repo#ref" source is built here)
+#   variable QA_SENTINEL_PACKAGE   optional; default qa-sentinel@0.8.0-beta.3 (a "github:owner/repo#ref" source is built here)
 #   secret   ANTHROPIC_API_KEY     model key. Used by the analysis job only. (Bedrock/Vertex: see the README next to this file.)
 #   secret   QA_TESTS_READ_TOKEN   only when the test repo is private: a token that can read it (contents: read)
 #   Jira as the requirements source: secrets JIRA_EMAIL + JIRA_API_TOKEN (or JIRA_PAT) for reading in the analysis job,
@@ -83,7 +83,7 @@ jobs:
       - name: Install
         if: steps.gate.outputs.skip != 'true'
         env:
-          QA_SENTINEL_PACKAGE: ${{ vars.QA_SENTINEL_PACKAGE || 'qa-sentinel@0.8.0-beta.2' }}
+          QA_SENTINEL_PACKAGE: ${{ vars.QA_SENTINEL_PACKAGE || 'qa-sentinel@0.8.0-beta.3' }}
           QA_CLAUDE_CODE_VERSION: ${{ vars.QA_CLAUDE_CODE_VERSION }}
         run: |
           # QA_CLAUDE_CODE_VERSION (repository variable) pins the agent CLI; unset installs the latest.
@@ -164,7 +164,7 @@ jobs:
           node-version: 22
       - name: Install
         env:
-          QA_SENTINEL_PACKAGE: ${{ vars.QA_SENTINEL_PACKAGE || 'qa-sentinel@0.8.0-beta.2' }}
+          QA_SENTINEL_PACKAGE: ${{ vars.QA_SENTINEL_PACKAGE || 'qa-sentinel@0.8.0-beta.3' }}
         run: |
           qa_pkg="$QA_SENTINEL_PACKAGE"
           case "$qa_pkg" in

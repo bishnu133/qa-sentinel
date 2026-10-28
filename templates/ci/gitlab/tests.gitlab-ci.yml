@@ -21,7 +21,7 @@
 #   the QA environment. Generated tests are code; isolate where they run.
 
 variables:
-  QA_SENTINEL_VERSION: "0.8.0-beta.2"
+  QA_SENTINEL_VERSION: "0.8.0-beta.3"
   # Where to install qa-sentinel from: set QA_SENTINEL_PACKAGE as a group/project CI/CD variable, e.g.
   # "github:bishnu133/qa-sentinel#main" until it is on npm. Default: qa-sentinel@$QA_SENTINEL_VERSION.
   # (Not defined here on purpose: trigger jobs forward YAML variables downstream, where they override CI/CD variables.)
@@ -193,6 +193,8 @@ qa-generate-publish:
     # The Jira publishing login (QA_JIRA_PUBLISH_*) is picked by `qa-sentinel publish` itself; the read login (JIRA_*) is not used for writing.
     - git remote set-url origin "${CI_SERVER_URL}/${CI_PROJECT_PATH}.git"   # strip the job token GitLab put in .git/config
     # The policy check runs inside publish: the bundle is checked against the agent write policy before anything is pushed.
+    # The run folder comes from a job that runs generated code: no symbolic link in it is kept (publish refuses a folder that has one, too).
+    - find .qa-sentinel/runs -type l -delete
     - qa-sentinel publish --kind generate --run all
 
 {{/if}}

@@ -458,6 +458,34 @@ describe("publish does not believe the run folder (the analysis job runs generat
     expect(rec?.agentMr?.branch).toBe("qa-sentinel/story-SHOP-101");
   });
 
+  it("a symbolic link in the run folder (published.json, jira-summary.md, manifest.json, a folder) is refused and nothing outside is written", async () => {
+    const w = await world();
+    const outside = path.join(w.root, "outside.txt");
+    fs.writeFileSync(outside, "untouched\n");
+    for (const [i, name] of ["published.json", "jira-summary.md", "manifest.json", "sub"].entries()) {
+      const { run } = craft(w, { id: `ln-${i}`, branch: "qa-sentinel/orders-a1b2c3d4", files: OK });
+      fs.symlinkSync(name === "sub" ? w.root : outside, path.join(run, name));
+      expect(await publishCommand({ cwd: w.qa, run: `ln-${i}`, env: writeEnv(w.gl.url) }), name).toBe(1);
+      expect(fs.readFileSync(outside, "utf8"), name).toBe("untouched\n");
+      expect(originBranches(w), name).toBe("");
+    }
+    expect(w.gl.writes()).toEqual([]);
+  });
+
+  it("writeFileNoFollow and readFileNoFollow do not follow a link at the final path", async () => {
+    const { writeFileNoFollow, readFileNoFollow, assertNoLinks } = await import("../src/noLinks.js");
+    const dir = tmp("qas-nl-");
+    const target = path.join(dir, "target.txt");
+    fs.writeFileSync(target, "keep\n");
+    fs.symlinkSync(target, path.join(dir, "link.txt"));
+    expect(() => writeFileNoFollow(path.join(dir, "link.txt"), "evil")).toThrow();
+    expect(() => readFileNoFollow(path.join(dir, "link.txt"))).toThrow();
+    expect(fs.readFileSync(target, "utf8")).toBe("keep\n");
+    writeFileNoFollow(path.join(dir, "plain.txt"), "ok");
+    expect(readFileNoFollow(path.join(dir, "plain.txt"))).toBe("ok");
+    expect(() => assertNoLinks(dir)).toThrow(/symbolic link/);
+  });
+
   it("refuses generated artifacts, symbolic links and submodule links in the bundle", async () => {
     const w = await world();
     craft(w, { id: "r-art", branch: "qa-sentinel/orders-a1b2c3d4", files: { ...OK, "qa-gap-report.md": "x\n", ".qa-sentinel/runs/x/publish.json": "{}" } });

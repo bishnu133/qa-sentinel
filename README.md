@@ -115,7 +115,7 @@ Risk is a fixed rule that you can read: **critical** for auth, money or personal
 
 ```bash
 # in your test repo; service repos are siblings in the same workspace folder
-npm i -g @anthropic-ai/claude-code qa-sentinel   # until it is on npm: npm i -g github:bishnu133/qa-sentinel#v0.7.2
+npm i -g @anthropic-ai/claude-code qa-sentinel   # until it is on npm: npm i -g github:bishnu133/qa-sentinel#v0.8.0-beta.3
 
 qa-sentinel init            # detects framework, tests, services; asks a few questions (level 1 by default)
 qa-sentinel learn           # agent learns your conventions + drafts test-map.yaml → review with git diff

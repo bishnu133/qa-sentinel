@@ -19,6 +19,7 @@ import { fileBugs, type BugCandidate } from "../bugs/bugs.js";
 import { applyRecordPatch, conflictKey, recordAgentMr, showConflict } from "./generate.js";
 import { bundleFindings } from "./bundlePolicy.js";
 import { log } from "../log.js";
+import { assertNoLinks, readFileNoFollow, writeFileNoFollow } from "../noLinks.js";
 
 /**
  * `qa-sentinel publish`: do the writing that `gap-report --defer-publish` and `generate --defer-publish` left in a run
@@ -57,14 +58,14 @@ interface State {
 
 function readState(dir: string): State {
   try {
-    const s = JSON.parse(fs.readFileSync(path.join(dir, PUBLISHED_FILE), "utf8")) as State;
+    const s = JSON.parse(readFileNoFollow(path.join(dir, PUBLISHED_FILE))) as State;
     if (s && typeof s === "object" && s.done && typeof s.done === "object") return { version: 1, done: s.done, ...(s.mr ? { mr: s.mr } : {}), ...(s.complete ? { complete: true } : {}) };
   } catch {
     /* none yet */
   }
   return { version: 1, done: {} };
 }
-const writeState = (dir: string, s: State) => fs.writeFileSync(path.join(dir, PUBLISHED_FILE), JSON.stringify(s, null, 2) + "\n");
+const writeState = (dir: string, s: State) => writeFileNoFollow(path.join(dir, PUBLISHED_FILE), JSON.stringify(s, null, 2) + "\n");
 
 function runDirs(cwd: string, run: string | undefined): { dirs: string[]; explicit: boolean } {
   const root = path.join(cwd, ".qa-sentinel", "runs");
@@ -214,7 +215,8 @@ const storiesOf = (s: PublishFile["steps"][number]): string[] =>
 const validKey = (k: string | undefined) => (k ? /^[A-Za-z][A-Za-z0-9]*-\d+$/.test(k) : false);
 
 async function publishRun(cwd: string, c: Config, dir: string, env: NodeJS.ProcessEnv, o: PublishOptions): Promise<number> {
-  const doc: PublishFile = parsePublishFile(fs.readFileSync(path.join(dir, PUBLISH_FILE), "utf8"));
+  assertNoLinks(dir);
+  const doc: PublishFile = parsePublishFile(readFileNoFollow(path.join(dir, PUBLISH_FILE)));
   if (o.kind && doc.kind !== o.kind) throw new Error(`this run is a ${doc.kind} run, but this publish job takes only ${o.kind} runs; refused`);
   const odd = doc.steps.find((s) => !STEPS_OF[doc.kind].includes(s.type));
   if (odd) throw new Error(`a ${doc.kind} run may not hold a "${odd.type}" step; refused`);
@@ -464,7 +466,7 @@ async function announceJira(cwd: string, c: Config, runDir: string, s: MergeRequ
     const j = s.jira;
     if (s.storyKey && (j.storyKey ?? "").toUpperCase() !== s.storyKey.toUpperCase()) throw new Error("the Jira summary is for another story than the branch's; refused");
     const jiraSummary = generationSummary({ service: j.service, risk: j.risk as Parameters<typeof generationSummary>[0]["risk"], verification: j.verification, environment: j.environment, mrUrl: url || undefined, trace: j.trace as Parameters<typeof generationSummary>[0]["trace"], acText: new Map(j.acText), discrepancies: j.discrepancies, weakTests: j.weakTests });
-    fs.writeFileSync(path.join(runDir, "jira-summary.md"), jiraSummary);
+    writeFileNoFollow(path.join(runDir, "jira-summary.md"), jiraSummary);
     const done = await publish(c, { report: j.report, jiraSummary, cwd, service: j.service, storyKey: j.storyKey, mr: {}, targets: ["jira"] }, env);
     if (!done.includes("jira")) throw new Error("Jira was not updated (no login, or no story key)");
     return "Jira updated";
