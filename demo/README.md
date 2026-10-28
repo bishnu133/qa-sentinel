@@ -80,6 +80,7 @@ Run everything from the qa-sentinel folder.
    | `ANTHROPIC_API_KEY`, `QA_SENTINEL_GITLAB_READ_TOKEN` (bot, `read_api` + `read_repository`), Jira login for reading (`JIRA_*`) | `qa-analysis` |
    | `QA_SENTINEL_GITLAB_WRITE_TOKEN` (bot, `api` + `write_repository`), `QA_JIRA_PUBLISH_EMAIL` + `QA_JIRA_PUBLISH_API_TOKEN` (or `QA_JIRA_PUBLISH_PAT`) | `qa-publish` |
    The split jobs were **not run on a real GitLab** by the kit's author (docs/TRY-PR5.md says the same). Rehearse with them on if you want to show them. The reset script and the write token must still be the same user as the one that writes comments, or the comments are not recognised as qa-sentinel's.
+   **Which card a job may write to.** `qa-sentinel publish` writes to a Jira card only if the pipeline itself names it: `QA_STORY_KEY`, or the Jira key in the service commit title, message or branch, or in the title, description or branch of the merge request. The demo scripts put the key in the merge request title and in the squash commit title, so this works without extra setup. Keys outside `requirements.jira.projectKeys` (your demo project) are ignored. If you push a change by hand, put the key in the title or set `QA_STORY_KEY`.
 6. **Check the setup. FREE, except `--online` makes one tiny Claude call (AI $, one tiny call; docs/AUTOMATION.md):**
    ```
    cd demo/.work/shoplite-tests

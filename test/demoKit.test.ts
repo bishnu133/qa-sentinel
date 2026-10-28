@@ -812,6 +812,10 @@ describe("review fixes", () => {
     const made = configOverlay({ gitlabUrl: "https://g.example", testsProject: "a/t", services: [{ name: "orders-service", project: "a/o" }], jira: { baseUrl: "https://j.example", project: "DEMO" } });
     expect(made.generation.crossService).toBe("when-ac-complete");
     expect(made.automation.record).toBe("jira");
+    // publish only writes to cards named by the pipeline (commit title / MR title / QA_STORY_KEY) and in these project keys
+    expect(made.requirements.jira.projectKeys).toEqual(["DEMO"]);
+    expect(made.reporting.targets).toEqual(["gitlab-mr", "jira"]);
+    expect(fs.readFileSync(path.join(DEMO_DIR, "README.md"), "utf8")).toContain("QA_STORY_KEY");
   });
 
   it("H7: the docs recommend a bot identity, protected and scoped variables", () => {
