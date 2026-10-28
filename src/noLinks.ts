@@ -14,7 +14,11 @@ export function assertNoLinks(dir: string): void {
     for (const e of fs.readdirSync(d, { withFileTypes: true })) {
       const full = path.join(d, e.name);
       if (e.isSymbolicLink()) throw new Error(`the run folder holds a symbolic link (${path.relative(dir, full).slice(0, 80)}); refused`);
-      if (e.isDirectory() && depth < 12) walk(full, depth + 1);
+      if (e.isDirectory()) {
+        // Nothing legitimate is nested this deep; refuse rather than stop looking.
+        if (depth >= 40) throw new Error(`the run folder is nested more than 40 levels deep (${path.relative(dir, full).slice(0, 80)}); refused`);
+        walk(full, depth + 1);
+      }
     }
   };
   walk(dir, 0);

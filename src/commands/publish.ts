@@ -70,6 +70,16 @@ const writeState = (dir: string, s: State) => writeFileNoFollow(path.join(dir, P
 
 function runDirs(cwd: string, run: string | undefined): { dirs: string[]; explicit: boolean } {
   const root = path.join(cwd, ".qa-sentinel", "runs");
+  // A link on the way to the run folders would lead the reads and writes below somewhere else.
+  for (const p of [path.join(cwd, ".qa-sentinel"), root]) {
+    let st: fs.Stats | undefined;
+    try {
+      st = fs.lstatSync(p);
+    } catch {
+      /* not there: no runs */
+    }
+    if (st?.isSymbolicLink()) throw new Error(`${path.relative(cwd, p)} is a symbolic link; refused`);
+  }
   if (run && run !== "all") {
     const asPath = path.resolve(cwd, run);
     const dir = fs.existsSync(path.join(asPath, PUBLISH_FILE)) ? asPath : path.join(root, run);
@@ -203,6 +213,9 @@ export async function trustedStories(c: Config, env: NodeJS.ProcessEnv): Promise
   for (const v of [env.QA_STORY_KEY, env.QA_STORY_KEYS]) keysIn(v).forEach((k) => explicit.add(k));
   const text = new Set<string>();
   for (const v of [env.QA_SERVICE_COMMIT_TITLE, env.QA_SERVICE_COMMIT_MESSAGE, env.QA_SERVICE_BRANCH, env.CI_MERGE_REQUEST_TITLE, env.CI_MERGE_REQUEST_DESCRIPTION, env.CI_MERGE_REQUEST_SOURCE_BRANCH_NAME]) keysIn(v).forEach((k) => text.add(k));
+  // The merge request or pull request this job runs on (GitLab CI_MERGE_REQUEST_*, GitHub's pull request event): its author wrote the title, text and branch.
+  const own = scmFor(c, env).mrFromEnv(env);
+  for (const v of [own.title, own.description, own.sourceBranch]) keysIn(v).forEach((k) => text.add(k));
   const ctx = gitlabContext(c.ci.gitlabUrl, env);
   if (ctx && env.QA_SERVICE_PROJECT && env.QA_SERVICE_SHA) {
     try {
@@ -278,10 +291,19 @@ async function publishRun(cwd: string, c: Config, dir: string, env: NodeJS.Proce
     try {
       // Generate runs write to stories (Jira, the record, a story branch): only to the ones this job is for, never to one the run folder names.
       const asked = storiesOf(step);
+      let untrustedStory = false;
       if (asked.length) {
         trusted ??= await trustedStories(c, env);
         const stranger = asked.find((k) => !trusted!.has(k.toUpperCase()));
-        if (stranger) throw new Error(`${stranger} is not a story this job is for (QA_STORY_KEY, or the service commit / merge request names it); the ${step.type} step is refused`);
+        if (stranger && step.type === "report") {
+          // The note goes to this job's own merge request whatever the story is; only the Jira comment and the story key are dropped.
+          log.warn(`${stranger} is not a story this job is for (QA_STORY_KEY, or the commit / merge request names it): the report is posted on the merge request without it, and nothing is written to Jira`);
+          untrustedStory = true;
+        } else if (stranger && step.type === "mr-seen") {
+          log.warn(`${stranger} is not a story this job is for: the merge request is not recorded on it`);
+          mark(`${i}`, label, `${stranger} is not a story this job is for: nothing recorded`);
+          continue;
+        } else if (stranger) throw new Error(`${stranger} is not a story this job is for (QA_STORY_KEY, or the service commit / merge request names it); the ${step.type} step is refused`);
       }
       if (step.type === "merge-request") {
         const needMr = wanted(`${i}:mr`, "mr-create") && (!o.target || o.target === "mr-create");
@@ -312,13 +334,14 @@ async function publishRun(cwd: string, c: Config, dir: string, env: NodeJS.Proce
         const targets = (step.targets ?? c.reporting.targets).filter((t, k, a) => a.indexOf(t) === k);
         for (const t of targets) {
           if (!wanted(`${i}:${t}`, t)) continue;
-          if (t === "jira" && !step.storyKey) {
-            mark(`${i}:${t}`, `${label} (${t})`, "no story key: nothing to comment on in Jira");
+          const storyKey = untrustedStory ? undefined : step.storyKey;
+          if (t === "jira" && !storyKey) {
+            mark(`${i}:${t}`, `${label} (${t})`, untrustedStory ? "the story is not one this job is for: nothing written to Jira" : "no story key: nothing to comment on in Jira");
             continue;
           }
           // The merge request is this job's own (CI_PROJECT_ID, CI_MERGE_REQUEST_IID), never one named in the run folder.
           if (t === "gitlab-mr" && (!mrEnv.project || !mrEnv.mrIid)) throw new Error(scmFor(c, env).kind === "github" ? "no pull request in this job (GITHUB_REPOSITORY and the pull request event are not set)" : "no merge request in this job (CI_PROJECT_ID and CI_MERGE_REQUEST_IID are not set)");
-          const done = await publish(c, { onMrNote: (n) => patchManifest(dir, { mr: n }), report: step.report, jiraSummary: step.jiraSummary, cwd, service: step.service, storyKey: step.storyKey, stamp: step.stamp, mr: mrEnv, targets: [t] }, env);
+          const done = await publish(c, { onMrNote: (n) => patchManifest(dir, { mr: n }), report: step.report, jiraSummary: step.jiraSummary, cwd, service: step.service, storyKey, stamp: step.stamp, mr: mrEnv, targets: [t] }, env);
           if (!done.includes(t)) throw new Error(`${t} was not published (missing token, login or merge request; see the warning above)`);
           mark(`${i}:${t}`, `${label} (${t})`);
         }

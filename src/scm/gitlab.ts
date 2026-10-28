@@ -35,7 +35,7 @@ export class GitLabError extends Error {
  * as the user whose token posted it. Text from a model or a run folder must never do that, so such a line gets a zero-width space in front: it reads
  * the same, and GitLab does not see a command. (qa-sentinel's own reading of "/qa ready" ignores the zero-width space.)
  */
-export const neutraliseQuickActions = (text: string) => text.replace(/^([ \t]*)\/(?=\S)/gm, "$1\u200b/");
+export const neutraliseQuickActions = (text: string) => text.replace(/(^[ \t]*|>)\/(?=\S)/gm, "$1\u200b/");
 
 function safeBody(body: unknown): unknown {
   if (!body || typeof body !== "object" || Array.isArray(body)) return body;
@@ -186,7 +186,7 @@ export async function openMrsWithLabel(ctx: GitLabContext, project: string | num
 export async function upsertMarkedNote(ctx: GitLabContext, project: string | number, mrIid: string | number, marker: string, body: string): Promise<"created" | "updated" | "same"> {
   const base = `/projects/${enc(project)}/merge_requests/${enc(mrIid)}/notes`;
   const existing = (await ownNotes(ctx, await getAll(ctx, `${base}?sort=asc`))).find((n) => typeof n.body === "string" && n.body.includes(marker));
-  const full = `${marker}\n${body}`;
+  const full = neutraliseQuickActions(`${marker}\n${body}`); // what GitLab will hold, so an unchanged note compares equal
   if (existing) {
     if (existing.body === full) return "same";
     await call(ctx, "PUT", `${base}/${existing.id}`, { body: full });

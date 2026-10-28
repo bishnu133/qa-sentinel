@@ -454,6 +454,9 @@ describe("jobs, locks and what stays out of git", () => {
     expect(await gen({ processEnv: { ...glEnv(), QA_SERVICE_COMMIT_TITLE: 'Revert "SHOP-101 cap a slot"' } })).toBe(0);
     expect(fake.calls).toHaveLength(0);
     expect(gl.mrs).toHaveLength(0);
+    // The merge commit of the branch GitLab's Revert button makes.
+    expect(await gen({ processEnv: { ...glEnv(), QA_SERVICE_COMMIT_TITLE: "Merge branch 'revert-1a2b3c4d' into 'main'" } })).toBe(0);
+    expect(fake.calls).toHaveLength(0);
     expect(await gen({ processEnv: { ...glEnv(), QA_SERVICE_COMMIT_TITLE: "SHOP-101 cap a slot" } })).toBe(0);
     expect(fake.calls.length).toBeGreaterThan(0);
   }, 60_000);

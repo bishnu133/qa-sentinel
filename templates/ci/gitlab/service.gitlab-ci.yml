@@ -192,6 +192,9 @@ qa-trigger-generation:
     # A revert commit brings back code that was already tested; it does not start a paid run.
     - if: $CI_COMMIT_TITLE =~ /^Revert "/
       when: never
+    # ... and the merge commit of the branch GitLab's Revert button makes.
+    - if: $CI_COMMIT_TITLE =~ /^Merge branch 'revert-[0-9a-f]{8}'/
+      when: never
     - if: $CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
     # Re-run by hand: Build › Pipelines › New pipeline on the default branch (generates for its latest commit).
     - if: $CI_PIPELINE_SOURCE == "web" && $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
