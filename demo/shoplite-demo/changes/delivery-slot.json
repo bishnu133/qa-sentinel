@@ -1,0 +1,26 @@
+{
+  "service": "orders-service",
+  "slug": "delivery-slot",
+  "note": "Planted catch: the code allows 5 orders per slot, the story says 3.",
+  "commitMessage": "{KEY}: Choose a delivery slot when ordering",
+  "edits": {
+    "src/server.js": [
+      [
+        "const orders = new Map();",
+        "const orders = new Map();\nconst MAX_ORDERS_PER_SLOT = 5;"
+      ],
+      [
+        "const { item, qty, unitPrice, currency = \"SGD\", email } = req.body || {};",
+        "const { item, qty, unitPrice, currency = \"SGD\", email, deliverySlot } = req.body || {};"
+      ],
+      [
+        "  const id = `ord_${orders.size + 1}`;",
+        "  const slot = Date.parse(deliverySlot);\n  if (!deliverySlot || Number.isNaN(slot)) return res.status(400).json({ error: \"deliverySlot must be an ISO date-time\" });\n  if (slot <= Date.now()) return res.status(400).json({ error: \"deliverySlot must be in the future\" });\n  if ([...orders.values()].filter((o) => o.deliverySlot === deliverySlot).length >= MAX_ORDERS_PER_SLOT) {\n    return res.status(409).json({ error: \"delivery slot is full\" });\n  }\n\n  const id = `ord_${orders.size + 1}`;"
+      ],
+      [
+        "status: \"confirmed\", paymentId: payment.body.id };",
+        "status: \"confirmed\", paymentId: payment.body.id, deliverySlot };"
+      ]
+    ]
+  }
+}

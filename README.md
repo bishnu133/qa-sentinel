@@ -433,6 +433,8 @@ The order follows external review #1 ([response](docs/REVIEW-RESPONSE-1.md)):
 
 [docs/SANDBOX.md](docs/SANDBOX.md) walks through **ShopLite**, a three-service sandbox with six scenarios that each hide a known catch. Run it locally in 15 minutes, then on your own GitLab (and optionally Jira and Jenkins). `npm run replay` scores qa-sentinel against tests real developers wrote in open-source repos.
 
+**Team demo:** [demo/](demo/README.md) is a kit for a live end-to-end demo on your own Jira test project and GitLab test group: seed Jira cards, play the developer (merge a story, fix a bug), watch qa-sentinel react, then `reset` and run it again. The scripts are tested against a fake Jira and a fake GitLab only; the live path has not been run on real systems.
+
 ## Design and review
 
 - [docs/PROJECT_REVIEW.md](docs/PROJECT_REVIEW.md): the problem, design decisions, architecture and open questions (review brief).

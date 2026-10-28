@@ -1,0 +1,38 @@
+openapi: 3.0.3
+info: { title: Payments, version: 1.0.0 }
+paths:
+  /payments/health:
+    get: { responses: { "200": { description: ok } } }
+  /payments/authorize:
+    post:
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [orderId, amount, currency]
+              properties:
+                orderId: { type: string }
+                amount: { type: number, exclusiveMinimum: true, minimum: 0 }
+                currency: { type: string, enum: [SGD, USD] }
+      responses:
+        "201": { description: authorized, content: { application/json: { schema: { $ref: '#/components/schemas/Payment' } } } }
+        "400": { description: invalid }
+  /payments/{id}:
+    get:
+      parameters: [{ in: path, name: id, required: true, schema: { type: string } }]
+      responses:
+        "200": { description: ok, content: { application/json: { schema: { $ref: '#/components/schemas/Payment' } } } }
+        "404": { description: not found }
+components:
+  schemas:
+    Payment:
+      type: object
+      required: [id, orderId, amount, currency, status]
+      properties:
+        id: { type: string }
+        orderId: { type: string }
+        amount: { type: number }
+        currency: { type: string, enum: [SGD, USD] }
+        status: { type: string, enum: [authorized] }

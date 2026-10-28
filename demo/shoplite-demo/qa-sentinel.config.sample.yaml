@@ -1,0 +1,58 @@
+# SAMPLE (not copied anywhere): the settings that setup-gitlab.mjs adds on top of `qa-sentinel init`. Placeholders only.
+# Secrets are NOT here. They are CI/CD variables: ANTHROPIC_API_KEY, QA_SENTINEL_GITLAB_TOKEN, JIRA_EMAIL + JIRA_API_TOKEN (or JIRA_PAT).
+# The real file is written for you into the test repo. A test checks that this sample matches what setup writes.
+workspace:
+  services:
+    - name: orders-service
+      path: ../orders-service
+      openapi: openapi.yaml
+      kind: api
+      gitlabProject: <your-group>/shoplite-orders
+      dependsOn:
+        - payments-service
+      version:
+        path: /orders/version
+        field: commit
+    - name: payments-service
+      path: ../payments-service
+      openapi: openapi.yaml
+      kind: api
+      gitlabProject: <your-group>/shoplite-payments
+      dependsOn: []
+      version:
+        path: /payments/version
+        field: commit
+ci:
+  gitlabUrl: https://gitlab.example.com
+  testRepoProject: <your-group>/shoplite-tests
+requirements:
+  source: jira
+  jira:
+    baseUrl: https://<your-site>.atlassian.net
+    projectKeys:
+      - <YOUR-TEST-PROJECT-KEY>
+    approvedStatuses:
+      - In Progress
+      - Selected for Development
+      - Ready for Development
+      - In Review
+      - Done
+    hierarchy:
+      links:
+        - name: Relates
+          from:
+            - Bug
+reporting:
+  targets:
+    - gitlab-mr
+    - jira
+generation:
+  crossService: when-ac-complete
+automation:
+  record: jira
+bugs:
+  mode: suggest
+environments:
+  local:
+    baseUrl: http://127.0.0.1:8080
+    description: Demo environment started by qa-env/start.sh

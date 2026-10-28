@@ -1,0 +1,11 @@
+# Demo test repo pipeline. Uses the qa-sentinel template that `qa-sentinel init` put in ci/qa-sentinel/.
+# The two lines marked SET are filled in by demo/scripts/setup-gitlab.mjs from demo.config.json.
+include:
+  - local: "ci/qa-sentinel/tests.gitlab-ci.yml"
+
+variables:
+  # Start the services for every test job (qa-env/start.sh).
+  QA_ENV_START: "source qa-env/start.sh"
+  QA_ENV_SERVICES: "__QA_ENV_SERVICES__"   # SET: "orders-service=<group>/shoplite-orders payments-service=<group>/shoplite-payments"
+  # Install qa-sentinel from the repository until you use a published version (needed for the newest commands).
+  # QA_SENTINEL_PACKAGE: set it as a CI/CD VARIABLE, not here (see ci/qa-sentinel/README.md).

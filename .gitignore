@@ -7,3 +7,6 @@ bench/replay-results/runs/
 bench/results/mutations-*.md
 bench/results/generate-*
 bench/results/latest-generate.md
+demo/.demo-state.json
+demo/demo.config.json
+demo/.work/

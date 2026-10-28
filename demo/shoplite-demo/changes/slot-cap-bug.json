@@ -1,0 +1,15 @@
+{
+  "service": "orders-service",
+  "slug": "slot-cap",
+  "needs": "delivery-slot",
+  "note": "Fixes the planted catch of the delivery-slot change. Merge delivery-slot first.",
+  "commitMessage": "{KEY}: A delivery slot accepts at most 3 orders",
+  "edits": {
+    "src/server.js": [
+      [
+        "const MAX_ORDERS_PER_SLOT = 5;",
+        "const MAX_ORDERS_PER_SLOT = 3;"
+      ]
+    ]
+  }
+}

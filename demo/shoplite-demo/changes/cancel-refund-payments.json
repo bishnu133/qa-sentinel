@@ -1,0 +1,24 @@
+{
+  "service": "payments-service",
+  "slug": "refund",
+  "note": "Part 1 of 2: payments-service can refund a payment.",
+  "commitMessage": "{KEY}: Refund a payment (payments-service)",
+  "edits": {
+    "src/server.js": [
+      [
+        "app.get(\"/payments/:id\", (req, res) => {",
+        "app.post(\"/payments/:id/refund\", (req, res) => {\n  const p = payments.get(req.params.id);\n  if (!p) return res.status(404).json({ error: \"payment not found\" });\n  if (p.status === \"refunded\") return res.status(409).json({ error: \"payment already refunded\" });\n  p.status = \"refunded\";\n  res.json(p);\n});\n\napp.get(\"/payments/:id\", (req, res) => {"
+      ]
+    ],
+    "openapi.yaml": [
+      [
+        "  /payments/{id}:\n    get:",
+        "  /payments/{id}/refund:\n    post:\n      parameters: [{ in: path, name: id, required: true, schema: { type: string } }]\n      responses:\n        \"200\": { description: refunded, content: { application/json: { schema: { $ref: '#/components/schemas/Payment' } } } }\n        \"404\": { description: not found }\n        \"409\": { description: already refunded }\n  /payments/{id}:\n    get:"
+      ],
+      [
+        "status: { type: string, enum: [authorized] }",
+        "status: { type: string, enum: [authorized, refunded] }"
+      ]
+    ]
+  }
+}

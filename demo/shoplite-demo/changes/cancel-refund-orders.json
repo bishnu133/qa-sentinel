@@ -1,0 +1,24 @@
+{
+  "service": "orders-service",
+  "slug": "cancel",
+  "note": "Part 2 of 2: orders-service cancels and asks payments to refund.",
+  "commitMessage": "{KEY}: Cancel an order and refund the payment (orders-service)",
+  "edits": {
+    "src/server.js": [
+      [
+        "app.get(\"/orders/:id\", (req, res) => {",
+        "app.post(\"/orders/:id/cancel\", async (req, res) => {\n  const order = orders.get(req.params.id);\n  if (!order) return res.status(404).json({ error: \"order not found\" });\n  if (order.status === \"cancelled\") return res.status(409).json({ error: \"order already cancelled\" });\n  if (PAYMENTS_URL) {\n    const refund = await post(`${PAYMENTS_URL}/payments/${order.paymentId}/refund`, {});\n    if (refund.status !== 200) return res.status(502).json({ error: \"refund failed\" });\n  }\n  order.status = \"cancelled\";\n  res.json(order);\n});\n\napp.get(\"/orders/:id\", (req, res) => {"
+      ]
+    ],
+    "openapi.yaml": [
+      [
+        "  /orders/{id}:\n    get:",
+        "  /orders/{id}/cancel:\n    post:\n      parameters: [{ in: path, name: id, required: true, schema: { type: string } }]\n      responses:\n        \"200\": { description: cancelled, content: { application/json: { schema: { $ref: '#/components/schemas/Order' } } } }\n        \"404\": { description: not found }\n        \"409\": { description: already cancelled }\n        \"502\": { description: refund failed }\n  /orders/{id}:\n    get:"
+      ],
+      [
+        "status: { type: string, enum: [confirmed] }",
+        "status: { type: string, enum: [confirmed, cancelled] }"
+      ]
+    ]
+  }
+}

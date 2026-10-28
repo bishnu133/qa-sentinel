@@ -1,0 +1,10 @@
+# Traceability map: service -> endpoint -> test files. Agents read and update this file.
+version: 1
+services:
+  orders-service:
+    path: ../orders-service
+    openapi: openapi.yaml
+    endpoints:
+      POST /orders: [tests/api/orders/orders.spec.ts]
+      GET /orders/{id}: [tests/api/orders/orders.spec.ts]
+    screens: {}

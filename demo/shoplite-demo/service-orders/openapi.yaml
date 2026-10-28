@@ -1,0 +1,44 @@
+openapi: 3.0.3
+info: { title: Orders, version: 1.0.0 }
+paths:
+  /orders/health:
+    get: { responses: { "200": { description: ok } } }
+  /orders:
+    post:
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [item, qty, unitPrice]
+              properties:
+                item: { type: string }
+                qty: { type: integer, minimum: 1 }
+                unitPrice: { type: number, exclusiveMinimum: true, minimum: 0 }
+                currency: { type: string, enum: [SGD, USD], default: SGD }
+                email: { type: string, format: email }
+      responses:
+        "201": { description: created, content: { application/json: { schema: { $ref: '#/components/schemas/Order' } } } }
+        "400": { description: invalid }
+        "402": { description: payment declined }
+  /orders/{id}:
+    get:
+      parameters: [{ in: path, name: id, required: true, schema: { type: string } }]
+      responses:
+        "200": { description: ok, content: { application/json: { schema: { $ref: '#/components/schemas/Order' } } } }
+        "404": { description: not found }
+components:
+  schemas:
+    Order:
+      type: object
+      required: [id, item, qty, unitPrice, total, currency, status, paymentId]
+      properties:
+        id: { type: string }
+        item: { type: string }
+        qty: { type: integer }
+        unitPrice: { type: number }
+        total: { type: number }
+        currency: { type: string, enum: [SGD, USD] }
+        status: { type: string, enum: [confirmed] }
+        paymentId: { type: string }

@@ -1,0 +1,4 @@
+# Never commit anything that comes from your Jira or GitLab.
+.demo-state.json
+demo.config.json
+.work/

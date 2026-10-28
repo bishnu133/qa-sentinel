@@ -1,0 +1,15 @@
+{
+  "service": "orders-service",
+  "slug": "blank-item",
+  "hotfix": true,
+  "note": "Hotfix on the release branch.",
+  "commitMessage": "{KEY}: Reject an item name that is only spaces",
+  "edits": {
+    "src/server.js": [
+      [
+        "if (typeof item !== \"string\" || !item) return",
+        "if (typeof item !== \"string\" || !item.trim()) return"
+      ]
+    ]
+  }
+}
