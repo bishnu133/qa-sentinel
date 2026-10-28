@@ -29,4 +29,15 @@ describe("one version everywhere", () => {
     const readme = fs.readFileSync(path.join(ROOT, "README.md"), "utf8");
     for (const m of readme.matchAll(/qa-sentinel#v(\d+\.\d+\.\d+(?:-[0-9A-Za-z.]+)?)/g)) expect(m[1]).toBe(pkg);
   });
+  it("the CHANGELOG has one heading for this version and no 'Unreleased' left", () => {
+    const log = fs.readFileSync(path.join(ROOT, "CHANGELOG.md"), "utf8");
+    const h2 = log.split("\n").filter((l) => /^## /.test(l));
+    expect(h2[0]).toBe(`## ${pkg}`);
+    expect(h2.filter((l) => /unreleased/i.test(l))).toEqual([]);
+  });
+  it("the demo script covers /qa ready, per-AC readiness, the post-deploy re-run, release-features and metrics --runs", () => {
+    const d = fs.readFileSync(path.join(ROOT, "demo/DEMO-SCRIPT.md"), "utf8");
+    for (const w of ["/qa ready", "Waiting ACs", "post-deploy", "release-features", "metrics", "--runs"]) expect(d, w).toContain(w);
+    expect(d).toMatch(/does \*\*not\*\* set this up/);
+  });
 });
