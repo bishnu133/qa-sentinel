@@ -667,7 +667,7 @@ describe("split CI jobs: gap-report --defer-publish, then publish", () => {
     writeConfig(root, ConfigSchema.parse({ version: 1, mode: "existing", project: { name: "t" }, tests: { api: { framework: "playwright", runCommand: "x" } }, ci: { platform: "gitlab", gitlabUrl: gl.url }, requirements: { source: "jira", jira: { baseUrl: jira.baseUrl, projectKeys: ["SHOP"] } }, reporting: { targets: ["gitlab-mr", "jira"] } }));
     const dir = path.join(root, ".qa-sentinel/runs/r1");
     deferSteps(dir, "gap-report", "r1", [{ type: "report", report: "### QA impact\nbody", service: "orders", storyKey: "SHOP-12" }]);
-    const env = { QA_SENTINEL_GITLAB_TOKEN: WRITE, JIRA_PAT: "pat", CI_PROJECT_ID: "7", CI_MERGE_REQUEST_IID: "7" };
+    const env = { QA_SENTINEL_GITLAB_TOKEN: WRITE, JIRA_PAT: "pat", CI_PROJECT_ID: "7", CI_MERGE_REQUEST_IID: "7", CI_MERGE_REQUEST_TITLE: "SHOP-12 cap a slot" };
     expect(await publishCommand({ cwd: root, run: "r1", target: "gitlab-mr", env })).toBe(0);
     expect(gl.writes()).toHaveLength(1);
     expect(jira.comments["SHOP-12"] ?? []).toEqual([]);

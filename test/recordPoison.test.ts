@@ -18,7 +18,7 @@ async function withJira(run: (o: { cwd: string; props: Record<string, any>; env:
   const base = `http://127.0.0.1:${(srv.address() as any).port}`;
   try {
     const cwd = tmp("qas-poison-");
-    writeConfig(cwd, ConfigSchema.parse({ version: 1, mode: "existing", project: { name: "t" }, tests: { api: { framework: "playwright", runCommand: "x" } }, ci: { platform: "gitlab" }, requirements: { jira: { baseUrl: base } }, automation: { record: "jira" } }));
+    writeConfig(cwd, ConfigSchema.parse({ version: 1, mode: "existing", project: { name: "t" }, tests: { api: { framework: "playwright", runCommand: "x" } }, ci: { platform: "gitlab" }, requirements: { jira: { baseUrl: base, projectKeys: ["SHOP"] } }, automation: { record: "jira" } }));
     await run({ cwd, props, env: { JIRA_PAT: "x" } });
   } finally { srv.close(); }
 }
@@ -74,6 +74,59 @@ describe("a hostile publish.json cannot write to a story this job is not for (th
       craftRun(cwd, [{ type: "record", story: "SHOP-7", entries, evidence: [] }]);
       expect(await publishCommand({ cwd, kind: "generate", env: { JIRA_PAT: "x", QA_SERVICE_COMMIT_TITLE: "SHOP-7 orders: cap a slot" } })).toBe(0);
       expect(recordOf(props, "SHOP-7")).toBeDefined();
+    });
+  });
+});
+
+describe("trusted stories: a bug leads to its story through Jira; free text counts only with projectKeys", () => {
+  const cfgFor = (jiraBase: string, keys: string[]) =>
+    ConfigSchema.parse({ version: 1, mode: "existing", project: { name: "t" }, tests: { api: { framework: "playwright", runCommand: "x" } }, ci: { platform: "gitlab" }, requirements: { source: "jira", jira: { baseUrl: jiraBase, projectKeys: keys, featureIssueTypes: ["Story"], hierarchy: { links: [{ name: "Relates", from: ["Bug"] }] } } } });
+
+  it("M1: the bug named in the service commit makes its linked story trusted; a story the bug does not lead to stays refused", async () => {
+    const { mockJira } = await import("./helpers/mockJira.js");
+    const { trustedStories } = await import("../src/commands/publish.js");
+    const j = await mockJira({
+      issues: {
+        "SHOP-3": { summary: "bug", issuetype: { name: "Bug" }, status: { name: "In Progress" }, labels: [], components: [], issuelinks: [{ type: { name: "Relates", inward: "relates to", outward: "relates to" }, outwardIssue: { key: "SHOP-1" } }] },
+        "SHOP-1": { summary: "story", issuetype: { name: "Story" }, status: { name: "In Progress" }, labels: [], components: [] },
+      },
+    });
+    try {
+      const c = cfgFor(j.baseUrl, ["SHOP"]);
+      const t = await trustedStories(c, { JIRA_PAT: "x", QA_SERVICE_COMMIT_TITLE: "SHOP-3 fix the slot cap" });
+      expect(t.has("SHOP-3")).toBe(true);
+      expect(t.has("SHOP-1")).toBe(true);
+      expect(t.has("SHOP-9")).toBe(false);
+      // The same without a Jira login: only the bug.
+      const none = await trustedStories(c, { QA_SERVICE_COMMIT_TITLE: "SHOP-3 fix the slot cap" });
+      expect([...none]).toEqual(["SHOP-3"]);
+    } finally {
+      await j.close();
+    }
+  });
+
+  it("with projectKeys empty, UTF-8 and SHA-256 in commit text are not story keys; QA_STORY_KEY still is", async () => {
+    const { trustedStories } = await import("../src/commands/publish.js");
+    const c = cfgFor("http://127.0.0.1:1", []);
+    expect([...(await trustedStories(c, { QA_SERVICE_COMMIT_TITLE: "fix UTF-8 and SHA-256 handling", QA_SERVICE_COMMIT_MESSAGE: "see RFC-7231, SHOP-5" }))]).toEqual([]);
+    expect([...(await trustedStories(c, { QA_STORY_KEY: "shop-5", QA_SERVICE_COMMIT_TITLE: "UTF-8" }))]).toEqual(["SHOP-5"]);
+    const c2 = cfgFor("http://127.0.0.1:1", ["SHOP"]);
+    expect([...(await trustedStories(c2, { QA_SERVICE_COMMIT_TITLE: "UTF-8 SHOP-5" }))]).toEqual(["SHOP-5"]);
+  });
+
+  it("M3: gap-report steps are bound too: a report, notice, bug or mr-seen step for a story the merge request does not name is refused", async () => {
+    await withJira(async ({ cwd, props, env }) => {
+      const dir = path.join(cwd, ".qa-sentinel", "runs", "gap");
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(path.join(dir, "publish.json"), JSON.stringify({ version: 1, kind: "gap-report", runId: "gap", createdAt: "x", steps: [
+        { type: "notify", story: "OTHER-9", event: "merge-conflict", text: "x", key: "k" },
+        { type: "mr-seen", args: { feature: "OTHER-9", service: "orders" } },
+        { type: "report", report: "r", storyKey: "OTHER-9", targets: ["jira"] },
+      ] }));
+      expect(await publishCommand({ cwd, kind: "gap-report", env: { ...env, QA_STORY_KEY: "SHOP-1", CI_MERGE_REQUEST_IID: "3", CI_PROJECT_ID: "7" } })).toBe(1);
+      expect(props["OTHER-9/qa-sentinel.record"]).toBeUndefined();
+      const state = JSON.parse(fs.existsSync(path.join(dir, "published.json")) ? fs.readFileSync(path.join(dir, "published.json"), "utf8") : '{"done":{}}');
+      expect(Object.keys(state.done)).toEqual([]);
     });
   });
 });
