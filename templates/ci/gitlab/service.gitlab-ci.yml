@@ -189,6 +189,9 @@ qa-trigger-generation:
     - if: $CI_COMMIT_MESSAGE =~ /Merge branch '(?:{{skipBranchesMergeRe}})/
       when: never
 {{/if}}
+    # A revert commit brings back code that was already tested; it does not start a paid run.
+    - if: $CI_COMMIT_TITLE =~ /^Revert "/
+      when: never
     - if: $CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
     # Re-run by hand: Build › Pipelines › New pipeline on the default branch (generates for its latest commit).
     - if: $CI_PIPELINE_SOURCE == "web" && $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH

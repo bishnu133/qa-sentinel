@@ -38,6 +38,8 @@ describe("skipping dependency-bot changes (ci.skipBranches)", () => {
     expect(gen.rules[0]).toEqual({ if: '$QA_GENERATE_AFTER == "deploy"', when: "never" });
     expect(gen.rules[1].if).toBe("$CI_COMMIT_MESSAGE =~ /Merge branch '(?:renovate\\/|dependabot\\/)/");
     expect(y[".qa-trigger-generation"].trigger.project).toBe("$QA_TESTS_PROJECT");
+    // A revert commit does not start a paid run.
+    expect(gen.rules).toContainEqual({ if: '$CI_COMMIT_TITLE =~ /^Revert "/', when: "never" });
   });
 
   it("escapes only unescaped slashes and drops anchors for the merge-commit rule", async () => {

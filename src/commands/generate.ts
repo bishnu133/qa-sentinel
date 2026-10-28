@@ -173,6 +173,12 @@ async function generateRun(o: GenerateOptions, ctl: JobControl): Promise<number>
     repo = path.resolve(cwd, service.path);
     if (!isGitRepo(repo)) throw new Error(`${repo} is not a git repository`);
   }
+  // A revert brings back code that was already tested: it must not start a paid run. (Story mode, started by hand, is not affected.)
+  const triggerTitle = penv.QA_SERVICE_COMMIT_TITLE ?? "";
+  if (!o.story && !o.backfill && /^Revert "/.test(triggerTitle.trim())) {
+    log.ok(`${JSON.stringify(triggerTitle.trim())} is a revert: no test generation for it (reverted work is handled when the story is generated again)`);
+    return 0;
+  }
   const environment = useEnvironment(c, o.env);
   if (environment) log.step(`environment: ${environment} (${layers(c).map((l) => process.env[l.baseUrlEnv]).filter(Boolean).join(", ")})`);
   if (!isGitRepo(cwd)) throw new Error(`The test repo (${cwd}) must be a git repository`);
