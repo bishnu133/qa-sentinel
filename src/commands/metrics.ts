@@ -6,7 +6,8 @@ import { fromRoot, git } from "../git.js";
 import type { Manifest } from "../run.js";
 import { log } from "../log.js";
 import { fileStore, readRecordsFrom, type StoryRecord } from "../stories/record.js";
-import { gitlabContext, noteAwards, type GitLabContext } from "../scm/gitlab.js";
+import { noteAwards, type GitLabContext } from "../scm/gitlab.js";
+import { scmFor, type Scm } from "../scm/provider.js";
 
 /**
  * Is the tool earning its keep? Two sources, both already there:
@@ -258,15 +259,16 @@ export const sameTest = (flaky: string, title: string) => {
 
 /**
  * Reactions on the gap report comments. One comment per merge request is counted once (the newest run that wrote it).
- * The 👍 and 👎 are GitLab's `thumbsup` and `thumbsdown`. Needs a token that can read the merge requests.
+ * The 👍 and 👎 are GitLab's `thumbsup` and `thumbsdown` (GitHub's `+1` and `-1`, renamed by the provider). Needs a token
+ * that can read the merge/pull requests. Takes a GitLab context (as before) or the provider from `scmFor`.
  */
-export async function fetchUsefulness(ctx: GitLabContext, manifests: Manifest[]): Promise<Usefulness> {
+export async function fetchUsefulness(ctx: GitLabContext | Pick<Scm, "noteReactions">, manifests: Manifest[]): Promise<Usefulness> {
   const notes = new Map<string, NonNullable<Manifest["mr"]>>();
   for (const m of manifests) if (m.kind === "gap-report" && m.mr) notes.set(`${m.mr.project}!${m.mr.iid}#${m.mr.noteId}`, m.mr);
   const u: Usefulness = { notes: 0, up: 0, down: 0, unreadable: 0 };
   for (const n of notes.values()) {
     try {
-      const awards = await noteAwards(ctx, n.project, n.iid, n.noteId);
+      const awards = "noteReactions" in ctx ? await ctx.noteReactions(n.project, n.iid, n.noteId) : await noteAwards(ctx, n.project, n.iid, n.noteId);
       u.notes++;
       u.up += awards.filter((a) => a.name === "thumbsup").length;
       u.down += awards.filter((a) => a.name === "thumbsdown").length;
@@ -525,9 +527,9 @@ export async function metricsCommand(o: { cwd: string; runs?: string[]; records?
   const records = [...(await fileStore(o.cwd).list()), ...(o.records ?? []).flatMap((d) => readRecordsFrom(path.resolve(o.cwd, d)))];
   let usefulness: Usefulness | undefined;
   if (o.online) {
-    const ctx = gitlabContext(c.ci.gitlabUrl, o.env ?? process.env);
-    if (!ctx) log.warn("--online: set QA_SENTINEL_GITLAB_TOKEN (or GITLAB_TOKEN) to count 👍 and 👎 on the gap report comments");
-    else usefulness = await fetchUsefulness(ctx, manifests);
+    const scm = scmFor(c, o.env ?? process.env);
+    if (!scm.hasToken) log.warn(`--online: set ${scm.kind === "github" ? "QA_SENTINEL_GITHUB_TOKEN (or GITHUB_TOKEN)" : "QA_SENTINEL_GITLAB_TOKEN (or GITLAB_TOKEN)"} to count 👍 and 👎 on the gap report comments`);
+    else usefulness = await fetchUsefulness(scm, manifests);
   }
   const m = computeMetrics(manifests, commits, o.since, records, { flakyNames: collectFlaky(dirs, since), usefulness });
   if (o.json) {

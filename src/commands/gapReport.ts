@@ -13,7 +13,8 @@ import { ARTIFACT_GLOBS, createRunDir, findService, patchManifest, startManifest
 import { checkServiceUntouched, diffSnapshots, findingsMarkdown, snapshotTree, type Finding } from "../guardrails.js";
 import { extractStoryKeys, jiraKeyPattern, requirementsLine, resolveRequirements, skippedBranch, storyMarkdown } from "../requirements.js";
 import { type IssueCache, type KeyResolution, resolveKeysCached } from "../stories/resolve.js";
-import { getMrNoteBody, gitlabContext, gitlabMrFromEnv, mrIsDraft } from "../scm/gitlab.js";
+import { gitlabContext } from "../scm/gitlab.js";
+import { scmFor, type ChangeRequestEnv } from "../scm/provider.js";
 import { gapFingerprint, parseStamp, relevantDiffDigest, stampOf, updatedLine } from "../plan/fingerprint.js";
 import { assembleFeature, type MrScanCache } from "../feature/manifest.js";
 import { publish } from "../reporting/publish.js";
@@ -81,7 +82,7 @@ type GapResult = { report: string; skipped: boolean; exitCode: number; reason?: 
 interface Prepared {
   c: ReturnType<typeof loadConfig>;
   cwd: string;
-  mr: ReturnType<typeof gitlabMrFromEnv>;
+  mr: ChangeRequestEnv;
   service: ServiceConfig;
   repo: string;
   cs: ChangeSet;
@@ -136,7 +137,7 @@ async function storiesNamedByMr(o: GapReportOptions, c: ReturnType<typeof loadCo
   if (o.story || o.storyFile || o.forKey || c.requirements.source !== "jira") return undefined;
   const jctx = jiraContext(c.requirements.jira);
   if (!jctx) return undefined;
-  const mr = gitlabMrFromEnv();
+  const mr = scmFor(c).mrFromEnv();
   const keys = extractStoryKeys(jiraKeyPattern(c), mr.title, mr.sourceBranch, mr.description);
   if (keys.length < 2) return undefined;
   const notes: string[] = [];
@@ -163,9 +164,9 @@ async function storiesNamedByMr(o: GapReportOptions, c: ReturnType<typeof loadCo
 
 /** A draft merge request gets a waiting note instead of a report (automation.gapReport.when: ready). Written to the report file too, so the job's artifact is never missing. */
 async function draftGate(o: GapReportOptions, c: ReturnType<typeof loadConfig>, cwd: string): Promise<GapResult | undefined> {
-  const mr = gitlabMrFromEnv();
+  const mr = scmFor(c).mrFromEnv();
   if (o.story || o.evenIfDraft || o.dryRun || c.automation.gapReport.when !== "ready" || !mr.mrIid) return undefined;
-  if (!(await mrIsDraft(gitlabContext(c.ci.gitlabUrl), mr.project, mr.mrIid, mr.title))) return undefined;
+  if (!(await scmFor(c).isDraft(mr.project, mr.mrIid, mr.title))) return undefined;
   const out = path.resolve(cwd, o.out ?? "qa-gap-report.md");
   const report = `### QA impact · waiting\n**Verdict:** this merge request is a draft. The gap report is made once it is marked ready for review (automation.gapReport.when: ready; --even-if-draft overrides).\n`;
   fs.writeFileSync(out, report);
@@ -185,10 +186,10 @@ async function draftGate(o: GapReportOptions, c: ReturnType<typeof loadConfig>, 
 }
 
 /** The stamp of the report already on the merge request, when this run may compare with it (a real post to GitLab, no --refresh). */
-async function lastStamp(c: ReturnType<typeof loadConfig>, o: GapReportOptions, mr: ReturnType<typeof gitlabMrFromEnv>): Promise<{ fp: string; head: string } | undefined> {
+async function lastStamp(c: ReturnType<typeof loadConfig>, o: GapReportOptions, mr: ChangeRequestEnv): Promise<{ fp: string; head: string } | undefined> {
   if (o.noMrNote || !o.post || o.dryRun || o.refresh || !c.reporting.targets.includes("gitlab-mr") || !mr.project || !mr.mrIid) return undefined;
-  const gl = gitlabContext(c.ci.gitlabUrl);
-  return gl ? parseStamp(await getMrNoteBody(gl, mr.project, mr.mrIid).catch(() => undefined)) : undefined;
+  const scm = scmFor(c);
+  return scm.hasToken ? parseStamp(await scm.getNoteBody(mr.project, mr.mrIid).catch(() => undefined)) : undefined;
 }
 
 /** The risk settings and the team's history file: a change in either can change the report, so it counts for "unchanged". (Flaky runs do not: they are not kept in CI.) */
@@ -212,7 +213,7 @@ const unchangedReport = (head: string) =>
  */
 async function gapReportEach(o: GapReportOptions, c: ReturnType<typeof loadConfig>, cwd: string, named: NamedStories): Promise<GapResult> {
   const out = path.resolve(cwd, o.out ?? "qa-gap-report.md");
-  const mr = gitlabMrFromEnv();
+  const mr = scmFor(c).mrFromEnv();
   const scanCache: MrScanCache = new Map();
   const kids = named.items.map((it, i) => {
     const dir = path.join(cwd, ".qa-sentinel", "gap", it.feature.toUpperCase().replace(/[^A-Z0-9-]/g, "-"));
@@ -307,7 +308,7 @@ async function gapReportEach(o: GapReportOptions, c: ReturnType<typeof loadConfi
 }
 
 async function gapReportPrepare(o: GapReportOptions, c: ReturnType<typeof loadConfig>, cwd: string): Promise<{ done?: GapResult; s?: Prepared }> {
-  const mr = gitlabMrFromEnv();
+  const mr = scmFor(c).mrFromEnv();
   let service: ServiceConfig, repo: string, cs: ChangeSet, relevant: string[];
   let parts: StoryPart[] | undefined;
   if (o.story) {

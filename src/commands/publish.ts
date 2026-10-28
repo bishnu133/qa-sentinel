@@ -5,7 +5,8 @@ import { execFileSync } from "node:child_process";
 import { loadConfig, type Config } from "../config.js";
 import { findingsMarkdown, violations } from "../guardrails.js";
 import { markMrOpened, patchManifest } from "../run.js";
-import { createOrUpdateMergeRequest, gitlabContext, gitlabMrFromEnv, latestMrForBranch, mergeRequestsForCommit, upsertMarkedNote } from "../scm/gitlab.js";
+import { gitlabContext, mergeRequestsForCommit } from "../scm/gitlab.js";
+import { scmFor } from "../scm/provider.js";
 import { jiraContext } from "../scm/jira.js";
 import { remoteFor, redact, storyBranchName } from "../generation/storyBranch.js";
 import { publish } from "../reporting/publish.js";
@@ -232,7 +233,7 @@ async function publishRun(cwd: string, c: Config, dir: string, env: NodeJS.Proce
     log.fail(`${name} ${label}: ${msg}`);
     results.push({ step: label, ok: false, note: msg });
   };
-  const mrEnv = gitlabMrFromEnv(env);
+  const mrEnv = scmFor(c, env).mrFromEnv(env);
   let trusted: Set<string> | undefined;
   for (const [i, step] of doc.steps.entries()) {
     const label = `${i + 1}. ${step.type}`;
@@ -278,14 +279,14 @@ async function publishRun(cwd: string, c: Config, dir: string, env: NodeJS.Proce
             continue;
           }
           // The merge request is this job's own (CI_PROJECT_ID, CI_MERGE_REQUEST_IID), never one named in the run folder.
-          if (t === "gitlab-mr" && (!mrEnv.project || !mrEnv.mrIid)) throw new Error("no merge request in this job (CI_PROJECT_ID and CI_MERGE_REQUEST_IID are not set)");
+          if (t === "gitlab-mr" && (!mrEnv.project || !mrEnv.mrIid)) throw new Error(scmFor(c, env).kind === "github" ? "no pull request in this job (GITHUB_REPOSITORY and the pull request event are not set)" : "no merge request in this job (CI_PROJECT_ID and CI_MERGE_REQUEST_IID are not set)");
           const done = await publish(c, { onMrNote: (n) => patchManifest(dir, { mr: n }), report: step.report, jiraSummary: step.jiraSummary, cwd, service: step.service, storyKey: step.storyKey, stamp: step.stamp, mr: mrEnv, targets: [t] }, env);
           if (!done.includes(t)) throw new Error(`${t} was not published (missing token, login or merge request; see the warning above)`);
           mark(`${i}:${t}`, `${label} (${t})`);
         }
       } else if (step.type === "mr-seen") {
         if (!wanted(`${i}`, "jira")) continue;
-        if (!mrEnv.mrIid) throw new Error("no merge request in this job (CI_MERGE_REQUEST_IID is not set)");
+        if (!mrEnv.mrIid) throw new Error(scmFor(c, env).kind === "github" ? "no pull request in this job (the pull request event is not set)" : "no merge request in this job (CI_MERGE_REQUEST_IID is not set)");
         await recordMrSeen(openStore(cwd, c, env), { ...step.args, mrIid: mrEnv.mrIid, url: mrEnv.url, title: mrEnv.title, branch: mrEnv.sourceBranch });
         mark(`${i}`, label);
       } else if (step.type === "bugs") {
@@ -403,9 +404,9 @@ async function pushAndOpen(cwd: string, c: Config, runDir: string, runId: string
   const { story } = allowedBranch(c, s, env);
   const bundle = path.join(runDir, BUNDLE_FILE);
   if (!fs.existsSync(bundle)) throw new Error(`${BUNDLE_FILE} is missing in ${path.basename(runDir)} (the analysis job's artifacts must include the run folder)`);
-  const project = c.ci.testRepoProject ?? env.CI_PROJECT_ID;
-  const ctx = gitlabContext(c.ci.gitlabUrl, env);
-  if (!ctx || project === undefined) throw new Error("set QA_SENTINEL_GITLAB_TOKEN and ci.testRepoProject (or CI_PROJECT_ID): there is nowhere to push or no merge request can be opened");
+  const scm = scmFor(c, env);
+  const project = scm.testProject(env);
+  if (!scm.hasToken || project === undefined) throw new Error(scm.kind === "github" ? "set QA_SENTINEL_GITHUB_TOKEN and ci.testRepoProject (or GITHUB_REPOSITORY): there is nowhere to push or no pull request can be opened" : "set QA_SENTINEL_GITLAB_TOKEN and ci.testRepoProject (or CI_PROJECT_ID): there is nowhere to push or no merge request can be opened");
   const remote = remoteFor(c, env);
   const id = crypto.createHash("sha256").update(path.resolve(runDir)).digest("hex").slice(0, 12);
   const ref = (what: string) => `refs/qa-sentinel/publish/${id}-${what}`;
@@ -442,7 +443,7 @@ async function pushAndOpen(cwd: string, c: Config, runDir: string, runId: string
   } catch (e) {
     throw new Error(story ? `${s.branch} could not be pushed: it changed on the server meanwhile (or was refused). Nothing was overwritten; run the analysis job again. (${(e as Error).message})` : `push of ${s.branch} failed: ${(e as Error).message}`);
   }
-  const mr = await createOrUpdateMergeRequest(ctx, project, { source: s.branch, target, title: s.title.slice(0, 150), description: s.description, labels: cleanLabels(s.labels, story ? s.storyKey : undefined) });
+  const mr = await scm.createOrUpdateChangeRequest(project, { source: s.branch, target, title: s.title.slice(0, 150), description: s.description, labels: cleanLabels(s.labels, story ? s.storyKey : undefined) });
   markMrOpened(runDir);
   if (story && s.storyKey && s.resetRecord) await applyRecordPatch(openStore(cwd, c, env), s.storyKey, { entries: [], evidence: [], reset: true } as Parameters<typeof applyRecordPatch>[2]);
   if (story && s.storyKey) await recordAgentMr(openStore(cwd, c, env), s.storyKey, { branch: s.branch, iid: mr.iid, url: mr.web_url, headSha: s.headSha });
@@ -474,11 +475,11 @@ async function announceJira(cwd: string, c: Config, runDir: string, s: MergeRequ
 async function branchNote(c: Config, s: BranchNoteStep, env: NodeJS.ProcessEnv): Promise<string> {
   const branch = storyBranchName(c, s.story);
   if (!BRANCH_RE.test(branch)) throw new Error("generation.branchPrefix must start with qa-sentinel/ for the split jobs");
-  const project = c.ci.testRepoProject ?? env.CI_PROJECT_ID;
-  const ctx = gitlabContext(c.ci.gitlabUrl, env);
-  if (!ctx || project === undefined) throw new Error("set QA_SENTINEL_GITLAB_TOKEN and ci.testRepoProject (or CI_PROJECT_ID) to leave the note");
-  const mr = await latestMrForBranch(ctx, project, branch, c.ci.targetBranch);
+  const scm = scmFor(c, env);
+  const project = scm.testProject(env);
+  if (!scm.hasToken || project === undefined) throw new Error(scm.kind === "github" ? "set QA_SENTINEL_GITHUB_TOKEN and ci.testRepoProject (or GITHUB_REPOSITORY) to leave the note" : "set QA_SENTINEL_GITLAB_TOKEN and ci.testRepoProject (or CI_PROJECT_ID) to leave the note");
+  const mr = await scm.latestForBranch(project, branch, c.ci.targetBranch);
   if (mr?.state !== "opened") return "no open merge request for the story branch; no note";
-  await upsertMarkedNote(ctx, project, mr.iid, s.marker, s.text);
+  await scm.upsertMarkedNote(project, mr.iid, s.marker, s.text);
   return `note left on !${mr.iid}`;
 }

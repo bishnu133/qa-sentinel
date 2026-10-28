@@ -335,6 +335,8 @@ verification: { typecheck: auto, lintCommand: "npx eslint", preflight: true, ret
 - **GitLab:** `service.gitlab-ci.yml` (include from service repos: MR gap report plus a trigger after merge) and `tests.gitlab-ci.yml` (generation job, a gate that runs only the changed specs on agent MRs, scheduled and post-deploy API runs). See [templates/ci/gitlab/README.md](templates/ci/gitlab/README.md).
 - **Jenkins:** `Jenkinsfile.gap-report` (GitLab plugin MR trigger), `Jenkinsfile.generate` (parameterised, called after service merges) and `Jenkinsfile.tests`. See [templates/ci/jenkins/README.md](templates/ci/jenkins/README.md).
 
+- **GitHub Actions:** `qa-gap-report.yml` (copy to `.github/workflows/` in each service repo): a read-only `analysis` job and a `publish` job with `pull-requests: write` and no model key. See [templates/ci/github/README.md](templates/ci/github/README.md) and "GitHub" below.
+
 Gap-report jobs never block developers: they are `allow_failure` in GitLab and UNSTABLE rather than FAILED in Jenkins.
 
 **Split CI jobs (GitLab, opt-in).** By default one job does the analysis and the publishing, so one job holds both the model key and the GitLab write token. Set `QA_SPLIT_JOBS: "true"` and the work is cut in two. What each job is meant to reach:
@@ -349,6 +351,25 @@ What the analysis job writes: only files in its run folder (a job artifact): `br
 The analysis job keeps its own story record in files; with `automation.record: jira` it also reads the Jira record with its read login (the two copies are merged field by field: spending and jobs from the file, written/held, evidence and the conflict from Jira; with no read login it uses the file alone). The Jira record is written by `publish` from a `record` step (written/held per AC, AC evidence, a conflict) after the branch is pushed. `publish --kind generate|gap-report` (passed by the templates) accepts only that job's step types, and a non-story branch only as `qa-sentinel/<QA_SERVICE_NAME>-<first 8 of QA_SERVICE_SHA>`. A budget stop in the analysis job is sent by `publish` as a `notify` step. Every `after_script` drops the known secrets first and reads `.qa-env.sh` as text (the base URL only), never runs it; `data sweep` refuses a `sweepAuthEnv` that names a known secret and a base URL outside `guardrails.allowedHosts` (SECURITY.md says what that does not cover). `publish` writes to a story only if the pipeline names it (`QA_STORY_KEY`, or the service commit or merge request text), never because the run folder says so.
 
 What this does **not** give you: the verification result in the merge request and in Jira (`VERIFIED`) is the analysis job's own claim, because `publish` runs no tests; the `qa-agent-mr-checks` job on the merge request is the independent gate. GitLab lists every project variable to every job. The analysis job's `after_script` drops the publish secrets and runs no file from the work tree, but a variable that GitLab hands to a job is still in that job's environment when it starts. Real separation needs the variables scoped to environments (`qa-analysis` for the model key, `qa-publish` for the write token and the Jira publishing login; the jobs name these environments) or protected, and a read-only Jira login for the analysis job. We have not run any of this on a real GitLab (docs/TRY-PR5.md).
+
+### GitHub
+
+Set `ci.provider: github` (or run `qa-sentinel init --ci github`; the default stays `gitlab`, so existing setups are unchanged). Then these use the GitHub REST API instead of GitLab's:
+
+- the gap report comment on a pull request: one comment with the same marker, stamp and fingerprint rules as on GitLab, edited in place (the reporting target keeps its old name `gitlab-mr`; it means "the merge/pull request comment" on either provider);
+- the draft check (`automation.gapReport.when: ready`), `publish` (pushes the bundle branch, opens or updates the test pull request, adds labels, leaves the story-branch note), `generate --push` opening the test pull request, and `metrics --online` counting `+1` / `-1` reactions on the comment;
+- `doctor` and `doctor --online` check the GitHub token and the test repo.
+
+Environment: `QA_SENTINEL_GITHUB_TOKEN` (else `GITHUB_TOKEN`, else `GH_TOKEN`); the repository from `GITHUB_REPOSITORY`; the pull request number, title and base from the event payload (`GITHUB_EVENT_PATH`), else `GITHUB_REF`; `GITHUB_API_URL` or `ci.githubApiUrl` for GitHub Enterprise Server; `ci.testRepoProject` is `owner/repo`. Tokens are sent in a header only, never logged, and removed from the environment of agents and test runs.
+
+**Limits, said plainly:**
+- Only the gap report has a workflow template. Test generation after merge, the agent-PR gate (`verify --policy`), `stories`, `feature`, cloning services and post-deploy have no GitHub workflow. `tag`, `known-defects`, `lessons`, `post-deploy` and `discover` stop with "works with GitLab only for now" when the provider is GitHub; `stories`, `feature` and the other story-mode paths still talk to GitLab only.
+- Story-mode `generate` (`--story`, `generation.scope: story`) is refused on GitHub, like the commands above. `ci.scm: github` alone now also selects GitHub.
+- The API address must be `https://` (plain http only on this machine). With the workflow token `GET /user` is refused, so comments by `github-actions[bot]` (or `ci.githubBotLogin`) count as ours; any other failure of that call stops the run rather than risk a second comment. Rate limits are waited out as GitHub says, at most 120 s. A POST is not repeated after a server error. REST cannot change a pull request's draft state, so updates use GraphQL (`/graphql`, or `/api/graphql` on Enterprise Server).
+- The workflow artifact holds the whole run folder for 14 days: on a public repository everyone can read it. Use a private repository or shorter retention.
+- `src/scm/github.ts` can also list a pull request's files, diff refs and open labelled PRs, but no command uses those yet.
+- **Everything here is tested against a fake GitHub server and fixture payloads written from GitHub's REST documentation. It has not been run on real GitHub.** Unproven there: the field names against live answers; that the workflow token's comments are found again (`GET /user` is refused for that token, so comments by a `Bot` account count as ours); that `draft: true` PR creation and label creation work with the token's permissions; the push with `x-access-token`; the workflow itself (artifact hand-over, `pull_request` permissions).
+- Actions are pinned by tag (`@v4`), not by commit SHA, because the SHAs could not be checked here; pin them yourself for strict supply-chain control. The analysis job holds the model key (it must) and, for a private test repo, a read token; it holds no write token.
 
 ## Guardrails
 

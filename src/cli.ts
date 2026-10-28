@@ -33,6 +33,7 @@ import { releaseFeaturesCommand } from "./commands/releaseFeatures.js";
 import { verifyCommand } from "./commands/verify.js";
 import { VERSION } from "./run.js";
 import { log } from "./log.js";
+import { maskSecrets } from "./secrets.js";
 import { API_FRAMEWORKS } from "./config.js";
 
 const program = new Command();
@@ -55,7 +56,7 @@ const wrap =
       const r = await fn(...args);
       if (typeof r === "number") process.exitCode = r;
     } catch (e) {
-      log.fail((e as Error).message);
+      log.fail(maskSecrets((e as Error).message));
       // 3 = Claude can't be used at all (no credentials, no credit, key not allowed): callers can stop early.
       process.exitCode = e instanceof ClaudeAccessError ? 3 : 1;
     }
@@ -65,7 +66,7 @@ program
   .command("init")
   .description("set up qa-sentinel in this test repo (existing project or from scratch)")
   .addOption(new Option("--mode <mode>", "existing | scratch").choices(["existing", "scratch"]))
-  .addOption(new Option("--ci <platform>", "gitlab | jenkins").choices(["gitlab", "jenkins"]))
+  .addOption(new Option("--ci <platform>", "gitlab | jenkins | github").choices(["gitlab", "jenkins", "github"]))
   .addOption(new Option("--level <level>", "intelligence (read-only, default) | maintenance (also generate tests)").choices(["intelligence", "maintenance"]))
   .addOption(new Option("--api-framework <name>").choices([...API_FRAMEWORKS]))
   .option("--workspace <dir>", "folder containing the service repos", "..")

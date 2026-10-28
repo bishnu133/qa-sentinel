@@ -17,7 +17,7 @@ export interface InitOptions {
   mode?: "existing" | "scratch";
   level?: "intelligence" | "maintenance";
   workspace?: string;
-  ci?: "gitlab" | "jenkins";
+  ci?: "gitlab" | "jenkins" | "github";
   apiFramework?: Config["tests"]["api"]["framework"];
   name?: string;
   /** Also set up the web (Playwright UI) layer: config, page objects, ui helper, fixtures, example spec. */
@@ -115,6 +115,7 @@ export async function initCommand(opts: InitOptions): Promise<Config> {
           choices: [
             { name: "GitLab CI", value: "gitlab" as const },
             { name: "Jenkins", value: "jenkins" as const },
+            { name: "GitHub Actions (pull request gap report only; see README, GitHub)", value: "github" as const },
           ],
         })
       : det.ci.jenkins && !det.ci.gitlab
@@ -164,6 +165,9 @@ export async function initCommand(opts: InitOptions): Promise<Config> {
   }
   let gitlabUrl = opts.gitlabUrl;
   let testRepoProject = opts.testRepoProject;
+  if (ci === "github" && interactive) {
+    testRepoProject ??= (await input({ message: "This test repo's GitHub name (owner/repo; empty to fill in later)" })).trim() || undefined;
+  }
   if (ci === "gitlab" && interactive) {
     gitlabUrl ??= (await input({ message: "GitLab URL", default: "https://gitlab.com" })).trim();
     testRepoProject ??= (await input({ message: "This test repo's GitLab project path (e.g. group/qa-tests; empty to fill in later)" })).trim() || undefined;
@@ -205,7 +209,7 @@ export async function initCommand(opts: InitOptions): Promise<Config> {
       ...(jiraProjects.length ? { storyKeyPattern: `(?:${jiraProjects.join("|")})-\\d+` } : {}),
       jira: { ...(jiraUrl ? { baseUrl: jiraUrl.replace(/\/+$/, "") } : {}), projectKeys: jiraProjects },
     },
-    ci: { platform: ci, ...(gitlabUrl ? { gitlabUrl: gitlabUrl.replace(/\/+$/, "") } : {}), ...(testRepoProject ? { testRepoProject } : {}) },
+    ci: { platform: ci, ...(ci === "github" ? { provider: "github" as const } : {}), ...(gitlabUrl ? { gitlabUrl: gitlabUrl.replace(/\/+$/, "") } : {}), ...(testRepoProject ? { testRepoProject } : {}) },
   });
 
   writeConfig(cwd, config);
@@ -277,6 +281,7 @@ export function templateVars(c: Config, cwd?: string): TemplateVars {
     ciPlatform: c.ci.platform,
     isGitlab: c.ci.platform === "gitlab",
     isJenkins: c.ci.platform === "jenkins",
+    isGithub: c.ci.platform === "github",
     targetBranch: c.ci.targetBranch,
     maxFixAttempts: c.agent.maxFixAttempts,
     webEnabled: c.tests.web.enabled,
@@ -551,14 +556,14 @@ function printNextSteps(c: Config) {
   log.title("Next steps");
   log.info(
     c.level === "intelligence"
-      ? "  Level 1 (QA intelligence): read-only reports on every MR. Switch to level: maintenance when the team trusts them."
-      : "  Level 2 (assisted test maintenance): reports on every MR, and generated tests through reviewed MRs.",
+      ? `  Level 1 (QA intelligence): read-only reports on every ${c.ci.platform === "github" ? "pull request" : "MR"}. Switch to level: maintenance when the team trusts them.`
+      : `  Level 2 (assisted test maintenance): reports on every ${c.ci.platform === "github" ? "pull request" : "MR"}, and generated tests through reviewed ${c.ci.platform === "github" ? "pull requests" : "MRs"}.`,
   );
   const steps = [
     c.mode === "scratch" ? "npm install && npx playwright install --with-deps chromium" : undefined,
     c.tests.web.enabled ? `Set ${c.tests.web.baseUrlEnv} to your front end (no browser download? QA_BROWSER_CHANNEL=chrome uses installed Chrome)` : undefined,
     c.tests.mobile.enabled ? `Mobile: start Appium (npx appium, with the uiautomator2/xcuitest driver) and a device, then set QA_APP (or QA_APP_PACKAGE/QA_BUNDLE_ID) and QA_MOBILE_PLATFORM` : undefined,
-    "Review qa-sentinel.config.yaml (services and their kind: api | web | mobile, run commands, GitLab project)",
+    `Review qa-sentinel.config.yaml (services and their kind: api | web | mobile, run commands, ${c.ci.platform === "github" ? "GitHub repository" : "GitLab project"})`,
     c.requirements.source === "jira"
       ? "qa-sentinel story-check --story <KEY> --fields   # how your stories are read; set the AC field and story template (docs/ONBOARDING.md)"
       : undefined,
@@ -566,7 +571,9 @@ function printNextSteps(c: Config) {
       ? "qa-sentinel learn   # agent drafts your conventions + test-map.yaml; review the diff"
       : "qa-sentinel learn   # agent fills test-map.yaml from your service specs",
     "qa-sentinel doctor  # checks access, keys and readiness",
-    c.ci.platform === "gitlab"
+    c.ci.platform === "github"
+      ? "Copy ci/qa-sentinel/qa-gap-report.yml to .github/workflows/ in each service repo (see ci/qa-sentinel/README.md)"
+      : c.ci.platform === "gitlab"
       ? "Add ci/qa-sentinel/*.gitlab-ci.yml to your pipelines (see ci/qa-sentinel/README.md)"
       : "Create Jenkins jobs from ci/qa-sentinel/Jenkinsfile.* (see ci/qa-sentinel/README.md)",
   ].filter(Boolean) as string[];

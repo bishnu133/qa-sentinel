@@ -5,6 +5,7 @@ import { ConfigSchema, configPath, loadConfig } from "../config.js";
 import { type Classified, type DependencySuggestion, classifyProject, dependencyEvidenceFiles, suggestDependencies } from "../discover.js";
 import { type GitLabContext, gitlabContext, groupProjects, projectFiles, rawFile } from "../scm/gitlab.js";
 import { log } from "../log.js";
+import { requireGitlab } from "../scm/provider.js";
 
 export interface DiscoverOptions {
   cwd: string;
@@ -64,6 +65,7 @@ async function inspect(ctx: GitLabContext, p: any): Promise<{ service: Discovere
 export async function discoverCommand(o: DiscoverOptions): Promise<number> {
   const cwd = path.resolve(o.cwd);
   const c = loadConfig(cwd);
+  requireGitlab(c, "discover");
   const ctx = gitlabContext(c.ci.gitlabUrl, o.env ?? process.env);
   if (!ctx) {
     log.fail("set QA_SENTINEL_GITLAB_TOKEN (read_api is enough) to read the group");

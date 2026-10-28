@@ -648,7 +648,7 @@ export const ConfigSchema = z.object({
     })
     .default({}),
   ci: z.object({
-    platform: z.enum(["gitlab", "jenkins"]),
+    platform: z.enum(["gitlab", "jenkins", "github"]),
     /** MRs from these source branches (regexes) get no gap report and no generation: dependency bots, by default. */
     skipBranches: z
       .array(
@@ -663,12 +663,18 @@ export const ConfigSchema = z.object({
         }, "ci.skipBranches entries must be simple regexes (letters, digits, _ . - / ^ $ | ( ) ? * + [ ] and backslash; no lookarounds or spaces)"),
       )
       .default(["^renovate/", "^dependabot/"]),
+    /** Which CI host's merge/pull requests and comments qa-sentinel talks to. Unset = gitlab (or github when the older ci.scm says so). */
+    provider: z.enum(["gitlab", "github"]).optional(),
     scm: z.enum(["gitlab", "github", "none"]).default("gitlab"),
     gitlabUrl: z.string().default("https://gitlab.com"),
+    /** GitHub Enterprise Server API root, e.g. https://ghe.example/api/v3. GITHUB_API_URL (set by GitHub Actions) wins. Default https://api.github.com. */
+    githubApiUrl: z.string().optional(),
+    /** Login the workflow token comments as, for finding our own comment when GET /user is refused. Default github-actions[bot]. */
+    githubBotLogin: z.string().optional(),
     testRepoProject: z
       .string()
       .optional()
-      .describe("GitLab project path or id of the test repo, e.g. group/qa-tests"),
+      .describe("Project of the test repo: GitLab path or id (group/qa-tests), or GitHub owner/repo"),
     targetBranch: z.string().default("main"),
     /** Branches that carry hotfixes to production (patterns). A change merged here gets no test generation: tests are written once, when the change reaches the target branch by cherry-pick. */
     hotfixBranches: z.array(z.string()).default(["hotfix/*", "release/*"]),

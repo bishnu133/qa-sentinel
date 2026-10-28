@@ -17,6 +17,8 @@ import { isGitRepo } from "../git.js";
 import { log } from "../log.js";
 import { SECRET_NAME } from "../env.js";
 import { currentUser, getProject, gitlabContext } from "../scm/gitlab.js";
+import { ciProvider } from "../scm/provider.js";
+import { githubOnlineChecks } from "../scm/githubDoctor.js";
 import { jiraContext, jiraAuthAmbiguous, projectStatuses, allIssueTypes, linkTypes, myself, serverInfo, jiraFlavour, searchStories, type JiraContext, type JiraServerInfo } from "../scm/jira.js";
 import { statusSets } from "../stories/resolve.js";
 import { junitReporter, layers, roleEnvNames, runCommandRunsEverything, runnerOf } from "../layers.js";
@@ -188,7 +190,12 @@ export function runChecks(cwd: string, env: NodeJS.ProcessEnv = process.env): Ch
   if (c.tests.web.enabled) checks.push(...webChecks(cwd, c, env));
   if (c.tests.mobile.enabled) checks.push(...mobileChecks(cwd, c, env));
 
-  if (c.ci.scm === "gitlab") {
+  if (ciProvider(c) === "github") {
+    if (env.QA_SENTINEL_GITHUB_TOKEN || env.GITHUB_TOKEN || env.GH_TOKEN) add("ok", "GitHub token set");
+    else add("warn", "GitHub token set", "QA_SENTINEL_GITHUB_TOKEN (or GITHUB_TOKEN in Actions) with pull requests: write, to post PR comments and open PRs");
+    if (!c.ci.testRepoProject) add("warn", "ci.testRepoProject configured", "owner/repo of the test repo, used to open PRs");
+    else if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(c.ci.testRepoProject)) add("fail", "ci.testRepoProject is owner/repo", `got "${c.ci.testRepoProject}"; GitHub needs owner/repo, not a number or a GitLab path`);
+  } else if (c.ci.scm === "gitlab") {
     if (env.QA_SENTINEL_GITLAB_TOKEN || env.GITLAB_TOKEN) add("ok", "GitLab token set");
     else add("warn", "GitLab token set", "QA_SENTINEL_GITLAB_TOKEN with api scope, to post MR comments and open MRs");
     if (!c.ci.testRepoProject) add("warn", "ci.testRepoProject configured", "e.g. my-group/qa-tests, used to open MRs");
@@ -229,7 +236,7 @@ export function runChecks(cwd: string, env: NodeJS.ProcessEnv = process.env): Ch
   const leaked = Object.keys(env).filter((k) => c.guardrails.passEnv.includes(k) && SECRET_NAME.test(k));
   if (leaked.length) add("warn", `passEnv forwards credential-like variables to agents: ${leaked.join(", ")}`, "only list what generated tests truly need");
   if (c.guardrails.allowedWritePaths.some((g) => g === "**" || g === "**/*")) add("fail", "guardrails.allowedWritePaths is not a catch-all", "list the test, helper and fixture folders explicitly");
-  if (c.workspace.services.length && c.ci.scm === "gitlab" && c.workspace.services.some((s) => !s.gitlabProject)) {
+  if (c.workspace.services.length && ciProvider(c) === "gitlab" && c.ci.scm === "gitlab" && c.workspace.services.some((s) => !s.gitlabProject)) {
     add("warn", "services have gitlabProject set", "needed after merge to fetch the MR's acceptance criteria (or set QA_SERVICE_PROJECT in CI)");
   }
   return checks;
@@ -311,6 +318,7 @@ export function mobileChecks(cwd: string, c: Config, env: NodeJS.ProcessEnv): Ch
 export async function onlineChecks(cwd: string, env: NodeJS.ProcessEnv = process.env): Promise<Check[]> {
   const checks: Check[] = [];
   const c = loadConfig(cwd);
+  if (ciProvider(c) === "github") return githubOnlineChecks(c, env);
   const ctx = gitlabContext(c.ci.gitlabUrl, env);
   if (!ctx) return [{ level: "fail", label: "GitLab token available for online checks", hint: "set QA_SENTINEL_GITLAB_TOKEN" }];
   try {

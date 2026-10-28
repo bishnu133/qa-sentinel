@@ -9,6 +9,7 @@ import { matchesAny } from "../fsutil.js";
 import { ARTIFACT_GLOBS } from "../run.js";
 import { createOrUpdateMergeRequest, gitlabContext, pushUrl } from "../scm/gitlab.js";
 import { log } from "../log.js";
+import { requireGitlab } from "../scm/provider.js";
 
 export interface KnownDefectsOptions {
   cwd: string;
@@ -32,6 +33,7 @@ const where = (s: DefectStatus) => `${s.test.file}:${s.test.line}`;
 export async function knownDefectsCommand(o: KnownDefectsOptions): Promise<number> {
   const cwd = path.resolve(o.cwd);
   const c = loadConfig(cwd);
+  requireGitlab(c, "known-defects");
   if (o.commit && !o.apply) throw new Error("--commit needs --apply");
   if (o.push && !o.commit) throw new Error("--push needs --commit");
   const file = path.resolve(cwd, o.results ?? "test-results/results.json");
