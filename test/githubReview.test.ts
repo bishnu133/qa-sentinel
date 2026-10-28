@@ -278,7 +278,8 @@ describe("the GitHub workflow template", () => {
     expect(Object.keys(doc.on)).toEqual(["pull_request"]);
     expect(raw).toContain("find qa-runs -type l -delete");
     expect(raw).toContain("find handover -type l -delete");
-    expect(raw).toContain("--kind gap-report");
+    expect(raw).toContain("publish --run all --kind gap-report");
+    expect(raw).not.toContain("--help");
     expect(raw).toContain("QA_CLAUDE_CODE_VERSION");
   });
 });

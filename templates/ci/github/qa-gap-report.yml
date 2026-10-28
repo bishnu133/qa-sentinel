@@ -189,8 +189,5 @@ jobs:
           mkdir -p "$QA_TESTS_DIR/.qa-sentinel/runs"
           find handover -type l -delete
           if [ -d handover/qa-runs ]; then cp -r handover/qa-runs/. "$QA_TESTS_DIR/.qa-sentinel/runs/"; fi
-          # Only gap-report runs are published from this workflow. `publish --kind` limits it; an older qa-sentinel
-          # without that option publishes every run in the folder (it is strictly validated either way).
-          kind=""
-          if qa-sentinel publish --help 2>&1 | grep -q -- '--kind'; then kind="--kind gap-report"; fi
-          qa-sentinel -C "$QA_TESTS_DIR" publish --run all $kind
+          # Only gap-report runs are published from this workflow (a generate run in the artifact is refused).
+          qa-sentinel -C "$QA_TESTS_DIR" publish --run all --kind gap-report
