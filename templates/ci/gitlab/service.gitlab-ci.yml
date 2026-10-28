@@ -16,7 +16,7 @@
 # (read_api), and qa-gap-report-publish posts it with QA_SENTINEL_GITLAB_WRITE_TOKEN (api) and no model key.
 
 variables:
-  QA_SENTINEL_VERSION: "0.8.0-beta.2"
+  QA_SENTINEL_VERSION: "0.8.0-beta.3"
   # Where to install qa-sentinel from: set QA_SENTINEL_PACKAGE as a group/project CI/CD variable, e.g.
   # "github:bishnu133/qa-sentinel#main" until it is on npm. Default: qa-sentinel@$QA_SENTINEL_VERSION.
   # (Not defined here on purpose: trigger jobs forward YAML variables downstream, where they override CI/CD variables.)
@@ -124,6 +124,8 @@ qa-gap-report-publish:
     - git clone --depth 1 --branch {{targetBranch}} "https://gitlab-ci-token:${CI_JOB_TOKEN}@${CI_SERVER_HOST}/${QA_TESTS_PROJECT}.git" /tmp/qa-tests
     - git -C /tmp/qa-tests remote remove origin
     - mkdir -p "$QA_TESTS_DIR/.qa-sentinel/runs" && cp -r qa-runs/. "$QA_TESTS_DIR/.qa-sentinel/runs/"
+    # The run folder comes from a job that runs generated code: no symbolic link in it is kept (publish refuses a folder that has one, too).
+    - find "$QA_TESTS_DIR/.qa-sentinel/runs" -type l -delete
     - export QA_SENTINEL_GITLAB_TOKEN="${QA_SENTINEL_GITLAB_WRITE_TOKEN:?qa-gap-report-publish needs QA_SENTINEL_GITLAB_WRITE_TOKEN (api)}"
     - unset ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN ANTHROPIC_BASE_URL CLAUDE_CODE_USE_BEDROCK CLAUDE_CODE_USE_VERTEX AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN
     # The Jira publishing login (QA_JIRA_PUBLISH_*) is picked by `qa-sentinel publish` itself; the read login (JIRA_*) is not used for writing.
@@ -187,6 +189,12 @@ qa-trigger-generation:
     - if: $CI_COMMIT_MESSAGE =~ /Merge branch '(?:{{skipBranchesMergeRe}})/
       when: never
 {{/if}}
+    # A revert commit brings back code that was already tested; it does not start a paid run.
+    - if: $CI_COMMIT_TITLE =~ /^Revert "/
+      when: never
+    # ... and the merge commit of the branch GitLab's Revert button makes.
+    - if: $CI_COMMIT_TITLE =~ /^Merge branch 'revert-[0-9a-f]{8}'/
+      when: never
     - if: $CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
     # Re-run by hand: Build › Pipelines › New pipeline on the default branch (generates for its latest commit).
     - if: $CI_PIPELINE_SOURCE == "web" && $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH

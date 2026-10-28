@@ -15,7 +15,7 @@ The run folder is untrusted. `publish` takes the repository (`GITHUB_REPOSITORY`
 - [ ] Each service repo, secret `ANTHROPIC_API_KEY`.
 - [ ] Private test repo: secret `QA_TESTS_READ_TOKEN` (a token that can read it).
 - [ ] Jira as the requirements source: secrets `JIRA_EMAIL` + `JIRA_API_TOKEN` (or `JIRA_PAT`), and for writing `QA_JIRA_PUBLISH_PAT` (or `QA_JIRA_PUBLISH_EMAIL` + `QA_JIRA_PUBLISH_API_TOKEN`).
-- [ ] Optional: variable `QA_SENTINEL_PACKAGE` (default `qa-sentinel@0.8.0-beta.2`; `github:owner/repo#ref` is built in the job).
+- [ ] Optional: variable `QA_SENTINEL_PACKAGE` (default `qa-sentinel@0.8.0-beta.3`; `github:owner/repo#ref` is built in the job).
 - [ ] GitHub Enterprise Server: `ci.githubApiUrl: https://ghe.example/api/v3` (Actions sets `GITHUB_API_URL` itself).
 - [ ] Run `qa-sentinel doctor --online` locally with `QA_SENTINEL_GITHUB_TOKEN` first.
 

@@ -159,7 +159,7 @@ interface FProject {
   mrs: any[];
   notes: Map<number, any[]>;
   nextIid: number;
-  pipelines: { id: number; status: string }[];
+  pipelines: { id: number; status: string; sha?: string }[];
   mergeChecks: number; // how many times a merge request still says "checking"
 }
 
@@ -265,7 +265,9 @@ export async function startFakeGitlab(opts: { token?: string } = {}) {
       const before = pr.commits.get(c.parent_ids[0])!.files;
       const files = { ...headFiles(pr, body.branch) };
       for (const k of new Set([...Object.keys(before), ...Object.keys(c.files)])) if (before[k] !== c.files[k]) before[k] === undefined ? delete files[k] : (files[k] = before[k]);
-      return json(res, 201, { id: commit(pr, body.branch, `Revert "${c.message.split("\n")[0]}"\n\nThis reverts commit ${c.id}`, files) });
+      const revertId = commit(pr, body.branch, `Revert "${c.message.split("\n")[0]}"\n\nThis reverts commit ${c.id}`, files);
+      pr.pipelines.push({ id: 1000 + pr.pipelines.length, status: "running", sha: revertId }); // a push starts a pipeline
+      return json(res, 201, { id: revertId });
     }
     if ((r = rest.match(/^\/repository\/commits\/([0-9a-f]+)\/cherry_pick$/)) && m === "POST") {
       const c = pr.commits.get(r[1])!;

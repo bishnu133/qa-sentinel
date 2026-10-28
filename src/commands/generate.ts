@@ -111,6 +111,9 @@ export interface BackfillTarget {
  * writes) → guardrails (code) → independent verification (code) → commit/publish.
  * Returns the exit code: 0 when VERIFIED, or when the plan needs no test changes.
  */
+/** A revert: git's own title, or the merge commit of the revert branch GitLab's Revert button makes (revert-<8 hex>). */
+const REVERT_TITLE = /^(Revert "|Merge branch 'revert-[0-9a-f]{8}')/;
+
 export async function generateCommand(o: GenerateOptions): Promise<number> {
   if (o.deferPublish) o = { ...o, push: true };
   const ctl: JobControl = {};
@@ -172,6 +175,12 @@ async function generateRun(o: GenerateOptions, ctl: JobControl): Promise<number>
     service = findService(c, o.service, cwd, o.servicePath);
     repo = path.resolve(cwd, service.path);
     if (!isGitRepo(repo)) throw new Error(`${repo} is not a git repository`);
+  }
+  // A revert brings back code that was already tested: it must not start a paid run. (Story mode, started by hand, is not affected.)
+  const triggerTitle = penv.QA_SERVICE_COMMIT_TITLE ?? "";
+  if (!o.story && !o.backfill && REVERT_TITLE.test(triggerTitle.trim())) {
+    log.ok(`${JSON.stringify(triggerTitle.trim())} is a revert: no test generation for it (reverted work is handled when the story is generated again)`);
+    return 0;
   }
   const environment = useEnvironment(c, o.env);
   if (environment) log.step(`environment: ${environment} (${layers(c).map((l) => process.env[l.baseUrlEnv]).filter(Boolean).join(", ")})`);

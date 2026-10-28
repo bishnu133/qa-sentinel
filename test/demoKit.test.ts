@@ -695,9 +695,13 @@ describe("review fixes", () => {
   it("M3/M4: reset says to clear the runner cache and wait for idle runners; --cancel-pipelines cancels the revert pipelines", async () => {
     await seeded();
     await mergeCard("qty-limit");
-    orders().pipelines.push({ id: 1, status: "running" }, { id: 2, status: "pending" }, { id: 3, status: "success" });
+    // Somebody else's pipelines on the same project: running, waiting, done.
+    orders().pipelines.push({ id: 1, status: "running", sha: "feedface" }, { id: 2, status: "pending", sha: "feedface" }, { id: 3, status: "success", sha: "feedface" });
     await reset(resetArgs({ "cancel-pipelines": true }));
-    expect(orders().pipelines.map((p) => p.status)).toEqual(["canceled", "canceled", "success"]);
+    expect(orders().pipelines.filter((p) => p.id < 1000).map((p) => p.status)).toEqual(["running", "pending", "success"]);
+    const reverts = orders().pipelines.filter((p) => p.id >= 1000);
+    expect(reverts.length).toBeGreaterThan(0);
+    expect(reverts.map((p) => p.status)).toEqual(reverts.map(() => "canceled"));
     expect(logs.join("\n")).toMatch(/Clear runner caches/);
     expect(logs.join("\n")).toMatch(/Wait until the runners are idle|wait until the runners are idle/i);
     expect(logs.join("\n")).toMatch(/Resolution/);
@@ -839,6 +843,20 @@ describe("setup-gitlab", () => {
     await rejects(setupGitlab({ ...base(), args: { yes: true } }), /already has commits/);
     expect(gl.writes()).toHaveLength(0);
   });
+
+  it('leaves out a service marked "optional": true that does not exist, and still insists on the others', async () => {
+    gl.projects.delete("g/shoplite-payments");
+    for (const pr of gl.projects.values()) pr.empty = true;
+    // The pushes need a real git server; the check this test is about comes before them.
+    await setupGitlab({ ...base(), args: { yes: true } }).catch(() => undefined);
+    expect(logs.join("\n")).toMatch(/payments-service: g\/shoplite-payments does not exist and is optional: left out/);
+  });
+
+  it("fails for a missing service that is not optional", async () => {
+    gl.projects.delete("g/shoplite-orders");
+    for (const pr of gl.projects.values()) pr.empty = true;
+    await rejects(setupGitlab({ ...base(), args: { yes: true } }), /g\/shoplite-orders does not exist/);
+  });
 });
 
 /** A second fake Jira whose /myself answers with nothing useful. */
@@ -859,3 +877,21 @@ async function startFakeJiraWithoutMyself(real: Awaited<ReturnType<typeof startF
   await new Promise<void>((ok) => server.listen(0, "127.0.0.1", ok));
   return { url: `http://127.0.0.1:${(server.address() as any).port}`, close: () => new Promise<void>((ok) => server.close(() => ok())) };
 }
+
+describe("the demo config reads a bug as its story", () => {
+  it("with the overlay's Jira settings, the demo bug (linked 'Relates') resolves to its story, not to itself", async () => {
+    const { ConfigSchema } = await import("../src/config.js");
+    const { resolveFeature } = await import("../src/stories/resolve.js");
+    const made = configOverlay({ gitlabUrl: "https://g", testsProject: "a/t", services: [{ name: "orders-service", project: "a/o" }], jira: { baseUrl: "https://j.example", project: "DEMO" } });
+    expect(made.requirements.jira.featureIssueTypes).toEqual(["Story"]);
+    const c = ConfigSchema.parse({ version: 1, mode: "existing", project: { name: "t" }, tests: { api: { framework: "playwright", runCommand: "x" } }, ci: { platform: "gitlab" }, requirements: made.requirements });
+    const card = (key: string, issueType: string, links: unknown[] = []) => ({ key, summary: key, description: "", status: "In Progress", issueType, url: `https://j.example/browse/${key}`, links });
+    const story = card("DEMO-1", "Story");
+    const bug = card("DEMO-3", "Bug", [{ type: "Relates", inward: "relates to", outward: "relates to", direction: "outward", key: "DEMO-1" }]);
+    const r = await resolveFeature(c, bug as never, async (k) => [story, bug].find((x) => x.key === k) as never);
+    expect(r).toMatchObject({ kind: "resolved", feature: "DEMO-1", via: "link" });
+    // Without featureIssueTypes the same bug would be its own feature (the demo's old behaviour).
+    const old = ConfigSchema.parse({ version: 1, mode: "existing", project: { name: "t" }, tests: { api: { framework: "playwright", runCommand: "x" } }, ci: { platform: "gitlab" }, requirements: { ...made.requirements, jira: { ...made.requirements.jira, featureIssueTypes: [] } } });
+    expect((await resolveFeature(old, bug as never, async () => story as never)).kind).toBe("feature");
+  });
+});

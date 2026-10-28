@@ -1,6 +1,30 @@
 # Changelog
 
-## Unreleased — GitHub Actions and pull requests (PR 10 of the finishing plan)
+## 0.8.0-beta.3
+
+The next release after 0.8.0-beta.2. Everything below went in on the way to it, in the order of the finishing plan (newest first); the last entry is the final review's fixes.
+
+### Release fixes: version, symbolic links, quick actions, demo, revert guard (PR 12)
+
+- The version is `0.8.0-beta.3` everywhere: `package.json`, `package-lock.json`, `VERSION` in the code, the CI templates (GitLab, GitHub, Jenkins) and the README install line. A test keeps them equal.
+- `qa-sentinel publish` refuses a run folder that holds a symbolic link, reads and writes the files it uses without following links, and the GitLab publish jobs delete links before publishing. A planted `published.json` or `jira-summary.md` link can no longer redirect a write.
+- GitLab quick actions (`/approve`, `/merge`, `/target_branch` and the others) in merge request notes, descriptions and comments are neutralised before they are sent. `/qa ready` is still readable and still works.
+- A bug card is traced to its story through Jira in the publish job, so a bug fix can publish to its story without `QA_STORY_KEY`. The trusted-keys rule is unchanged: the run folder still cannot name a story.
+- Gap-report steps (`report`, `bugs`, `notify`, `mr-seen`) are held to the same trusted stories as the other steps.
+- With `requirements.projectKeys` empty, words such as `UTF-8` or `SHA-256` in commit text are no longer taken as story keys by the publish job; set `projectKeys` to let commit text name a story.
+- A revert commit ("Revert ...") does not start a paid generation run: `generate` skips it and the GitLab trigger job has a rule for it.
+- `doctor` and `release-features` no longer print git's own `fatal: not a git repository` lines; the `--help` top line describes the tool as it is; `reset --cancel-pipelines` cancels only the pipelines of the reverts it made; `"optional": true` on a demo service is honoured by setup.
+- The demo config reads Jira stories only as `Story` (`featureIssueTypes`), and `demo/DEMO-SCRIPT.md` covers `/qa ready`, per-AC readiness, the post-deploy re-run, `release-features` and `metrics`.
+
+- **Review fixes of PR 12.**
+  - In split mode a gap report is always posted on the job's own merge request or pull request. When the pipeline names no trusted story (GitHub, `projectKeys` empty, a bug fix with no Jira login in the publish job), only the story key and the Jira comment are dropped; no Jira write or story record happens for it. The pull request or merge request title, text and branch now count as the pipeline's own text, on GitHub too. A `mr-seen` step for an untrusted story records nothing and does not fail the job.
+  - A quick action right after a `>` (inside an HTML tag) is neutralised too. A note that has a line starting with `/` is no longer rewritten on every run.
+  - `publish` also refuses a link at `.qa-sentinel` or `.qa-sentinel/runs`; the link check has no 12-level limit (a folder nested more than 40 levels is refused). A test fails if a symbolic link is tracked by git; `node_modules` was committed as a link by mistake and is removed.
+  - The merge commit of GitLab's Revert button (`Merge branch 'revert-<8 hex>'`) does not start a paid run either. Other reverts merged under a different title still do, and a manual "New pipeline" on a revert commit is skipped (`generate --story` still works).
+  - A Jira card read gives up after 30 seconds (`QA_SENTINEL_JIRA_TIMEOUT_MS`).
+- **Release steps and known limits.** Create and push the tag `v0.8.0-beta.3` at release time: the README install line (`github:bishnu133/qa-sentinel#v0.8.0-beta.3`) and the CI templates need it. In split mode set `requirements.jira.projectKeys` (or `QA_STORY_KEY`); a bug-fix run needs a Jira login in the publish job to reach its story, and without it the report is still posted but nothing is written to Jira. Quick actions are blocked at the start of a line and after `>`; whether GitLab reads a command in other places was not checked against a real GitLab. Jira Data Center, self-hosted GitLab and Jenkins are not proven (Jenkins has no split mode). After a demo reset, clear the runner cache by hand.
+
+### GitHub Actions and pull requests (PR 10 of the finishing plan)
 
 - **CI provider layer.** New `ci.provider: gitlab | github` (default gitlab; the older `ci.scm: github` is read as github when `provider` is unset). New `src/scm/provider.ts` (`scmFor(config, env)`): a thin interface over `src/scm/gitlab.ts` (adapter, no behaviour change) and the new `src/scm/github.ts` (REST: issue comments, pulls, labels, reactions, PR files and diff refs, draft flag; retries on 429/5xx and the secondary rate limit; Link-header paging). `ci.platform` accepts `github`; new `ci.githubApiUrl` (and `GITHUB_API_URL`) for GitHub Enterprise Server.
 - **Moved onto the provider:** the gap report comment (single marker comment, stamp, draft check), `publish` (comment, push, open the test PR with labels, story-branch note), `generate --push`, `metrics --online` reactions, the push URL (`x-access-token`), `init --ci github`, `doctor` and `doctor --online`. `QA_*` mapping from `GITHUB_REPOSITORY`, `GITHUB_EVENT_PATH`, `GITHUB_REF`, `GITHUB_BASE_REF`, `GITHUB_HEAD_REF`. `QA_SENTINEL_GITHUB_TOKEN` is removed from agent and test environments.
@@ -11,7 +35,7 @@
 - **Review fixes (PR #37):** the workflow's gap-report step is `continue-on-error`, so an incomplete analysis still gets published (it used to leave the old comment up); a failed `generate` push no longer prints the token (`generate` and the CLI mask error text); `GET /user` is retried and only a 403 falls back to comments by `github-actions[bot]` (or `ci.githubBotLogin`), any other failure stops instead of posting a second comment; rate limits (403/429 with `x-ratelimit-remaining: 0`, `Retry-After`, "secondary rate limit") wait as GitHub says, capped at 120 s; POSTs are not repeated after a 5xx or network error; the next-page link must have the API's own origin and path; `http://` API URLs are refused except on this machine; an updated pull request follows the draft state (GraphQL; REST cannot do it) and a repository without drafts gets a normal pull request; story-mode `generate` is refused on GitHub; the workflow removes symbolic links from the run artifact, can pin the agent CLI (`QA_CLAUDE_CODE_VERSION`) and publishes with `--kind gap-report` (PR 11).
 - Not done: nothing was run against real GitHub; all tests use a fake server. Try it: [docs/TRY-PR10.md](docs/TRY-PR10.md).
 
-## Unreleased — re-review fixes: publish trust, Jira carry-over, split record (PR 11)
+### re-review fixes: publish trust, Jira carry-over, split record (PR 11)
 
 - **Merge from an old main (High).** The per-commit check of a bundle now also compares the final tree with the freshly fetched target branch: a path whose content differs from the target counts as the agent's, whichever commit brought it (a merge that takes back an old file, deletes a file main added later, or brings an old symlink). Tests in `test/bundleAttack.test.ts`.
 - **`publish --kind` and the branch name.** `qa-sentinel publish --kind gap-report|generate` (the templates pass it) refuses a run of the other kind and any step type that job does not use. A non-story branch is accepted only as `qa-sentinel/<QA_SERVICE_NAME>-<first 8 of QA_SERVICE_SHA>`; other `qa-sentinel/*` names (`qa-sentinel/review-lessons`, another service's branch) are refused. Backfill branches are therefore not pushed by the split jobs.
@@ -23,7 +47,7 @@
 - **Recheck of PR 11, fixed:** a story branch's merge-request view also counts a path already in the merge request when the target changed it since (merge-base to merge-base); `sweepAuthEnv` must be `QA_CLEANUP_*` (a pattern, not a blocklist), the job token is unset under all its names (`CI_REPOSITORY_URL`, `CI_DEPENDENCY_PROXY_PASSWORD`, `CI_JOB_JWT*`), and the sweep reads the config of `$CI_COMMIT_SHA` (`data sweep --config-from`), with only default hosts allowed for a work-tree config in CI; `publish` takes the stories it may write to from the pipeline (`QA_STORY_KEY(S)`, the service commit text, the service merge request in GitLab) and refuses story steps for any other story; a run with no merge request may record its own story's written entries; the branch reset is the merge request step's `resetRecord` and happens after the push; a moved legacy section is marked `kept` and `fit()` shortens other sections first. **The stale-lock race is narrowed, not closed** (see the comment in `claim()`). **New for users:** publish refuses story steps for a story the pipeline does not name: put the key in the service commit / merge request or set `QA_STORY_KEY`.
 - Not done: nothing run on a real GitLab or Jira. Try it: [docs/TRY-PR11.md](docs/TRY-PR11.md).
 
-## Unreleased — app screen snapshots, iOS and device-farm code side, a command engine (PR 9 of the finishing plan)
+### app screen snapshots, iOS and device-farm code side, a command engine (PR 9 of the finishing plan)
 
 - **App screen snapshots (D5).** New `tests.mobile.explore: none | snapshot` (default `none`: it needs a device during `generate`). With `snapshot`, before the agent writes mobile tests, qa-sentinel opens the affected screens itself and saves `run/screen-snapshots/<screen>.xml` (the accessibility tree), `<screen>.summary.txt` (elements with an id or text, tappable ones marked), `<screen>.png` and a `README.md`, next to the web page snapshots, and tells the agent where. It talks plain Appium/W3C HTTP (`src/mobile/explore.ts`, no WebdriverIO) and uses only `POST /session`, `GET .../source`, `GET .../screenshot`, `POST .../execute/sync` (Android `mobile: deepLink`) and `DELETE /session/:id`. Credentials in the Appium URL go in an `Authorization` header and appear in no file or message. A failing screen or session is a warning for that screen, never a stop. Screens come from the plan's mobile scenarios; `tests.mobile.deepLinkBase` (e.g. `myapp://`) turns a screen name into a deep link, and without it only the screen the app opens on is saved (named `launch`). A screen with a parameter is listed as not opened.
 - **iOS and device farms, code side only (D6).** `wdio.conf.ts` merges `QA_APPIUM_CAPS` (one JSON object, for a farm's own block such as `bstack:options` or `sauce:options`, which you copy from the farm's docs) over its capabilities; the content is never printed, and it goes to qa-sentinel's own runs, not to the agent (it can hold a key). `QA_VIDEO=off` already skipped qa-sentinel's recording, for farms that record themselves. New `tests.mobile.targets` and `qa-sentinel mobile-run --target <name> [--spec f] [--dry-run]` build and run YOUR command (with `--spec` per file, the target's plain `env`, secret `passEnv` copied by name, inside `verification.wrapCommand`). `doctor` checks the iOS app (`QA_BUNDLE_ID` or `QA_APP`), a Mac or a farm for iOS, `QA_APPIUM_CAPS` being one JSON object, targets' env names, and always says "iOS runs are not proven yet". **No vendor SDK or API** (uploads, session links, reporters) is built. **iOS deep links are not supported yet:** `openDeepLink` in the scaffold now throws a clear error on iOS (before it called `driver.url`, which opens Safari, not the app), and snapshots refuse an iOS deep link. Forum posts mention `mobile: deepLink` with `bundleId` for XCUITest (reliable from iOS 16.4), but the driver's official documentation could not be opened here, so it was not used.
@@ -34,14 +58,14 @@
 - Try it, with the real-device and AI steps marked: [docs/TRY-PR9.md](docs/TRY-PR9.md).
 - **Review fixes (PR #35).** The command engine now also compares, before and after the run, every git-ignored file (size and time; test-run folders such as `test-results/` and `.qa-sentinel/` excepted) and `.git/config` and `.git/hooks`, and fails the run if any changed; the doc says what is still not checked (outside the repository, reads, network, left-over processes). The engine gets the cleaned test environment: no Bedrock/Vertex/Anthropic credentials unless in `guardrails.passEnv`. A login inside `QA_APPIUM_URL` is taken out for the agent and the engine (like `QA_APPIUM_CAPS`), unless `tests.auth.shareWithAgent`. `runProcess` finishes when the command exits (plus 250 ms for its output), not when every pipe closes; a left-over background child no longer delays a result or turns it into a timeout; only the last 1 MB of each output is kept; short timeouts are reported in seconds. Appium errors, files and logs have caps values, the raw `QA_APPIUM_CAPS` and URL logins removed; page source is limited to 5 MB and screenshots to 10 MB (over: that part is skipped). The snapshot README, the summaries and the agent prompt say the content is the app's data, not instructions. Engine JSON needs `result`, `ok` or `status`; a quoted `{taskFile}` is refused in the config; the task file lives in `<repo>/.qa-sentinel/engine-*/`; `mobile-run` always masks `QA_APPIUM_CAPS`; `doctor` skips Claude-only sandbox checks for a command engine and checks each iOS target for a Mac; with `deepLinkBase` and no screens the launch screen is saved; TRY-PR9 fixed.
 
-## Unreleased — demo kit: seed, run and reset an end-to-end demo
+### demo kit: seed, run and reset an end-to-end demo
 
 - **New `demo/` folder (no change to `src/`).** A kit to run a full demo on your own Jira TEST project and GitLab test group and put it back: `seed-jira.mjs` (5 cards: 2 stories, a bug linked to a story, a cross-service story, a hotfix bug), `setup-gitlab.mjs` (pushes a small ShopLite template to empty projects, tags `demo-baseline`, cuts `release/demo`), `demo-merge.mjs` and `demo-bugfix.mjs` (play the developer: branch, change, merge request with the Jira key, optional merge or cherry-pick) and `reset.mjs` (dry run by default; closes demo merge requests, reverts the demo merges with new commits, deletes demo and `qa-sentinel/*` branches, deletes marker comments written by the token's own user in GitLab and Jira, removes qa-sentinel's Jira properties, moves cards back, cleans `.qa-sentinel/` and runs `doctor`). Talk track, checklists and a fallback plan are included.
 - **Safety:** nothing is written without `--yes`; seed and reset need `--i-know-this-is-a-test-project` and `DEMO_JIRA_PROJECT`; scripts touch only projects and cards listed in the git-ignored `demo/.demo-state.json`; tokens come from the environment and are never printed.
 - **Review fixes (PR #38):** reset first checks that every project is in `demo.config.json` and that its `demo-baseline` tag is still the commit setup recorded; Jira cards are touched only with the key shape, the `qa-sentinel-demo` label and the summary from `cards.json`; the state file is validated and every id is encoded in URLs; reset asks GitLab about every recorded merge request (so a merge by the Merge button is reverted), exits 1 with `NOT FINISHED` while a branch differs, and forgets records per project; the service CI files set `QA_SERVICE_NAME` to the config's names; `generation.crossService: when-ac-complete` and `automation.record: jira` are set; secrets guidance uses bot identities, protected and environment-scoped variables; `--merge` waits for `mergeable`; `npm install --ignore-scripts` with no tokens; the test-project flag must carry the project key; seed refuses a project that holds other issues; `--delete-bugs` is limited to the demo project; `--cancel-pipelines`; paging over 100 items.
 - **Tested** against a fake Jira and a fake GitLab (`test/demoKit.test.ts`). **Not run against a real Jira or GitLab, and no AI pipeline was run on the demo project.** See `demo/README.md`, "What is NOT proven".
 
-## Unreleased — trust the output: mutation checks, more benchmark cases, consistency, more metrics (PR 8 of the finishing plan)
+### trust the output: mutation checks, more benchmark cases, consistency, more metrics (PR 8 of the finishing plan)
 
 - **Mutation check (benchmark only, no AI).** `npm run bench:mutate -- --scenario SHOP-101` plants hand-written defects (`bench/mutations/SHOP-101/*.patch`: the slot cap 3 to 5, a missing 400, a renamed field, qty 0 accepted, a wrong status, and one defect no test can see) in a copy of the ShopLite orders-service, starts the local environment, runs the API tests and reports **"N planted defects, M caught"** in `bench/results/mutations-<time>.md`. The correct implementation (`reference.patch`) goes on first and the tests must pass on it, or nothing is scored. A test run that cannot work (the service did not start) is reported as an error, never as a catch. The tests are the reference tests that ship with the scenario, or `--tests-ref <branch>` for tests an agent wrote. It is **not** a general mutation engine and the number is not a mutation score.
 - **Benchmark cases.** New scenario `test-data-collision` (two tests that would create the same fixed `reference`; checks by wording that the plan's setup asks for unique values and that the plan names the clash). New `bench/cases.ts`, run with `npm run bench -- --features` (free, no AI): `feature-three-services` walks a story across orders, payments and notifications and checks which acceptance criteria are written at each step (a cross-service AC is held until every service is merged and the Jira card is ready). New `npm run bench -- --generate` runs `generate` itself on `new-validation` and `test-data-collision` and scores verification status, expected values present, the independent review's verdicts and, for the collision case, whether the written tests use a fixed `reference`. The scoring is unit-tested with a fake engine; the real run costs AI money and is the owner's.
@@ -52,7 +76,7 @@
 - **Review fixes (PR #34):** `bench` checks its arguments first (`--summarise` with no file used to start the paid run); `bench:mutate` runs no shell on refs or paths, refuses to run when `/tmp/services/<service>` exists and checks that the mutant is what is served, treats a broken test run as an error; the flaky metric reads only `test`/`it` (and `.only .skip .fixme .fail .slow`) and matches by exact title or the last `›` part; the joined (several stories) and waiting notes get a manifest with `mr`, also through deferred publish, and the waiting note gets the vote line; the collision checks read variables and are wider; measured costs in the bench README ($1.64 for 12 scenarios).
 - Not done: no real `bench --generate`, `--runs 3` or `metrics --online` run (they need the owner's Claude and GitLab). Try it, with the cost of each step: [docs/TRY-PR8.md](docs/TRY-PR8.md).
 
-## Unreleased — more quality gaps: change types, access control, history, spec drift (PR 7 of the finishing plan)
+### more quality gaps: change types, access control, history, spec drift (PR 7 of the finishing plan)
 
 - **Change types as risk (no AI).** New `src/analysis/changeKinds.ts` looks at **all** changed files (not only the ones planning keeps; lock files are still ignored) and finds database migrations, config files, feature-toggle files and dependency files by the globs in `risk.changeTypes`. Only dependency declarations count: `package.json` `dependencies`, `peerDependencies` and `optionalDependencies` (not `devDependencies`), and the dependency blocks of `pom.xml`, Gradle, `go.mod`, requirements, Cargo, Pipfile, `pyproject.toml`, Gemfile, composer and `*.csproj`. A major version jump is any change of the major (downgrades too, `^0.3` to `^0.4`, `latest` to a version; `file:`, `link:` and plain git specs are ignored; `workspace:` and `npm:` aliases are read). Globs are case-insensitive and `!` excludes (test, fixture and query `.sql` files are not migrations; Alembic, Flyway Java, TypeORM, EF Migrations and `prisma/schema.prisma` are). New risk factors: `db-migration` (high), `config-change` (medium), `toggle-change` (medium), `dependency-bump` (medium) and `dependency-major` (high). They are added to a synthetic change `c0`, so the overall risk includes them; the report has a "Change types found in the code (no AI)" section with the files, and `c0` is left out of the decision table. A migration or dependency change selects the whole service suite for regression (in story mode only the service that has it).
 - **The agent cannot choose these factors.** They live in a separate list (`DERIVED_RISK_FACTORS`); the plan schema rejects them in `riskFactors`. The agent only sees them (`changeKinds`, `endpointHistory` and `accessControl` in `context.json`).
@@ -64,7 +88,7 @@
 - **Deviations from the plan:** the derived factors are not in `RISK_FACTORS` (so the agent cannot pick them); a major dependency bump has its own factor `dependency-major` (high) because risk is a function of factors; the spec's "decision `noScenario`" is a new optional `noScenario` field on decisions; access rules apply to decisions that write tests (create, update, review), not to `reuse`.
 - Try it: [docs/TRY-PR7.md](docs/TRY-PR7.md).
 
-## Unreleased — small items and docs fixes (PR 6 of the finishing plan)
+### small items and docs fixes (PR 6 of the finishing plan)
 
 - **`suite` asks once.** Each service's version endpoint is asked once per run and each repository's revert list is read once, however many stories there are (before: once per story and service).
 - **`suite --run` leaves held-back tests out by title** where the runner cannot take `file:line`: Mocha (`--grep <pattern> --invert`), Jest and Vitest (`-t '<negative pattern>'`) run only the files that hold a selected test and skip the tests of held-back stories (`@story:KEY` in the test title, also `@story:A,B` lists and tags on a `describe`; `SHOP-1` never matches `SHOP-10`). Jest gets `--runTestsByPath` so its file arguments are plain paths; npm gets ` --` before the options, pnpm and yarn do not. Not verified against a real Jest or pnpm here; `cmd.exe` quoting on Windows is not supported. Playwright keeps exact `file:line`. WebdriverIO still runs whole files, and a warning says so. Cucumber scenarios are now listed in their own section of `qa-suite.md` and in `--json` (`cucumber`), and are left out of `qa-suite.txt`.
@@ -79,7 +103,7 @@
 - `generate --story` skipping reverted parts was already built in an earlier PR; no change.
 - Try it: [docs/TRY-PR6.md](docs/TRY-PR6.md).
 
-## Unreleased — Jira Data Center and self-hosted GitLab hardening, budget suggestions, split CI jobs, a wrapper for test runs (PR 5 of the finishing plan)
+### Jira Data Center and self-hosted GitLab hardening, budget suggestions, split CI jobs, a wrapper for test runs (PR 5 of the finishing plan)
 
 - **Fix: Jira login.** `JIRA_PAT` used to win even when `JIRA_EMAIL` and `JIRA_API_TOKEN` were also set, and Jira Cloud then answered 401 to the Bearer token. New `requirements.jira.auth: auto | cloud | pat` (default `auto`): `auto` uses Cloud when `JIRA_EMAIL` is set, the Data Center token otherwise. `doctor` warns when both are set.
 - **Fix: a login or SSO page in front of Jira or GitLab.** The page came back as HTML and was read as JSON ("Unexpected token <"). Now the error says: "Jira answered with a web page, not JSON (a login or SSO proxy in front of Jira? …)", and the same for GitLab.
@@ -95,7 +119,7 @@
 - Docs: README "CI" (what each split job can reach) and "Honest limits", SECURITY.md (wrapper, runner network allowlist, the sandbox), `templates/ci/gitlab/README.md`.
 - Not done on purpose: nothing here has run against a real Jira Data Center, a real self-hosted GitLab or a large service. Try it, and which steps need those: [docs/TRY-PR5.md](docs/TRY-PR5.md).
 
-## Unreleased — Jira status modes, out-of-date marks, notifications, `/qa ready` (PR 4 of the finishing plan)
+### Jira status modes, out-of-date marks, notifications, `/qa ready` (PR 4 of the finishing plan)
 
 - **Behaviour change: older qa-sentinel comments move into the status comment.** While `mode` is `status`, qa-sentinel's own comments from the old layout (gap report, feature, post-deploy, bugs, story review, showcase, hotfix) are carried into the status comment as sections (a section already there is fresher and wins), and only then edited into "Replaced by the QA status comment: <link>". This runs whenever such comments exist (also on a story that already has a status comment, and after `both` -> `status`), and once per story as far as the record is kept (`legacyCleanedAt`). A comment with a different visibility is left alone. `reporting.jira.cleanup: keep` keeps today's behaviour, `delete` removes them after carrying the text. `reporting.jira.mode: status | legacy | both` replaces `layout` (`layout: separate` still works and means `legacy`).
 - **Behaviour change: the showcase summary is a section of the status comment** (mode `status`); the mention is a separate short new comment (`notify.showcase-ready`, on by default, tags `showcase.notify`). In `legacy` mode the showcase comment is as before. In `both` the mention is only in the legacy comment. A showcase comment or mention that failed to post is posted on the next run without attaching the evidence again.
@@ -108,7 +132,7 @@
 - `showcase.reattachOnChange` (default false). New config keys all have defaults, so old config files load unchanged.
 - Try it: [docs/TRY-PR4.md](docs/TRY-PR4.md).
 
-## Unreleased — one test merge request per story, end-to-end tests per AC, `stories --act` (PR 3 of the finishing plan)
+### one test merge request per story, end-to-end tests per AC, `stories --act` (PR 3 of the finishing plan)
 
 - **Behaviour change: one test merge request per story.** When a merged change names a story, qa-sentinel adds its tests to one long-lived branch, `qa-sentinel/story-KEY`, and one merge request (`QA agent: tests for story KEY`), instead of a new `qa-sentinel/<service>-<sha>` merge request per merge. A change with no story key keeps the old branch. To keep the old way for every merge, set `generation.scope: service`. Other settings: `generation.branchPrefix` (`qa-sentinel/story-`), `generation.maxAcsPerRun` (5).
 - **The branch is built on, never rebuilt, never force-pushed.** Each run continues from the branch on the server, merges the main branch into it, and pushes with `--force-with-lease` using the commit it started from. A commit a reviewer pushed meanwhile is fetched, merged in and kept (one retry, then a clear error). A run that cannot build on the branch stops before any AI call: nothing is pushed, the merge request gets a note, exit 1, and the job is marked aborted (not a failed attempt, so no `--force` is needed after a person fixed it). Causes: a merge conflict with main; main rewritten (rebased or force-pushed) after it was merged in; an open merge request whose branch was deleted; local and server branches that diverged. An open merge request always wins: if a branch has several merge requests the branch is continued, whichever was updated last. A closed or merged story merge request is not reopened: a new branch starts from main, its description links the old one, and what the story record said was written on the old branch is cleared. The planner and the author work on the branch, so they see the tests already there. `expected/KEY.md` is read from the branch, so a reviewer's edits are the reviewed version.
@@ -122,7 +146,7 @@
 - Nothing Jira-derived is committed: the story record, `qa-stories.md` and the run folders stay out of the story branch.
 - Try it: [docs/TRY-PR3.md](docs/TRY-PR3.md).
 
-## Unreleased — story record, merge-request sweep, story change from each MR (PR 2 of the finishing plan)
+### story record, merge-request sweep, story change from each MR (PR 2 of the finishing plan)
 
 - **The story record keeps every merge request of the story** (`parts`: service, number, state, branch, head, merge/squash commit, when seen), the bugs and tasks reached from it (`linked`), post-deploy results per environment (`results`) and a `basis` fingerprint of the merged commits and AC hashes. It is still a cache; old records load as before. New fields for later steps (`agentMr`, `crossService`, `acEvidence`, `notified`, `overrides`) are in the file format already.
 - **`stories` first looks at merge requests (GitLab only, no AI, no clones).** One paged call per repository for the MRs updated since the last check; each is recorded on every story it names (a bug or task goes to its story by the fixed Jira rules). Stories whose MRs changed are checked even if the Jira search did not list them. MRs with no key are listed as a warning. `--no-sweep` skips it, `--rebuild` fills the records again from the last 365 days. Settings: `automation.sweep.enabled`, `overlapHours` (24), `maxPages` (5).
@@ -132,7 +156,7 @@
 - The sweep reads merge requests oldest first; if `automation.sweep.maxPages` cuts the list it says so and the next run goes on after the last one it saw. Branch names are read case-insensitively for the configured Jira projects (`feature/shop-106-x`, `SHOP-106_notice`). A loose bug (no feature behind it) is not recorded as a story. Commit ids in a record must be hex; others are dropped when it is read. The last-check time is kept in the local records folder (also with `automation.record: jira`): cache it between CI runs.
 - Try it: [docs/TRY-PR2.md](docs/TRY-PR2.md).
 
-## Unreleased — linking: every key, every merge request (PR 1 of the finishing plan)
+### linking: every key, every merge request (PR 1 of the finishing plan)
 
 - **A merge request that names several stories gets a report for each** (`requirements.multiKey: each`, the default; `first` keeps the old way of looking at the first key only). At most `requirements.maxKeysPerMr` (default 3) stories are analysed, because each one is an AI run. Each report is posted on its own story in Jira, its cost is counted on that story, and the merge request gets one comment with a section per story. A key that is not in Jira ("SHOP-1012") is said so in the report and never guessed at.
 - **A bug, task or sub-task is read as its story** (when `requirements.jira.featureIssueTypes` is set). The gap report and `generate` take the acceptance criteria from the story. The bug's own text is kept as evidence under "Work card KEY" and never sets an expected value; if it disagrees with an AC the planner asks the product owner. The report says how the card was reached ("SHOP-210 (Bug) → SHOP-12 via parent"). The fixed rules do not change.
@@ -146,7 +170,7 @@
 - Story mode makes one range per service (the merged work and each open branch, from where it left the main branch), so unrelated work on the main branch is no longer analysed. A change that was reverted and then landed again is not "reverted".
 - Try it: [docs/TRY-PR1.md](docs/TRY-PR1.md).
 
-## Unreleased — hotfixes, release tags, environment-aware runs (phase 5)
+### hotfixes, release tags, environment-aware runs (phase 5)
 
 - **`qa-sentinel hotfix`** (no AI): where a hotfix stands. Matches each hotfix commit to its cherry-pick on the main branch (a `cherry-pick -x` line, or the same change by patch id) and says whether tests were written from it. `--post` puts it in the Jira QA status comment (section `hotfix:<service>`).
 - **Hotfix branches** (`ci.hotfixBranches`, default `hotfix/*`, `release/*`): the gap report still runs on the hotfix MR and says the regression selection is what to run; `generate` does not write tests there. Tests are written once, when the change reaches main.
@@ -155,13 +179,13 @@
 - **Reverted changes** are noticed: a feature whose change was reverted on the main branch has status `reverted`; its ACs are `reverted` and its tests are held back by `suite`.
 - **Known-defect markers for Jest and Vitest**: `known-defects` also handles Jest `test.failing` and Vitest `test.fails` (with `// QA-BUG:`), recognising the "now passes" reports of both (the fixtures are hand-written samples in the reporters' format).
 
-## Unreleased — one QA status comment per story (phase 4)
+### one QA status comment per story (phase 4)
 
 - **One comment on the Jira story** (`reporting.jira.layout: single`, the default). Feature readiness, each service's gap report, the story review, proposed bugs and post-deploy results are sections of one "QA status" comment. A command replaces only its own section; the comment is edited in place, with the time each section was last updated. The old layout (one comment per kind) stays available as `layout: separate`.
 - The showcase comment stays separate: it @mentions reviewers, and an edited comment does not notify anyone.
 - Comments made by earlier versions are left as they are (nothing is deleted); remove them by hand if you want.
 
-## Unreleased — automation (phase 2)
+### automation (phase 2)
 
 - **Credentials check** before the first AI call (one tiny call, `agent.accessCheckSeconds`): a missing, malformed or wrong key, a wrong Bedrock region or a missing `claude` stops at once (exit 3) with the fix. `doctor --online` runs it too.
 - **`qa-sentinel stories`** (no AI): a background check of every story from Jira (`requirements.jira.search`) or story files: state, next step, who acts, and what blocks it. Writes `qa-stories.md` and a record per story (`.qa-sentinel/stories/`, optionally mirrored to a Jira issue property with `automation.record: jira`).
@@ -171,7 +195,7 @@
 
 - **Jira workflow and hierarchy settings** (`requirements.jira.workflow`, `hierarchy`, `components`): ready statuses (global and per project), which link wording ties a bug/task to its story, and Jira Component → service names. A card named with `--story` that is a bug, task or sub-task is reported under its story by strict fixed rules (only cards with code, one hop, parent first, target must be a feature type in `projectKeys`, two features means neither). `story-check` shows how a card resolves; `doctor --online` checks that the statuses, issue types and link names exist in your Jira.
 
-### Fixed in review (phase 2)
+#### Fixed in review (phase 2)
 
 - `known-defects` did not recognise a fixed bug in real Playwright reports: the JSON report has no error for a `test.fail` test that passes, and JUnit puts "Expected to fail, but passed." in the failure body. Both are read now (checked against Playwright 1.64 output).
 - Guide step 6 and the `known-defects` error message told you to write the JSON report with a shell redirect into `test-results/`, which Playwright empties at the start of a run; they now use `PLAYWRIGHT_JSON_OUTPUT_NAME`.
@@ -182,7 +206,7 @@
 - Removing a known-defect marker also removes QA-BUG / QA-AGENT notes separated from the test by other comments.
 - Ready status: Jira's "Done" status category counts as ready (a finished story is not stuck waiting).
 
-## Unreleased — one test MR per story, readiness per AC (phase 3)
+### one test MR per story, readiness per AC (phase 3)
 
 - **Readiness per acceptance criterion** in `qa-sentinel feature <STORY>`: an AC is ready for its end-to-end tests when every service it names (`Services` in `expected/<STORY>.md`; none named = every service the story changed) is merged and deployed in `--env`, and the Jira card is in a ready status. The report shows a table with the reason for each AC. `--run` now runs only the tests whose ACs are all ready (a test with no `@ac` tag waits for all of them); `--force` runs everything.
 - **Gap report once, when the MR is ready for review:** with `automation.gapReport.when: ready` (the default) a dev MR that is still a draft gets no gap report (exit 0, a short note instead). `--even-if-draft` or `when: always` restores the old behaviour. Story-wide reports (`--story`) are not affected.
@@ -191,7 +215,7 @@
 - Already in place and unchanged: `generate --story` writes one test branch and MR for the whole story across services.
 
 
-## Unreleased — AC-first generation (phase 1)
+### AC-first generation (phase 1)
 
 **Upgrading:** `qa-sentinel upgrade` refreshes the planning and authoring skills, but not your `write-api-test`, `write-web-test` and `write-mobile-test` skills (they hold your learned conventions). Copy the discrepancy line (`test.fixme` + `// QA-AGENT:` with the behaviour id, never `test.fail`) and the "never assert the code's value" line from `templates/skills/…` by hand.
 
@@ -205,7 +229,7 @@
 - **Result categories and a glossary** ([docs/GLOSSARY.md](docs/GLOSSARY.md)): a failing requirement test is *unclassified – needs triage* by default; *product defect* only once QA marks it; *environment* (network, certificates, gateway errors: no bug card is drafted), *not built* and *not deployed* when the evidence says so. Verification reports label each failure.
 - **`requirements.jira.featureIssueTypes`** (e.g. `[Story, Enhancement]`): only these issue types get expected behaviour and the every-AC rule; a Bug or Task is still tested from its text. Empty (default): every type counts.
 
-## Unreleased — fixes from the first full v0.8 test run
+### fixes from the first full v0.8 test run
 
 - **post-deploy runs only the story's tests:** it ran every test in the files that hold them, so an unrelated failing test in the same file failed the story. Playwright layers now get `--grep @story:<key>`; other runners still run whole files, and the report says so.
 - **Healing on macOS:** Bubblegum started its engine with `python`, which macOS doesn't have (`spawn python ENOENT`). The scaffold now falls back to `python3` (or `BUBBLEGUM_PYTHON`, or the active virtualenv); `doctor` checks the same Python.
@@ -412,7 +436,7 @@
 - Jira as a gap-report target (`reporting.targets`), see below.
 - Discrepancy titles resolve tag constants (`${tags}`).
 
-## Unreleased — Sandbox, replay and Jira reporting
+### Sandbox, replay and Jira reporting
 
 ### Jira as a report target
 - `reporting.targets: [gitlab-mr, jira]`: `gap-report --post` also comments on the story (key from MR title, branch or commits). One comment per service per story, updated in place on every run; Markdown converted to Jira wiki markup; capped at `reporting.jira.maxChars` with a link to the full report artifact; optional `visibility`. Publishing never fails the job.

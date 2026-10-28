@@ -113,3 +113,15 @@ describe("split CI jobs (opt-in QA_SPLIT_JOBS)", () => {
     expect(tests["qa-generate-publish"]).toBeUndefined(); // there is no generation at this level
   });
 });
+
+describe("the publish jobs drop symbolic links from the run folder before publishing", () => {
+  it("both GitLab publish jobs delete links first", async () => {
+    const { tests, service } = await rendered();
+    const gen = scriptOf(tests["qa-generate-publish"]);
+    expect(gen).toMatch(/find \.qa-sentinel\/runs -type l -delete/);
+    expect(gen.indexOf("-type l -delete")).toBeLessThan(gen.indexOf("qa-sentinel publish"));
+    const gap = scriptOf(service["qa-gap-report-publish"]);
+    expect(gap).toMatch(/find "\$QA_TESTS_DIR\/\.qa-sentinel\/runs" -type l -delete/);
+    expect(gap.indexOf("-type l -delete")).toBeLessThan(gap.indexOf("publish --kind gap-report"));
+  });
+});

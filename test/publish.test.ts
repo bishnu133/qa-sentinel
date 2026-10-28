@@ -458,6 +458,34 @@ describe("publish does not believe the run folder (the analysis job runs generat
     expect(rec?.agentMr?.branch).toBe("qa-sentinel/story-SHOP-101");
   });
 
+  it("a symbolic link in the run folder (published.json, jira-summary.md, manifest.json, a folder) is refused and nothing outside is written", async () => {
+    const w = await world();
+    const outside = path.join(w.root, "outside.txt");
+    fs.writeFileSync(outside, "untouched\n");
+    for (const [i, name] of ["published.json", "jira-summary.md", "manifest.json", "sub"].entries()) {
+      const { run } = craft(w, { id: `ln-${i}`, branch: "qa-sentinel/orders-a1b2c3d4", files: OK });
+      fs.symlinkSync(name === "sub" ? w.root : outside, path.join(run, name));
+      expect(await publishCommand({ cwd: w.qa, run: `ln-${i}`, env: writeEnv(w.gl.url) }), name).toBe(1);
+      expect(fs.readFileSync(outside, "utf8"), name).toBe("untouched\n");
+      expect(originBranches(w), name).toBe("");
+    }
+    expect(w.gl.writes()).toEqual([]);
+  });
+
+  it("writeFileNoFollow and readFileNoFollow do not follow a link at the final path", async () => {
+    const { writeFileNoFollow, readFileNoFollow, assertNoLinks } = await import("../src/noLinks.js");
+    const dir = tmp("qas-nl-");
+    const target = path.join(dir, "target.txt");
+    fs.writeFileSync(target, "keep\n");
+    fs.symlinkSync(target, path.join(dir, "link.txt"));
+    expect(() => writeFileNoFollow(path.join(dir, "link.txt"), "evil")).toThrow();
+    expect(() => readFileNoFollow(path.join(dir, "link.txt"))).toThrow();
+    expect(fs.readFileSync(target, "utf8")).toBe("keep\n");
+    writeFileNoFollow(path.join(dir, "plain.txt"), "ok");
+    expect(readFileNoFollow(path.join(dir, "plain.txt"))).toBe("ok");
+    expect(() => assertNoLinks(dir)).toThrow(/symbolic link/);
+  });
+
   it("refuses generated artifacts, symbolic links and submodule links in the bundle", async () => {
     const w = await world();
     craft(w, { id: "r-art", branch: "qa-sentinel/orders-a1b2c3d4", files: { ...OK, "qa-gap-report.md": "x\n", ".qa-sentinel/runs/x/publish.json": "{}" } });
@@ -639,7 +667,7 @@ describe("split CI jobs: gap-report --defer-publish, then publish", () => {
     writeConfig(root, ConfigSchema.parse({ version: 1, mode: "existing", project: { name: "t" }, tests: { api: { framework: "playwright", runCommand: "x" } }, ci: { platform: "gitlab", gitlabUrl: gl.url }, requirements: { source: "jira", jira: { baseUrl: jira.baseUrl, projectKeys: ["SHOP"] } }, reporting: { targets: ["gitlab-mr", "jira"] } }));
     const dir = path.join(root, ".qa-sentinel/runs/r1");
     deferSteps(dir, "gap-report", "r1", [{ type: "report", report: "### QA impact\nbody", service: "orders", storyKey: "SHOP-12" }]);
-    const env = { QA_SENTINEL_GITLAB_TOKEN: WRITE, JIRA_PAT: "pat", CI_PROJECT_ID: "7", CI_MERGE_REQUEST_IID: "7" };
+    const env = { QA_SENTINEL_GITLAB_TOKEN: WRITE, JIRA_PAT: "pat", CI_PROJECT_ID: "7", CI_MERGE_REQUEST_IID: "7", CI_MERGE_REQUEST_TITLE: "SHOP-12 cap a slot" };
     expect(await publishCommand({ cwd: root, run: "r1", target: "gitlab-mr", env })).toBe(0);
     expect(gl.writes()).toHaveLength(1);
     expect(jira.comments["SHOP-12"] ?? []).toEqual([]);

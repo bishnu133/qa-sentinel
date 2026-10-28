@@ -95,10 +95,17 @@ export class JiraHttpError extends Error {
 }
 export const isJiraNotFound = (e: unknown) => e instanceof JiraHttpError && e.status === 404;
 
+/** How long one card read may take: a Jira that hangs must not hold a CI job until its own timeout (QA_SENTINEL_JIRA_TIMEOUT_MS overrides, in milliseconds). */
+const jiraTimeoutMs = () => {
+  const n = Number(process.env.QA_SENTINEL_JIRA_TIMEOUT_MS);
+  return Number.isFinite(n) && n > 0 ? n : 30_000;
+};
+
 export async function fetchIssue(ctx: JiraContext, key: string, acField?: string, extraFields: string[] = []): Promise<JiraIssue> {
   const fields = ["summary", "description", "status", "issuetype", "labels", "updated", "parent", "issuelinks", "components", ...(acField ? [acField] : []), ...extraFields].join(",");
   const res = await netFetch(`${ctx.baseUrl}/rest/api/2/issue/${encodeURIComponent(key)}?fields=${fields}`, {
     headers: { Authorization: ctx.authHeader, Accept: "application/json" },
+    signal: AbortSignal.timeout(jiraTimeoutMs()),
   });
   const body = await res.text();
   if (!res.ok) throw new JiraHttpError(`Jira GET ${key} failed: ${res.status} ${looksLikeHtml(body, res.headers.get("content-type")) ? `(a web page, not JSON: ${JIRA_WEB_PAGE_HINT})` : body.slice(0, 200)}`, res.status);

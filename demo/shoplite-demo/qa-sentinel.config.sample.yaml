@@ -31,6 +31,9 @@ requirements:
     baseUrl: https://<your-site>.atlassian.net
     projectKeys:
       - <YOUR-TEST-PROJECT-KEY>
+    # Only a Story is a feature: a bug linked to its story is read as part of that story.
+    featureIssueTypes:
+      - Story
     approvedStatuses:
       - In Progress
       - Selected for Development

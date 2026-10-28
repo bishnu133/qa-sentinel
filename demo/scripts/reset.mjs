@@ -108,6 +108,7 @@ export async function planReset({ args = {}, env = process.env, configFile = DEF
 
       // 3. reverts: every demo merge on the default and release branches, newest first
       const planned = [];
+      const revertShas = new Set(); // the commits this run makes: their pipelines are the only ones --cancel-pipelines may cancel
       for (const branch of branches) {
         const exists = await gl.api("GET", `${P}/repository/branches/${enc(branch)}`).then(() => true, (e) => (e.status === 404 ? false : Promise.reject(e)));
         if (!exists) continue;
@@ -146,7 +147,8 @@ export async function planReset({ args = {}, env = process.env, configFile = DEF
       for (const r of planned) {
         add("gitlab", `${project}: revert ${r.sha.slice(0, 8)} on ${r.branch} (a new commit; history is not rewritten)`, async () => {
           try {
-            await gl.api("POST", `${P}/repository/commits/${seg(r.sha)}/revert`, { branch: r.branch });
+            const made = await gl.api("POST", `${P}/repository/commits/${seg(r.sha)}/revert`, { branch: r.branch });
+            if (made?.id) revertShas.add(made.id);
           } catch (e) {
             throw new DemoError(`MANUAL: GitLab would not revert ${r.sha.slice(0, 8)} on ${project}/${r.branch} (${e.message}). Do it by hand: git revert ${r.sha} (add -m 1 for a merge commit), or put the branch back to the tag: git push --force-with-lease origin demo-baseline:${r.branch} (needs force-push allowed on that branch).`);
           }
@@ -168,8 +170,8 @@ export async function planReset({ args = {}, env = process.env, configFile = DEF
       }
       // 5. pipelines started by the reverts (optional)
       if (args["cancel-pipelines"]) {
-        add("gitlab", `${project}: cancel pipelines that are running or waiting (the ones the reverts started)`, async () => {
-          for (const st of ["running", "pending", "created"]) for (const pl of await gl.getAll(`${P}/pipelines?status=${st}`)) await gl.api("POST", `${P}/pipelines/${seg(pl.id)}/cancel`);
+        add("gitlab", `${project}: cancel the pipelines of the revert commits made now, if they are running or waiting (other pipelines are left alone)`, async () => {
+          for (const st of ["running", "pending", "created"]) for (const pl of await gl.getAll(`${P}/pipelines?status=${st}`)) if (revertShas.has(pl.sha)) await gl.api("POST", `${P}/pipelines/${seg(pl.id)}/cancel`);
         }, project);
       }
     }

@@ -2,7 +2,7 @@ import { execFileSync } from "node:child_process";
 import path from "node:path";
 
 export function git(cwd: string, args: string[], env?: NodeJS.ProcessEnv): string {
-  return execFileSync("git", args, { cwd, encoding: "utf8", maxBuffer: 64 * 1024 * 1024, env: env ?? process.env }).trim();
+  return execFileSync("git", args, { cwd, encoding: "utf8", maxBuffer: 64 * 1024 * 1024, env: env ?? process.env, stdio: ["ignore", "pipe", "pipe"] }).trim();
 }
 
 /**
@@ -114,7 +114,7 @@ export const OS_JUNK = /(^|\/)(\.DS_Store|Thumbs\.db|desktop\.ini)$/i;
 
 /** Uncommitted changes (tracked + untracked), parsed from `git status -z` so paths are never mangled. OS junk is skipped. */
 export function workingChanges(repo: string): FileChange[] {
-  const raw = execFileSync("git", ["status", "--porcelain=v1", "-z", "--untracked-files=all"], { cwd: repo, encoding: "utf8" });
+  const raw = execFileSync("git", ["status", "--porcelain=v1", "-z", "--untracked-files=all"], { cwd: repo, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
   const out: FileChange[] = [];
   const entries = raw.split("\0").filter(Boolean);
   for (let i = 0; i < entries.length; i++) {
@@ -138,7 +138,7 @@ export function changedFiles(repo: string): string[] {
 
 /** Files changed between `base` and the working tree (committed + uncommitted), with status. */
 export function changesSince(repo: string, base: string): FileChange[] {
-  const raw = execFileSync("git", ["diff", "--name-status", "-z", "-M", base], { cwd: repo, encoding: "utf8" });
+  const raw = execFileSync("git", ["diff", "--name-status", "-z", "-M", base], { cwd: repo, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
   const parts = raw.split("\0").filter(Boolean);
   const out: FileChange[] = [];
   for (let i = 0; i < parts.length; i++) {
@@ -160,7 +160,7 @@ export function changesSince(repo: string, base: string): FileChange[] {
  * folder, and a change outside it (../ci/deploy.sh) must still reach the write policy, which sees it as outside.
  */
 export function changesBetween(repo: string, from: string, to: string): FileChange[] {
-  const raw = execFileSync("git", ["diff", "--name-status", "-z", "-M", from, to], { cwd: repo, encoding: "utf8" });
+  const raw = execFileSync("git", ["diff", "--name-status", "-z", "-M", from, to], { cwd: repo, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
   const parts = raw.split("\0").filter(Boolean);
   const out: FileChange[] = [];
   for (let i = 0; i < parts.length; i++) {
@@ -178,7 +178,7 @@ export function changesBetween(repo: string, from: string, to: string): FileChan
 
 /** Paths whose mode in `to` is a symbolic link (120000) or a submodule (160000): the write policy never allows an agent to add those. */
 export function specialModes(repo: string, from: string, to: string): { path: string; kind: "symlink" | "submodule" }[] {
-  const raw = execFileSync("git", ["diff", "--raw", "-z", "--no-renames", from, to], { cwd: repo, encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
+  const raw = execFileSync("git", ["diff", "--raw", "-z", "--no-renames", from, to], { cwd: repo, encoding: "utf8", maxBuffer: 64 * 1024 * 1024, stdio: ["ignore", "pipe", "pipe"] });
   const parts = raw.split("\0").filter(Boolean);
   const out: { path: string; kind: "symlink" | "submodule" }[] = [];
   for (let i = 0; i + 1 < parts.length; i += 2) {
@@ -207,7 +207,7 @@ export function hasChanges(repo: string): boolean {
 /** Commit subjects and bodies in base..head (story keys often live here). */
 export function commitMessages(repo: string, base: string, head: string): string[] {
   try {
-    return execFileSync("git", ["log", "--format=%B%x00", `${base}..${head}`], { cwd: repo, encoding: "utf8" })
+    return execFileSync("git", ["log", "--format=%B%x00", `${base}..${head}`], { cwd: repo, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] })
       .split("\0")
       .map((s) => s.trim())
       .filter(Boolean)

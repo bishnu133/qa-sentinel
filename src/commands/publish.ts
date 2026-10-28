@@ -5,9 +5,10 @@ import { execFileSync } from "node:child_process";
 import { loadConfig, type Config } from "../config.js";
 import { findingsMarkdown, violations } from "../guardrails.js";
 import { markMrOpened, patchManifest } from "../run.js";
-import { gitlabContext, mergeRequestsForCommit } from "../scm/gitlab.js";
+import { getAll, gitlabContext, mergeRequestsForCommit } from "../scm/gitlab.js";
 import { scmFor } from "../scm/provider.js";
-import { jiraContext } from "../scm/jira.js";
+import { fetchIssue, jiraContext } from "../scm/jira.js";
+import { resolveFeature } from "../stories/resolve.js";
 import { remoteFor, redact, storyBranchName } from "../generation/storyBranch.js";
 import { publish } from "../reporting/publish.js";
 import { generationSummary } from "../reporting/jiraSummary.js";
@@ -19,6 +20,7 @@ import { fileBugs, type BugCandidate } from "../bugs/bugs.js";
 import { applyRecordPatch, conflictKey, recordAgentMr, showConflict } from "./generate.js";
 import { bundleFindings } from "./bundlePolicy.js";
 import { log } from "../log.js";
+import { assertNoLinks, readFileNoFollow, writeFileNoFollow } from "../noLinks.js";
 
 /**
  * `qa-sentinel publish`: do the writing that `gap-report --defer-publish` and `generate --defer-publish` left in a run
@@ -57,17 +59,27 @@ interface State {
 
 function readState(dir: string): State {
   try {
-    const s = JSON.parse(fs.readFileSync(path.join(dir, PUBLISHED_FILE), "utf8")) as State;
+    const s = JSON.parse(readFileNoFollow(path.join(dir, PUBLISHED_FILE))) as State;
     if (s && typeof s === "object" && s.done && typeof s.done === "object") return { version: 1, done: s.done, ...(s.mr ? { mr: s.mr } : {}), ...(s.complete ? { complete: true } : {}) };
   } catch {
     /* none yet */
   }
   return { version: 1, done: {} };
 }
-const writeState = (dir: string, s: State) => fs.writeFileSync(path.join(dir, PUBLISHED_FILE), JSON.stringify(s, null, 2) + "\n");
+const writeState = (dir: string, s: State) => writeFileNoFollow(path.join(dir, PUBLISHED_FILE), JSON.stringify(s, null, 2) + "\n");
 
 function runDirs(cwd: string, run: string | undefined): { dirs: string[]; explicit: boolean } {
   const root = path.join(cwd, ".qa-sentinel", "runs");
+  // A link on the way to the run folders would lead the reads and writes below somewhere else.
+  for (const p of [path.join(cwd, ".qa-sentinel"), root]) {
+    let st: fs.Stats | undefined;
+    try {
+      st = fs.lstatSync(p);
+    } catch {
+      /* not there: no runs */
+    }
+    if (st?.isSymbolicLink()) throw new Error(`${path.relative(cwd, p)} is a symbolic link; refused`);
+  }
   if (run && run !== "all") {
     const asPath = path.resolve(cwd, run);
     const dir = fs.existsSync(path.join(asPath, PUBLISH_FILE)) ? asPath : path.join(root, run);
@@ -187,34 +199,73 @@ const keysIn = (t: string | undefined) => (t ?? "").match(KEY_IN_TEXT)?.map((k) 
 
 /**
  * The stories this publish job is for. The run folder is untrusted, so it cannot say which story a step belongs to: that comes from what the
- * pipeline itself carries: QA_STORY_KEY / QA_STORY_KEYS (set by whoever starts the pipeline), the Jira keys in the title, message and branch of
- * the service commit that triggered it (QA_SERVICE_COMMIT_TITLE, QA_SERVICE_COMMIT_MESSAGE, QA_SERVICE_BRANCH), and in the title, description and
- * branch of the service merge request of that commit (asked from GitLab with this job's token). Only keys of requirements.jira.projectKeys count when
- * that is set.
+ * pipeline itself carries:
+ *  - QA_STORY_KEY / QA_STORY_KEYS (set by whoever starts the pipeline); always trusted;
+ *  - Jira keys in text the pipeline carries: the title, message and branch of the service commit (QA_SERVICE_COMMIT_TITLE, QA_SERVICE_COMMIT_MESSAGE,
+ *    QA_SERVICE_BRANCH), the merge request the job runs on (CI_MERGE_REQUEST_TITLE, _DESCRIPTION, _SOURCE_BRANCH_NAME), and from GitLab the merge
+ *    request of the service commit and the titles of a merge request's commits. These count only when requirements.jira.projectKeys is set (without
+ *    it any word like UTF-8 or SHA-256 looks like a key);
+ *  - the feature a trusted card leads to: a bug named in that text is read through Jira with the configured links (the same strict rules as
+ *    generation: one hop, a feature type, a configured project), so a bug-fix run may write to its story.
  */
 export async function trustedStories(c: Config, env: NodeJS.ProcessEnv): Promise<Set<string>> {
-  const keys = new Set<string>();
-  for (const v of [env.QA_STORY_KEY, env.QA_STORY_KEYS, env.QA_SERVICE_COMMIT_TITLE, env.QA_SERVICE_COMMIT_MESSAGE, env.QA_SERVICE_BRANCH]) keysIn(v).forEach((k) => keys.add(k));
+  const explicit = new Set<string>();
+  for (const v of [env.QA_STORY_KEY, env.QA_STORY_KEYS]) keysIn(v).forEach((k) => explicit.add(k));
+  const text = new Set<string>();
+  for (const v of [env.QA_SERVICE_COMMIT_TITLE, env.QA_SERVICE_COMMIT_MESSAGE, env.QA_SERVICE_BRANCH, env.CI_MERGE_REQUEST_TITLE, env.CI_MERGE_REQUEST_DESCRIPTION, env.CI_MERGE_REQUEST_SOURCE_BRANCH_NAME]) keysIn(v).forEach((k) => text.add(k));
+  // The merge request or pull request this job runs on (GitLab CI_MERGE_REQUEST_*, GitHub's pull request event): its author wrote the title, text and branch.
+  const own = scmFor(c, env).mrFromEnv(env);
+  for (const v of [own.title, own.description, own.sourceBranch]) keysIn(v).forEach((k) => text.add(k));
   const ctx = gitlabContext(c.ci.gitlabUrl, env);
   if (ctx && env.QA_SERVICE_PROJECT && env.QA_SERVICE_SHA) {
     try {
-      for (const mr of await mergeRequestsForCommit(ctx, env.QA_SERVICE_PROJECT, env.QA_SERVICE_SHA)) for (const v of [mr.title, mr.description, mr.source_branch]) keysIn(v).forEach((k) => keys.add(k));
+      for (const mr of await mergeRequestsForCommit(ctx, env.QA_SERVICE_PROJECT, env.QA_SERVICE_SHA)) for (const v of [mr.title, mr.description, mr.source_branch]) keysIn(v).forEach((k) => text.add(k));
     } catch (e) {
       log.warn(`could not ask GitLab which merge request made ${env.QA_SERVICE_SHA.slice(0, 8)} (${(e as Error).message.split("\n")[0]}); only the pipeline's own variables name the stories`);
     }
   }
+  if (ctx && env.CI_PROJECT_ID && env.CI_MERGE_REQUEST_IID) {
+    try {
+      for (const cm of await getAll(ctx, `/projects/${encodeURIComponent(env.CI_PROJECT_ID)}/merge_requests/${encodeURIComponent(env.CI_MERGE_REQUEST_IID)}/commits`, 5)) for (const v of [cm.title, cm.message]) keysIn(v).forEach((k) => text.add(k));
+    } catch {
+      /* the merge request's own title and branch above still count */
+    }
+  }
   const only = c.requirements.jira?.projectKeys?.map((k) => k.toUpperCase()) ?? [];
-  return new Set([...keys].filter((k) => !only.length || only.includes(k.split("-")[0])));
+  if (!only.length && text.size) log.warn("requirements.jira.projectKeys is empty: Jira keys found in commit and merge request text are not trusted (set it, or set QA_STORY_KEY)");
+  const fromText = only.length ? [...text].filter((k) => only.includes(k.split("-")[0])) : [];
+  const out = new Set([...explicit, ...fromText]);
+  // A bug (or task) named in that text leads to its story through Jira, by the configured links.
+  const jira = jiraContext(c.requirements.jira, env);
+  if (jira && out.size) {
+    const lookup = async (k: string) => fetchIssue(jira, k).catch(() => undefined);
+    for (const k of [...out].slice(0, 10)) {
+      const card = await lookup(k);
+      if (!card) continue;
+      const r = await resolveFeature(c, card, lookup).catch(() => undefined);
+      if (r?.kind === "resolved") out.add(r.feature.toUpperCase());
+    }
+  }
+  return out;
 }
 
 /** The stories a step would write to (Jira, the record, a story branch). */
 const storiesOf = (s: PublishFile["steps"][number]): string[] =>
-  s.type === "merge-request" ? [s.storyKey, s.jira?.storyKey, s.notify?.story].filter((k): k is string => Boolean(k)) : s.type === "record" || s.type === "notify" || s.type === "bugs" || s.type === "branch-note" ? [s.story] : [];
+  s.type === "merge-request"
+    ? [s.storyKey, s.jira?.storyKey, s.notify?.story].filter((k): k is string => Boolean(k))
+    : s.type === "report"
+      ? [s.storyKey].filter((k): k is string => Boolean(k))
+      : s.type === "mr-seen"
+        ? [s.args.feature, s.args.workKey].filter((k): k is string => Boolean(k))
+        : s.type === "record" || s.type === "notify" || s.type === "bugs" || s.type === "branch-note"
+          ? [s.story]
+          : [];
 
 const validKey = (k: string | undefined) => (k ? /^[A-Za-z][A-Za-z0-9]*-\d+$/.test(k) : false);
 
 async function publishRun(cwd: string, c: Config, dir: string, env: NodeJS.ProcessEnv, o: PublishOptions): Promise<number> {
-  const doc: PublishFile = parsePublishFile(fs.readFileSync(path.join(dir, PUBLISH_FILE), "utf8"));
+  assertNoLinks(dir);
+  const doc: PublishFile = parsePublishFile(readFileNoFollow(path.join(dir, PUBLISH_FILE)));
   if (o.kind && doc.kind !== o.kind) throw new Error(`this run is a ${doc.kind} run, but this publish job takes only ${o.kind} runs; refused`);
   const odd = doc.steps.find((s) => !STEPS_OF[doc.kind].includes(s.type));
   if (odd) throw new Error(`a ${doc.kind} run may not hold a "${odd.type}" step; refused`);
@@ -239,11 +290,20 @@ async function publishRun(cwd: string, c: Config, dir: string, env: NodeJS.Proce
     const label = `${i + 1}. ${step.type}`;
     try {
       // Generate runs write to stories (Jira, the record, a story branch): only to the ones this job is for, never to one the run folder names.
-      const asked = doc.kind === "generate" ? storiesOf(step) : [];
+      const asked = storiesOf(step);
+      let untrustedStory = false;
       if (asked.length) {
         trusted ??= await trustedStories(c, env);
         const stranger = asked.find((k) => !trusted!.has(k.toUpperCase()));
-        if (stranger) throw new Error(`${stranger} is not a story this job is for (QA_STORY_KEY, or the service commit / merge request names it); the ${step.type} step is refused`);
+        if (stranger && step.type === "report") {
+          // The note goes to this job's own merge request whatever the story is; only the Jira comment and the story key are dropped.
+          log.warn(`${stranger} is not a story this job is for (QA_STORY_KEY, or the commit / merge request names it): the report is posted on the merge request without it, and nothing is written to Jira`);
+          untrustedStory = true;
+        } else if (stranger && step.type === "mr-seen") {
+          log.warn(`${stranger} is not a story this job is for: the merge request is not recorded on it`);
+          mark(`${i}`, label, `${stranger} is not a story this job is for: nothing recorded`);
+          continue;
+        } else if (stranger) throw new Error(`${stranger} is not a story this job is for (QA_STORY_KEY, or the service commit / merge request names it); the ${step.type} step is refused`);
       }
       if (step.type === "merge-request") {
         const needMr = wanted(`${i}:mr`, "mr-create") && (!o.target || o.target === "mr-create");
@@ -274,13 +334,14 @@ async function publishRun(cwd: string, c: Config, dir: string, env: NodeJS.Proce
         const targets = (step.targets ?? c.reporting.targets).filter((t, k, a) => a.indexOf(t) === k);
         for (const t of targets) {
           if (!wanted(`${i}:${t}`, t)) continue;
-          if (t === "jira" && !step.storyKey) {
-            mark(`${i}:${t}`, `${label} (${t})`, "no story key: nothing to comment on in Jira");
+          const storyKey = untrustedStory ? undefined : step.storyKey;
+          if (t === "jira" && !storyKey) {
+            mark(`${i}:${t}`, `${label} (${t})`, untrustedStory ? "the story is not one this job is for: nothing written to Jira" : "no story key: nothing to comment on in Jira");
             continue;
           }
           // The merge request is this job's own (CI_PROJECT_ID, CI_MERGE_REQUEST_IID), never one named in the run folder.
           if (t === "gitlab-mr" && (!mrEnv.project || !mrEnv.mrIid)) throw new Error(scmFor(c, env).kind === "github" ? "no pull request in this job (GITHUB_REPOSITORY and the pull request event are not set)" : "no merge request in this job (CI_PROJECT_ID and CI_MERGE_REQUEST_IID are not set)");
-          const done = await publish(c, { onMrNote: (n) => patchManifest(dir, { mr: n }), report: step.report, jiraSummary: step.jiraSummary, cwd, service: step.service, storyKey: step.storyKey, stamp: step.stamp, mr: mrEnv, targets: [t] }, env);
+          const done = await publish(c, { onMrNote: (n) => patchManifest(dir, { mr: n }), report: step.report, jiraSummary: step.jiraSummary, cwd, service: step.service, storyKey, stamp: step.stamp, mr: mrEnv, targets: [t] }, env);
           if (!done.includes(t)) throw new Error(`${t} was not published (missing token, login or merge request; see the warning above)`);
           mark(`${i}:${t}`, `${label} (${t})`);
         }
@@ -464,7 +525,7 @@ async function announceJira(cwd: string, c: Config, runDir: string, s: MergeRequ
     const j = s.jira;
     if (s.storyKey && (j.storyKey ?? "").toUpperCase() !== s.storyKey.toUpperCase()) throw new Error("the Jira summary is for another story than the branch's; refused");
     const jiraSummary = generationSummary({ service: j.service, risk: j.risk as Parameters<typeof generationSummary>[0]["risk"], verification: j.verification, environment: j.environment, mrUrl: url || undefined, trace: j.trace as Parameters<typeof generationSummary>[0]["trace"], acText: new Map(j.acText), discrepancies: j.discrepancies, weakTests: j.weakTests });
-    fs.writeFileSync(path.join(runDir, "jira-summary.md"), jiraSummary);
+    writeFileNoFollow(path.join(runDir, "jira-summary.md"), jiraSummary);
     const done = await publish(c, { report: j.report, jiraSummary, cwd, service: j.service, storyKey: j.storyKey, mr: {}, targets: ["jira"] }, env);
     if (!done.includes("jira")) throw new Error("Jira was not updated (no login, or no story key)");
     return "Jira updated";

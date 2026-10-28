@@ -5,12 +5,13 @@ import fs from "node:fs";
 import path from "node:path";
 import { CONFIG_FILE, type Config, type ServiceConfig } from "./config.js";
 import { ensureDir } from "./fsutil.js";
+import { readFileNoFollow, writeFileNoFollow } from "./noLinks.js";
 import { resolveSha } from "./git.js";
 import { scrubbedEnv } from "./env.js";
 import { layerEnvNames, layers, testOnlyEnvNames } from "./layers.js";
 import type { RequirementSnapshot } from "./requirements.js";
 
-export const VERSION = "0.8.0-beta.2";
+export const VERSION = "0.8.0-beta.3";
 
 export interface RunDir {
   id: string;
@@ -163,8 +164,8 @@ export interface Manifest {
 export function patchManifest(runDir: string, patch: Partial<Manifest>): boolean {
   const file = path.join(runDir, "manifest.json");
   try {
-    const m = JSON.parse(fs.readFileSync(file, "utf8")) as Manifest;
-    fs.writeFileSync(file, JSON.stringify({ ...m, ...patch }, null, 2));
+    const m = JSON.parse(readFileNoFollow(file)) as Manifest;
+    writeFileNoFollow(file, JSON.stringify({ ...m, ...patch }, null, 2));
     return true;
   } catch {
     return false;
@@ -174,7 +175,7 @@ export function patchManifest(runDir: string, patch: Partial<Manifest>): boolean
 /** The test merge request of a deferred generate run was opened now: note it in the run's manifest (metrics: merge to test MR). */
 export function markMrOpened(runDir: string): void {
   try {
-    const m = JSON.parse(fs.readFileSync(path.join(runDir, "manifest.json"), "utf8")) as Manifest;
+    const m = JSON.parse(readFileNoFollow(path.join(runDir, "manifest.json"))) as Manifest;
     patchManifest(runDir, { trigger: { ...m.trigger, mrOpenedAt: new Date().toISOString() } });
   } catch {
     /* no manifest: nothing to note */
