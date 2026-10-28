@@ -154,7 +154,7 @@ export async function setupGitlab({ args = {}, env = process.env, configFile = D
     return { dirs };
   }
   const writing = wantsWrite(args);
-  const projects = [config.testsProject, ...config.services.map((s) => s.project)];
+  let projects = [config.testsProject, ...config.services.map((s) => s.project)];
   log(`GitLab: ${config.gitlabUrl}  ${writing ? "(WRITING)" : "(dry run: nothing is written; add --yes to write)"}`);
   for (const p of projects) log(`  project ${p}: push the template to ${config.defaultBranch}, tag demo-baseline${p === config.services[0].project ? `, create ${config.releaseBranch}` : ""}`);
   if (!writing) return { dryRun: true };
@@ -163,6 +163,15 @@ export async function setupGitlab({ args = {}, env = process.env, configFile = D
   const token = env.GITLAB_TOKEN ?? env.QA_SENTINEL_GITLAB_TOKEN;
   const me = await gl.api("GET", "/user");
   log(`  logged in as ${me.username}`);
+  // A service marked "optional": true that does not exist is left out (the card that needs it then says so); the others must exist.
+  for (const s of [...config.services]) {
+    if (!s.optional) continue;
+    const there = await gl.api("GET", `/projects/${enc(s.project)}`).then(() => true, (e) => (e.status === 404 ? false : Promise.reject(e)));
+    if (there) continue;
+    config.services.splice(config.services.indexOf(s), 1);
+    log(`  ${s.name}: ${s.project} does not exist and is optional: left out (cards that need ${s.name} will not run)`);
+  }
+  projects = [config.testsProject, ...config.services.map((s) => s.project)];
   for (const p of projects) {
     const info = await gl.api("GET", `/projects/${enc(p)}`).catch((e) => (e.status === 404 ? fail(`GitLab project ${p} does not exist (or the token cannot see it). Create it empty first.`) : Promise.reject(e)));
     if (info.empty_repo === false) fail(`${p} already has commits. Setup only fills EMPTY projects (it never overwrites). To start again, use reset.mjs, or create a new empty project.`);

@@ -695,9 +695,13 @@ describe("review fixes", () => {
   it("M3/M4: reset says to clear the runner cache and wait for idle runners; --cancel-pipelines cancels the revert pipelines", async () => {
     await seeded();
     await mergeCard("qty-limit");
-    orders().pipelines.push({ id: 1, status: "running" }, { id: 2, status: "pending" }, { id: 3, status: "success" });
+    // Somebody else's pipelines on the same project: running, waiting, done.
+    orders().pipelines.push({ id: 1, status: "running", sha: "feedface" }, { id: 2, status: "pending", sha: "feedface" }, { id: 3, status: "success", sha: "feedface" });
     await reset(resetArgs({ "cancel-pipelines": true }));
-    expect(orders().pipelines.map((p) => p.status)).toEqual(["canceled", "canceled", "success"]);
+    expect(orders().pipelines.filter((p) => p.id < 1000).map((p) => p.status)).toEqual(["running", "pending", "success"]);
+    const reverts = orders().pipelines.filter((p) => p.id >= 1000);
+    expect(reverts.length).toBeGreaterThan(0);
+    expect(reverts.map((p) => p.status)).toEqual(reverts.map(() => "canceled"));
     expect(logs.join("\n")).toMatch(/Clear runner caches/);
     expect(logs.join("\n")).toMatch(/Wait until the runners are idle|wait until the runners are idle/i);
     expect(logs.join("\n")).toMatch(/Resolution/);
@@ -838,6 +842,20 @@ describe("setup-gitlab", () => {
     gl.projects.get("g/shoplite-orders")!.empty = false;
     await rejects(setupGitlab({ ...base(), args: { yes: true } }), /already has commits/);
     expect(gl.writes()).toHaveLength(0);
+  });
+
+  it('leaves out a service marked "optional": true that does not exist, and still insists on the others', async () => {
+    gl.projects.delete("g/shoplite-payments");
+    for (const pr of gl.projects.values()) pr.empty = true;
+    // The pushes need a real git server; the check this test is about comes before them.
+    await setupGitlab({ ...base(), args: { yes: true } }).catch(() => undefined);
+    expect(logs.join("\n")).toMatch(/payments-service: g\/shoplite-payments does not exist and is optional: left out/);
+  });
+
+  it("fails for a missing service that is not optional", async () => {
+    gl.projects.delete("g/shoplite-orders");
+    for (const pr of gl.projects.values()) pr.empty = true;
+    await rejects(setupGitlab({ ...base(), args: { yes: true } }), /g\/shoplite-orders does not exist/);
   });
 });
 

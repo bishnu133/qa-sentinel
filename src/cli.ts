@@ -39,7 +39,7 @@ import { API_FRAMEWORKS } from "./config.js";
 const program = new Command();
 program
   .name("qa-sentinel")
-  .description("AI QA agents for your test repo: gap reports and API test generation from dev changes.")
+  .description("AI QA agents for your test repo: gap reports, API, web and mobile test generation, story records, and evidence for the business.")
   .version(VERSION)
   .option("-C, --cwd <dir>", "test repository root", process.cwd());
 
