@@ -44,6 +44,8 @@ export function configOverlay({ gitlabUrl, testsProject, services, jira }) {
         baseUrl: jira.baseUrl,
         projectKeys: [jira.project],
         ...(jira.auth && jira.auth !== "auto" ? { auth: jira.auth } : {}),
+        // Only a Story is a feature: without this every card (the bug too) is its own feature and the bug fix gets a separate story branch.
+        featureIssueTypes: ["Story"],
         approvedStatuses: ["In Progress", "Selected for Development", "Ready for Development", "In Review", "Done"],
         // A bug is "Relates" to its story: follow that link so a bug fix re-runs the story's tests.
         hierarchy: { links: [{ name: "Relates", from: ["Bug"] }] },

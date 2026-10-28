@@ -30,6 +30,20 @@ export class GitLabError extends Error {
   }
 }
 
+/**
+ * GitLab runs a line that starts with "/" in a note or a merge request description as a quick action (/approve, /merge, /target_branch, /assign ...),
+ * as the user whose token posted it. Text from a model or a run folder must never do that, so such a line gets a zero-width space in front: it reads
+ * the same, and GitLab does not see a command. (qa-sentinel's own reading of "/qa ready" ignores the zero-width space.)
+ */
+export const neutraliseQuickActions = (text: string) => text.replace(/^([ \t]*)\/(?=\S)/gm, "$1\u200b/");
+
+function safeBody(body: unknown): unknown {
+  if (!body || typeof body !== "object" || Array.isArray(body)) return body;
+  const o = { ...(body as Record<string, unknown>) };
+  for (const k of ["body", "description"]) if (typeof o[k] === "string") o[k] = neutraliseQuickActions(o[k] as string);
+  return o;
+}
+
 /** One request with up to 3 retries on 429/5xx/network errors (exponential backoff, honours Retry-After). */
 export async function call(ctx: GitLabContext, method: string, route: string, body?: unknown, attempts = 4): Promise<{ data: any; headers: Headers }> {
   let lastErr: unknown;
@@ -39,7 +53,7 @@ export async function call(ctx: GitLabContext, method: string, route: string, bo
         method,
         headers: { "PRIVATE-TOKEN": ctx.token, "Content-Type": "application/json" },
         // Agent-written text may carry a credential the tests needed: masked before it is published.
-        body: body ? maskSecrets(JSON.stringify(body)) : undefined,
+        body: body ? maskSecrets(JSON.stringify(safeBody(body))) : undefined,
       });
       const text = await res.text();
       const html = looksLikeHtml(text, res.headers.get("content-type"));

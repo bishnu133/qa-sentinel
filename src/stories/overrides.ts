@@ -27,7 +27,7 @@ export function parseOverrideLines(body: string, command: string): { op: "ready"
   // Blocks nest: a {quote} may hold a {code} block, and the quote is not over when the code ends. Inside {code} and {noformat}
   // only the same tag closes (other tags there are plain text). So the open blocks are a stack.
   const open: string[] = [];
-  for (const line of body.split(/\r?\n/)) {
+  for (const line of body.replace(/\u200b/g, "").split(/\r?\n/)) {
     const tags = [...line.matchAll(/\{(code|noformat|quote)(?::[^}]*)?\}/g)].map((t) => t[1]);
     const inBlock = open.length > 0;
     for (const t of tags) {

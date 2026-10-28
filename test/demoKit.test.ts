@@ -859,3 +859,21 @@ async function startFakeJiraWithoutMyself(real: Awaited<ReturnType<typeof startF
   await new Promise<void>((ok) => server.listen(0, "127.0.0.1", ok));
   return { url: `http://127.0.0.1:${(server.address() as any).port}`, close: () => new Promise<void>((ok) => server.close(() => ok())) };
 }
+
+describe("the demo config reads a bug as its story", () => {
+  it("with the overlay's Jira settings, the demo bug (linked 'Relates') resolves to its story, not to itself", async () => {
+    const { ConfigSchema } = await import("../src/config.js");
+    const { resolveFeature } = await import("../src/stories/resolve.js");
+    const made = configOverlay({ gitlabUrl: "https://g", testsProject: "a/t", services: [{ name: "orders-service", project: "a/o" }], jira: { baseUrl: "https://j.example", project: "DEMO" } });
+    expect(made.requirements.jira.featureIssueTypes).toEqual(["Story"]);
+    const c = ConfigSchema.parse({ version: 1, mode: "existing", project: { name: "t" }, tests: { api: { framework: "playwright", runCommand: "x" } }, ci: { platform: "gitlab" }, requirements: made.requirements });
+    const card = (key: string, issueType: string, links: unknown[] = []) => ({ key, summary: key, description: "", status: "In Progress", issueType, url: `https://j.example/browse/${key}`, links });
+    const story = card("DEMO-1", "Story");
+    const bug = card("DEMO-3", "Bug", [{ type: "Relates", inward: "relates to", outward: "relates to", direction: "outward", key: "DEMO-1" }]);
+    const r = await resolveFeature(c, bug as never, async (k) => [story, bug].find((x) => x.key === k) as never);
+    expect(r).toMatchObject({ kind: "resolved", feature: "DEMO-1", via: "link" });
+    // Without featureIssueTypes the same bug would be its own feature (the demo's old behaviour).
+    const old = ConfigSchema.parse({ version: 1, mode: "existing", project: { name: "t" }, tests: { api: { framework: "playwright", runCommand: "x" } }, ci: { platform: "gitlab" }, requirements: { ...made.requirements, jira: { ...made.requirements.jira, featureIssueTypes: [] } } });
+    expect((await resolveFeature(old, bug as never, async () => story as never)).kind).toBe("feature");
+  });
+});
